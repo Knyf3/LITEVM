@@ -2412,13 +2412,13 @@ body {
   }
 
   .page-header {
-    max-width: 560px;
+    max-width: 720px;
     border-radius: 16px 16px 0 0;
     margin-top: 0;
   }
 
   .step {
-    max-width: 560px;
+    max-width: 720px;
     width: 100%;
     padding-bottom: 40px;
   }
@@ -2432,7 +2432,7 @@ body {
   }
 
   .page-footer {
-    max-width: 560px;
+    max-width: 720px;
     width: 100%;
     margin: 16px 0 0;
     border-radius: 0 0 16px 16px;
@@ -2440,13 +2440,13 @@ body {
 
   /* Confirmation screen */
   .confirmation-screen {
-    max-width: 560px;
+    max-width: 720px;
     width: 100%;
   }
 
   /* ── Verify / Guard Portal page ───────────────── */
   .verify-page {
-    max-width: 560px;
+    max-width: 720px;
     width: 100%;
     margin: 0 auto;
   }
@@ -2474,7 +2474,7 @@ body {
 
   /* Section divider "OR" */
   .section-divider {
-    max-width: 560px;
+    max-width: 720px;
     margin-left: auto;
     margin-right: auto;
     padding: 8px 0;
