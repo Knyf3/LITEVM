@@ -2444,6 +2444,48 @@ body {
     width: 100%;
   }
 
+  /* ── Verify / Guard Portal page ───────────────── */
+  .verify-page {
+    max-width: 560px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .verify-page .card {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  /* Result state cards (found, loading, not-found) */
+  .result-state .card {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  /* Verified success card */
+  .result-success-card {
+    margin: 0;
+  }
+
+  /* Rejected card */
+  .result-rejected-card {
+    margin: 0;
+  }
+
+  /* Section divider "OR" */
+  .section-divider {
+    max-width: 560px;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 8px 0;
+  }
+
+  /* Today's visitors card */
+  #todays-visitors-section.card {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
   /* loading/error overlays on desktop */
   .loading-content,
   .error-content {
