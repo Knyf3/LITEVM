@@ -1267,6 +1267,13 @@ body {
   color: #64748B;
 }
 
+.result-meta-label {
+  font-size: 0.75rem;
+  color: #94A3B8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* Identity card inside result */
 .identity-card {
   margin-bottom: 12px;
@@ -2312,4 +2319,11 @@ body {
   .btn-done:hover {
     background: #16A34A;
   }
+}
+.today-action-time {
+  display: block;
+  font-size: 0.6875rem;
+  color: #94A3B8;
+  margin-top: 4px;
+  padding: 0 12px 8px;
 }

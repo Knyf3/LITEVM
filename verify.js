@@ -187,6 +187,12 @@
     // Meta
     $('#result-visitor-number').textContent = v.visitorNumber || '—';
     $('#result-timestamp').textContent = v.registrationTime || '—';
+    if (v.actionTime) {
+      $('#result-action-time').textContent = v.actionTime;
+      $('#result-action-time-row').classList.remove('hidden');
+    } else {
+      $('#result-action-time-row').classList.add('hidden');
+    }
 
     // Identity
     $('#result-name').textContent = v.fullName || '—';
@@ -592,8 +598,14 @@
           html += '  </div>';
         } else if (isCheckedIn) {
           html += '  <span class="today-status-badge checked-in-badge">Checked In</span>';
+          if (v.actionTime) {
+            html += '  <span class="today-action-time">' + escHtml(v.actionTime) + '</span>';
+          }
         } else {
           html += '  <span class="today-status-badge rejected-badge">Rejected</span>';
+          if (v.actionTime) {
+            html += '  <span class="today-action-time">' + escHtml(v.actionTime) + '</span>';
+          }
         }
 
         html += '</div>';
