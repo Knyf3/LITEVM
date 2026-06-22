@@ -631,44 +631,33 @@
       selfie: state.selfiePhoto.dataUrl,
     };
 
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', CONFIG.API_BASE, true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.timeout = CONFIG.TIMEOUT_MS;
-
-    xhr.onload = function () {
+    fetch(CONFIG.API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    })
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error('Server error ' + response.status);
+      }
+      return response.json();
+    })
+    .then(function (data) {
       state.submitting = false;
       showLoading(false);
 
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          var response = JSON.parse(xhr.responseText);
-          if (response.status === 'ok') {
-            showConfirmation(response.visitorNumber || 'V-' + getDateStamp() + '-001');
-          } else {
-            showError(response.error || 'Submission failed. Please try again.');
-          }
-        } catch (e) {
-          showError('Invalid response from server. Please try again.');
-        }
+      if (data.status === 'ok') {
+        showConfirmation(data.visitorNumber || 'V-' + getDateStamp() + '-001');
       } else {
-        showError('Server error (' + xhr.status + '). Please try again.');
+        showError(data.error || 'Submission failed. Please try again.');
       }
-    };
-
-    xhr.onerror = function () {
+    })
+    .catch(function (err) {
       state.submitting = false;
       showLoading(false);
       showError('Network error. Please check your connection and try again.');
-    };
-
-    xhr.ontimeout = function () {
-      state.submitting = false;
-      showLoading(false);
-      showError('Connection timed out. Please check your internet and try again.');
-    };
-
-    xhr.send(JSON.stringify(payload));
+    });
   }
 
   // ──────────────────────────────────────────────
