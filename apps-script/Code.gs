@@ -22,6 +22,7 @@
  * Handle GET requests.
  * ?action=lookup&visitorNumber=V-XXXX   → returns visitor data
  * ?action=today                           → returns all today's visitors
+ * ?action=destinations                    → returns Destination tab data
  * (no params)                             → health check
  */
 function doGet(e) {
@@ -40,6 +41,10 @@ function doGet(e) {
 
       if (action === 'today') {
         return handleTodayVisitors();
+      }
+
+      if (action === 'destinations') {
+        return handleDestinations();
       }
     }
 
@@ -82,12 +87,12 @@ function doPost(e) {
 }
 
 // ──────────────────────────────────────────────
-// HANDLER: Registration (extracted from existing doPost)
+// HANDLER: Registration
 // ──────────────────────────────────────────────
 
 function handleRegistration(data) {
   // Validate required fields
-  var required = ['fullName', 'idNumber', 'company', 'phone', 'idPhoto', 'selfie'];
+  var required = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
       return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
@@ -98,6 +103,7 @@ function handleRegistration(data) {
   var fullName = sanitizeText(data.fullName);
   var idNumber = sanitizeText(data.idNumber);
   var company = sanitizeText(data.company);
+  var destination = sanitizeText(data.destination);
   var phone = sanitizePhone(data.phone);
 
   // Create Drive folder: VMS/YYYY-MM-DD/VisitorName_Phone/
@@ -117,6 +123,7 @@ function handleRegistration(data) {
     fullName,              // Full Name
     idNumber,              // ID / Passport Number
     company,               // Company Name
+    destination,           // Destination
     phone,                 // Hand Phone Number
     idPhotoUrl,            // ID Photo (Drive URL)
     selfieUrl,             // Selfie (Drive URL)
@@ -143,12 +150,13 @@ function handleLookup(visitorNumber) {
   var data = sheet.getDataRange().getValues();
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
-  // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company, 4=Phone,
-  //          5=ID Photo URL, 6=Selfie URL, 7=Visitor Number, 8=Status
+  // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
+  //          4=Destination, 5=Phone, 6=ID Photo URL, 7=Selfie URL,
+  //          8=Visitor Number, 9=Status, 10=Action Time
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[7] || '').trim();
+    var vn = String(row[8] || '').trim();
 
     if (vn === visitorNumber.trim()) {
       var ts = row[0];
@@ -164,12 +172,13 @@ function handleLookup(visitorNumber) {
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
-        phone: String(row[4] || ''),
-        idPhotoUrl: String(row[5] || ''),
-        selfieUrl: String(row[6] || ''),
-        status: String(row[8] || 'Pending Entry'),
+        destination: String(row[4] || ''),
+        phone: String(row[5] || ''),
+        idPhotoUrl: String(row[6] || ''),
+        selfieUrl: String(row[7] || ''),
+        status: String(row[9] || 'Pending Entry'),
         registrationTime: registrationTime,
-        actionTime: row[9] ? (row[9] instanceof Date ? formatDateForDisplay(row[9]) : String(row[9])) : '',
+        actionTime: row[10] ? (row[10] instanceof Date ? formatDateForDisplay(row[10]) : String(row[10])) : '',
       };
 
       return jsonResponse({ status: 'ok', visitor: visitor }, 200);
@@ -201,21 +210,66 @@ function handleTodayVisitors() {
     // Check if timestamp is today
     if (ts instanceof Date && ts >= todayStart && ts <= todayEnd) {
       visitors.push({
-        visitorNumber: String(row[7] || ''),
+        visitorNumber: String(row[8] || ''),
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
-        phone: String(row[4] || ''),
-        idPhotoUrl: String(row[5] || ''),
-        selfieUrl: String(row[6] || ''),
-        status: String(row[8] || 'Pending Entry'),
+        destination: String(row[4] || ''),
+        phone: String(row[5] || ''),
+        idPhotoUrl: String(row[6] || ''),
+        selfieUrl: String(row[7] || ''),
+        status: String(row[9] || 'Pending Entry'),
         registrationTime: formatDateForDisplay(ts),
-        actionTime: row[9] ? (row[9] instanceof Date ? formatDateForDisplay(row[9]) : String(row[9])) : '',
+        actionTime: row[10] ? (row[10] instanceof Date ? formatDateForDisplay(row[10]) : String(row[10])) : '',
       });
     }
   }
 
   return jsonResponse({ status: 'ok', visitors: visitors }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Destinations (from Destination tab)
+// ──────────────────────────────────────────────
+
+function handleDestinations() {
+  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    return jsonResponse({ status: 'error', message: 'SHEET_ID not configured' }, 500);
+  }
+
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('Destination');
+
+  if (!sheet) {
+    return jsonResponse({ status: 'error', message: 'Destination sheet tab not found' }, 404);
+  }
+
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) {
+    return jsonResponse({ status: 'ok', destinations: [], headers: data.length > 0 ? data[0] : [] }, 200);
+  }
+
+  // First row is headers
+  var headers = data[0];
+  var destinations = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var obj = {};
+    for (var j = 0; j < headers.length; j++) {
+      var key = String(headers[j]).trim().replace(/\s+/g, '_');
+      obj[key] = String(row[j] || '').trim();
+    }
+    destinations.push(obj);
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    headers: headers,
+    destinations: destinations,
+    count: destinations.length,
+  }, 200);
 }
 
 // ──────────────────────────────────────────────
@@ -239,13 +293,13 @@ function handleStatusUpdate(data) {
   var values = dataRange.getValues();
 
   for (var i = 1; i < values.length; i++) {
-    var vn = String(values[i][7] || '').trim();
+    var vn = String(values[i][8] || '').trim();
 
     if (vn === visitorNumber.trim()) {
-      // Update Status column (col 9 = index 8)
-      sheet.getRange(i + 1, 9).setValue(newStatus);
-      // Update Action Time column (col 10 = index 9) to record when check-in/rejection happened
-      sheet.getRange(i + 1, 10).setValue(new Date());
+      // Update Status column (col 10 = index 9)
+      sheet.getRange(i + 1, 10).setValue(newStatus);
+      // Update Action Time column (col 11 = index 10) to record when check-in/rejection happened
+      sheet.getRange(i + 1, 11).setValue(new Date());
 
       return jsonResponse({
         status: 'ok',
@@ -335,6 +389,7 @@ function setupSheet(sheet) {
     'Full Name',
     'ID / Passport Number',
     'Company Name',
+    'Destination',
     'Hand Phone',
     'ID Photo (Drive URL)',
     'Selfie (Drive URL)',

@@ -18,6 +18,12 @@
     cameraActive: { id: false, selfie: false },
     cameraDenied: { id: false, selfie: false },
     submitting: false,
+    // Destinations
+    destinations: [],
+    destinationsLoading: false,
+    destinationsError: null,
+    destinationsAbort: null,
+    fetchRetries: 0,
   };
 
   // ──────────────────────────────────────────────
@@ -32,6 +38,7 @@
     checkOnlineStatus();
     setupFormValidation();
     updateContinueButton();
+    fetchDestinations();
     showStep(1);
   }
 
@@ -122,6 +129,10 @@
       if (!/^\+?\d{7,15}$/.test(cleaned)) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
       return '';
     },
+    destination: function (val) {
+      if (!val || val.trim().length === 0) return 'Please select a destination';
+      return '';
+    },
   };
 
   function setupFormValidation() {
@@ -143,6 +154,19 @@
         updateContinueButton();
       });
     });
+
+    // Destination select validation
+    var destSelect = document.getElementById('destination');
+    if (destSelect) {
+      destSelect.addEventListener('change', function () {
+        validateField('destination');
+        updateContinueButton();
+      });
+      destSelect.addEventListener('blur', function () {
+        validateField('destination');
+        updateContinueButton();
+      });
+    }
   }
 
   function validateField(name) {
@@ -175,7 +199,7 @@
   }
 
   function validateStep1() {
-    var fields = ['fullName', 'idNumber', 'company', 'phone'];
+    var fields = ['fullName', 'idNumber', 'company', 'destination', 'phone'];
     var allValid = true;
     var firstInvalid = null;
 
@@ -199,11 +223,13 @@
     var nameEl = document.getElementById('fullName');
     var idEl = document.getElementById('idNumber');
     var compEl = document.getElementById('company');
+    var destEl = document.getElementById('destination');
     var phoneEl = document.getElementById('phone');
     return {
       fullName: nameEl ? nameEl.value : '',
       idNumber: idEl ? idEl.value : '',
       company: compEl ? compEl.value : '',
+      destination: destEl ? destEl.value : '',
       phone: phoneEl ? phoneEl.value : '',
     };
   }
@@ -216,6 +242,7 @@
     var allValid = validators.fullName(data.fullName) === '' &&
                    validators.idNumber(data.idNumber) === '' &&
                    validators.company(data.company) === '' &&
+                   validators.destination(data.destination) === '' &&
                    validators.phone(data.phone) === '';
 
     if (allValid) {
@@ -536,6 +563,159 @@
   }
 
   // ──────────────────────────────────────────────
+  // DESTINATIONS FETCH
+  // ──────────────────────────────────────────────
+
+  function fetchDestinations() {
+    var select = document.getElementById('destination');
+    if (!select) return;
+
+    // Abort previous request if any
+    if (state.destinationsAbort) {
+      state.destinationsAbort.abort();
+    }
+
+    state.destinationsLoading = true;
+    state.destinationsError = null;
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>Loading destinations...</option>';
+
+    var controller = new AbortController();
+    state.destinationsAbort = controller;
+
+    var timeoutId = setTimeout(function () {
+      controller.abort();
+    }, 8000);
+
+    fetch(CONFIG.API_BASE + '?action=destinations', {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+    })
+    .then(function (response) {
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error('Server responded with status ' + response.status);
+      }
+      return response.text();
+    })
+    .then(function (text) {
+      state.destinationsLoading = false;
+      state.destinationsAbort = null;
+
+      var parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        throw new Error('Invalid JSON response');
+      }
+
+      if (parsed.status !== 'ok') {
+        throw new Error(parsed.message || 'Failed to load destinations');
+      }
+
+      var destArray = [];
+
+      // Parse destinations from response format:
+      // { destinations: [ { Pertamina: "BRI" }, ... ] }
+      if (parsed.destinations && parsed.destinations.length > 0) {
+        for (var i = 0; i < parsed.destinations.length; i++) {
+          var item = parsed.destinations[i];
+          // Get the first value from each item object
+          for (var key in item) {
+            if (item.hasOwnProperty(key)) {
+              var val = item[key].trim();
+              if (val.length > 0) {
+                destArray.push(val);
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      state.destinations = destArray;
+      state.fetchRetries = 0;
+
+      if (destArray.length === 0) {
+        state.destinationsError = 'No destinations configured';
+        select.disabled = true;
+        select.innerHTML = '<option value="" disabled selected>No destinations available</option>';
+        var errorEl = document.getElementById('destination-error');
+        if (errorEl) {
+          errorEl.textContent = 'No destinations configured';
+          errorEl.classList.add('visible');
+        }
+        updateContinueButton();
+        return;
+      }
+
+      // Populate select
+      select.disabled = false;
+      var html = '<option value="" disabled selected>Select destination</option>';
+      for (var j = 0; j < destArray.length; j++) {
+        var escaped = destArray[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        html += '<option value="' + escaped + '">' + escaped + '</option>';
+      }
+      select.innerHTML = html;
+      select.classList.remove('error');
+      select.classList.remove('valid');
+
+      var errorEl = document.getElementById('destination-error');
+      if (errorEl) {
+        errorEl.textContent = '';
+        errorEl.classList.remove('visible');
+      }
+
+      updateContinueButton();
+    })
+    .catch(function (err) {
+      clearTimeout(timeoutId);
+      state.destinationsLoading = false;
+      state.destinationsAbort = null;
+
+      if (err.name === 'AbortError') return;
+
+      state.fetchRetries++;
+      state.destinationsError = err.message || 'Failed to load destinations';
+
+      if (state.fetchRetries < 3) {
+        // Auto-retry
+        select.innerHTML = '<option value="" disabled selected>Retrying... (' + state.fetchRetries + '/3)</option>';
+        setTimeout(fetchDestinations, 1500);
+      } else {
+        select.disabled = true;
+        select.innerHTML = '<option value="" disabled selected>Failed to load</option>';
+        var errorEl = document.getElementById('destination-error');
+        if (errorEl) {
+          errorEl.textContent = 'Failed to load destinations. ';
+          var retryLink = document.createElement('a');
+          retryLink.href = '#';
+          retryLink.textContent = 'Tap to retry';
+          retryLink.style.color = '#4361ee';
+          retryLink.style.textDecoration = 'underline';
+          retryLink.style.cursor = 'pointer';
+          retryLink.onclick = function (e) {
+            e.preventDefault();
+            state.fetchRetries = 0;
+            fetchDestinations();
+          };
+          errorEl.innerHTML = '';
+          errorEl.appendChild(document.createTextNode('Failed to load destinations. '));
+          errorEl.appendChild(retryLink);
+          errorEl.classList.add('visible');
+        }
+        updateContinueButton();
+      }
+    });
+  }
+
+  function retryFetchDestinations() {
+    state.fetchRetries = 0;
+    fetchDestinations();
+  }
+
+  // ──────────────────────────────────────────────
   // STEP 2 CONTINUE BUTTON
   // ──────────────────────────────────────────────
   function updateStep2Continue() {
@@ -565,6 +745,7 @@
     document.getElementById('review-name').textContent = data.fullName || '—';
     document.getElementById('review-id').textContent = data.idNumber || '—';
     document.getElementById('review-company').textContent = data.company || '—';
+    document.getElementById('review-destination').textContent = data.destination || '—';
     document.getElementById('review-phone').textContent = data.phone || '—';
 
     var idThumb = document.getElementById('review-id-thumb');
@@ -626,6 +807,7 @@
       fullName: data.fullName.trim(),
       idNumber: data.idNumber.trim(),
       company: data.company.trim(),
+      destination: data.destination.trim(),
       phone: data.phone.trim(),
       idPhoto: state.idPhoto.dataUrl,
       selfie: state.selfiePhoto.dataUrl,
@@ -764,6 +946,7 @@
     uploadPhoto: uploadPhoto,
     submitRegistration: submitRegistration,
     dismissError: dismissError,
+    retryFetchDestinations: retryFetchDestinations,
     close: close,
   };
 
