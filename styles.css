@@ -2249,11 +2249,6 @@ body {
 
 /* Responsive: wrap verify page in container like registration */
 @media (min-width: 480px) {
-  body:has(.verify-page) {
-    padding: 20px;
-    background: #E2E8F0;
-  }
-
   .verify-page {
     max-width: 540px;
     margin: 0 auto;
@@ -2277,20 +2272,6 @@ body {
 
   .verify-page .page-footer {
     padding: 16px;
-  }
-}
-
-@media (min-width: 768px) {
-  body:has(.verify-page) {
-    background: linear-gradient(135deg, #E2E8F0 0%, #F1F5F9 100%);
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding: 40px 20px;
-  }
-
-  .verify-page {
-    max-width: 540px;
   }
 }
 
