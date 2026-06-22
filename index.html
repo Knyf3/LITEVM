@@ -142,8 +142,21 @@
             </svg>
             <input type="tel" id="phone" name="phone" class="form-input" placeholder="e.g. +60 12-345 6789" required minlength="8" maxlength="20" autocomplete="tel" aria-describedby="phone-error phone-hint">
           </div>
-          <p id="phone-hint" class="field-hint">WhatsApp notification will be sent to this number</p>
+          <p id="phone-hint" class="field-hint">You will receive your visitor number via phone</p>
           <p id="phone-error" class="field-error" role="alert"></p>
+        </div>
+
+        <!-- Email -->
+        <div class="field-group" id="field-email">
+          <label for="email" class="field-label">Email Address</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <path d="M22 4L12 13 2 4"/>
+            </svg>
+            <input type="email" id="email" name="email" class="form-input" placeholder="e.g. ahmad@example.com" required autocomplete="email" aria-describedby="email-error">
+          </div>
+          <p id="email-error" class="field-error" role="alert"></p>
         </div>
       </form>
     </div>
@@ -417,6 +430,11 @@
           <span class="review-label">Phone</span>
           <span class="review-value" id="review-phone">—</span>
         </div>
+        <div class="review-divider"></div>
+        <div class="review-row">
+          <span class="review-label">Email</span>
+          <span class="review-value" id="review-email">—</span>
+        </div>
       </div>
 
       <!-- Photos Review -->
@@ -486,16 +504,15 @@
         <span class="visitor-number-value" id="visitor-number">V-XXXXXXXX-XXX</span>
       </div>
 
-      <!-- WhatsApp Badge -->
+      <!-- Email Confirmation Badge -->
       <div class="whatsapp-badge">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#25D366" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 21l1.65-3.8A9.96 9.96 0 013 12c0-5.52 4.02-10 9-10s9 4.48 9 10-4.02 10-9 10a9.04 9.04 0 01-5.3-1.7L3 21z"/>
-          <path d="M11.5 7.5l1 1.5a6 6 0 002 2l1.5 1"/>
-          <path d="M8 8.5a6.5 6.5 0 006 6"/>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#4361EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <path d="M22 4L12 13 2 4"/>
         </svg>
         <div class="whatsapp-text">
-          <strong>WhatsApp Notification</strong>
-          <span>You will receive your visitor number via WhatsApp shortly.</span>
+          <strong>Email Confirmation</strong>
+          <span>A confirmation email will be sent to your inbox shortly.</span>
         </div>
       </div>
 
@@ -503,7 +520,7 @@
       <div class="next-steps">
         <h3 class="next-steps-title">Next Steps</h3>
         <ol class="next-steps-list">
-          <li>Check your WhatsApp within 2 minutes</li>
+          <li>Check your email within 2 minutes</li>
           <li>Show the visitor number at the entrance</li>
           <li>Guard will verify and grant access</li>
         </ol>

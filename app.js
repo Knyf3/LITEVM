@@ -110,33 +110,38 @@
   // FORM VALIDATION
   // ──────────────────────────────────────────────
   var validators = {
-    fullName: function (val) {
-      if (!val || val.trim().length < 2) return 'Please enter your full name';
-      return '';
-    },
-    idNumber: function (val) {
-      if (!val || val.trim().length < 6) return 'Please enter a valid ID or passport number';
-      if (!/^[a-zA-Z0-9\s\-\.\/]+$/.test(val.trim())) return 'Only letters, numbers, hyphens allowed';
-      return '';
-    },
-    company: function (val) {
-      if (!val || val.trim().length < 2) return 'Please enter your company name';
-      return '';
-    },
-    phone: function (val) {
-      if (!val || val.trim().length < 8) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
-      var cleaned = val.trim().replace(/[\s\-\(\)]/g, '');
-      if (!/^\+?\d{7,15}$/.test(cleaned)) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
-      return '';
-    },
-    destination: function (val) {
-      if (!val || val.trim().length === 0) return 'Please select a destination';
-      return '';
-    },
-  };
+      fullName: function (val) {
+        if (!val || val.trim().length < 2) return 'Please enter your full name';
+        return '';
+      },
+      idNumber: function (val) {
+        if (!val || val.trim().length < 6) return 'Please enter a valid ID or passport number';
+        if (!/^[a-zA-Z0-9\s\-\\.\/]+$/.test(val.trim())) return 'Only letters, numbers, hyphens allowed';
+        return '';
+      },
+      company: function (val) {
+        if (!val || val.trim().length < 2) return 'Please enter your company name';
+        return '';
+      },
+      phone: function (val) {
+        if (!val || val.trim().length < 8) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
+        var cleaned = val.trim().replace(/[\s\-\\(\)]/g, '');
+        if (!/^\+?\d{7,15}$/.test(cleaned)) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
+        return '';
+      },
+      email: function (val) {
+        if (!val || val.trim() === '') return 'Please enter your email address';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim())) return 'Please enter a valid email address';
+        return '';
+      },
+      destination: function (val) {
+        if (!val || val.trim().length === 0) return 'Please select a destination';
+        return '';
+      },
+    };
 
   function setupFormValidation() {
-    var fields = ['fullName', 'idNumber', 'company', 'phone'];
+    var fields = ['fullName', 'idNumber', 'company', 'phone', 'email'];
     fields.forEach(function (name) {
       var input = document.getElementById(name);
       if (!input) return;
@@ -199,7 +204,7 @@
   }
 
   function validateStep1() {
-    var fields = ['fullName', 'idNumber', 'company', 'destination', 'phone'];
+    var fields = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'email'];
     var allValid = true;
     var firstInvalid = null;
 
@@ -225,12 +230,14 @@
     var compEl = document.getElementById('company');
     var destEl = document.getElementById('destination');
     var phoneEl = document.getElementById('phone');
+    var emailEl = document.getElementById('email');
     return {
       fullName: nameEl ? nameEl.value : '',
       idNumber: idEl ? idEl.value : '',
       company: compEl ? compEl.value : '',
       destination: destEl ? destEl.value : '',
       phone: phoneEl ? phoneEl.value : '',
+      email: emailEl ? emailEl.value : '',
     };
   }
 
@@ -243,7 +250,8 @@
                    validators.idNumber(data.idNumber) === '' &&
                    validators.company(data.company) === '' &&
                    validators.destination(data.destination) === '' &&
-                   validators.phone(data.phone) === '';
+                   validators.phone(data.phone) === '' &&
+                   validators.email(data.email) === '';
 
     if (allValid) {
       btn.disabled = false;
@@ -747,6 +755,7 @@
     document.getElementById('review-company').textContent = data.company || '—';
     document.getElementById('review-destination').textContent = data.destination || '—';
     document.getElementById('review-phone').textContent = data.phone || '—';
+    document.getElementById('review-email').textContent = data.email || '—';
 
     var idThumb = document.getElementById('review-id-thumb');
     var idBadge = document.getElementById('review-id-badge');
@@ -809,6 +818,7 @@
       company: data.company.trim(),
       destination: data.destination.trim(),
       phone: data.phone.trim(),
+      email: data.email.trim(),
       idPhoto: state.idPhoto.dataUrl,
       selfie: state.selfiePhoto.dataUrl,
       sheetId: CONFIG.SHEET_ID,

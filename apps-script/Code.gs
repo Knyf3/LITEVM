@@ -7,8 +7,6 @@
  *   3. Set script properties:
  *      - SHEET_ID: Google Sheet ID (optional, defaults to active spreadsheet)
  *      - DRIVE_FOLDER_ID: Parent Drive folder ID for VMS uploads
- *      - WHATSAPP_TOKEN: WhatsApp Business API token
- *      - WHATSAPP_PHONE_ID: WhatsApp Business phone number ID
  *   4. Deploy > New deployment > Web App
  *   5. Set "Execute as" to "Me" and "Who has access" to "Anyone"
  *   6. Copy the Web App URL into frontend config.js as API_BASE
@@ -60,7 +58,7 @@ function doGet(e) {
 
 /**
  * Handle POST requests.
- * Existing: registration (fullName, idNumber, company, phone, idPhoto, selfie)
+ * Existing: registration (fullName, idNumber, company, destination, phone, email, idPhoto, selfie)
  * New: mode=updateStatus with visitorNumber and status
  */
 function doPost(e) {
@@ -93,7 +91,7 @@ function doPost(e) {
 
 function handleRegistration(data) {
   // Validate required fields
-  var required = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'idPhoto', 'selfie'];
+  var required = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
       return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
@@ -106,6 +104,7 @@ function handleRegistration(data) {
   var company = sanitizeText(data.company);
   var destination = sanitizeText(data.destination);
   var phone = sanitizePhone(data.phone);
+  var email = sanitizeText(data.email);
 
   // Create Drive folder: VMS/YYYY-MM-DD/VisitorName_Phone/
   var folder = createVisitorFolder(fullName, phone);
@@ -120,23 +119,24 @@ function handleRegistration(data) {
   // Write to Google Sheet
   var sheet = getOrCreateSheet(data.sheetId);
   sheet.appendRow([
-    new Date(),            // Timestamp
-    fullName,              // Full Name
-    idNumber,              // ID / Passport Number
-    company,               // Company Name
-    destination,           // Destination
-    phone,                 // Hand Phone Number
-    idPhotoUrl,            // ID Photo (Drive URL)
-    selfieUrl,             // Selfie (Drive URL)
-    visitorNumber,         // Visitor Number
-    'Pending Entry'        // Status
+    new Date(),            // 0 Timestamp
+    fullName,              // 1 Full Name
+    idNumber,              // 2 ID / Passport Number
+    company,               // 3 Company Name
+    destination,           // 4 Destination
+    phone,                 // 5 Hand Phone Number
+    email,                 // 6 Email (NEW)
+    idPhotoUrl,            // 7 ID Photo (Drive URL)
+    selfieUrl,             // 8 Selfie (Drive URL)
+    visitorNumber,         // 9 Visitor Number
+    'Pending Entry'        // 10 Status
   ]);
 
-  // Send WhatsApp notification (non-blocking — catch errors)
+  // Send email confirmation (non-blocking — catch errors)
   try {
-    sendWhatsAppNotification(phone, visitorNumber, fullName);
-  } catch (waErr) {
-    console.warn('WhatsApp notification failed: ' + waErr.message);
+    sendEmailConfirmation(email, visitorNumber, fullName);
+  } catch (emailErr) {
+    console.warn('Email notification failed: ' + emailErr.message);
   }
 
   return jsonResponse({ visitorNumber: visitorNumber, status: 'ok' }, 200);
@@ -152,12 +152,12 @@ function handleLookup(visitorNumber, sheetId) {
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
   // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
-  //          4=Destination, 5=Phone, 6=ID Photo URL, 7=Selfie URL,
-  //          8=Visitor Number, 9=Status, 10=Action Time
+  //          4=Destination, 5=Phone, 6=Email, 7=ID Photo URL, 8=Selfie URL,
+  //          9=Visitor Number, 10=Status, 11=Action Time
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[8] || '').trim();
+    var vn = String(row[9] || '').trim();
 
     if (vn === visitorNumber.trim()) {
       var ts = row[0];
@@ -175,11 +175,12 @@ function handleLookup(visitorNumber, sheetId) {
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
         phone: String(row[5] || ''),
-        idPhotoUrl: String(row[6] || ''),
-        selfieUrl: String(row[7] || ''),
-        status: String(row[9] || 'Pending Entry'),
+        email: String(row[6] || ''),
+        idPhotoUrl: String(row[7] || ''),
+        selfieUrl: String(row[8] || ''),
+        status: String(row[10] || 'Pending Entry'),
         registrationTime: registrationTime,
-        actionTime: row[10] ? (row[10] instanceof Date ? formatDateForDisplay(row[10]) : String(row[10])) : '',
+        actionTime: row[11] ? (row[11] instanceof Date ? formatDateForDisplay(row[11]) : String(row[11])) : '',
       };
 
       return jsonResponse({ status: 'ok', visitor: visitor }, 200);
@@ -211,17 +212,18 @@ function handleTodayVisitors(sheetId) {
     // Check if timestamp is today
     if (ts instanceof Date && ts >= todayStart && ts <= todayEnd) {
       visitors.push({
-        visitorNumber: String(row[8] || ''),
+        visitorNumber: String(row[9] || ''),
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
         phone: String(row[5] || ''),
-        idPhotoUrl: String(row[6] || ''),
-        selfieUrl: String(row[7] || ''),
-        status: String(row[9] || 'Pending Entry'),
+        email: String(row[6] || ''),
+        idPhotoUrl: String(row[7] || ''),
+        selfieUrl: String(row[8] || ''),
+        status: String(row[10] || 'Pending Entry'),
         registrationTime: formatDateForDisplay(ts),
-        actionTime: row[10] ? (row[10] instanceof Date ? formatDateForDisplay(row[10]) : String(row[10])) : '',
+        actionTime: row[11] ? (row[11] instanceof Date ? formatDateForDisplay(row[11]) : String(row[11])) : '',
       });
     }
   }
@@ -296,13 +298,13 @@ function handleStatusUpdate(data) {
   var values = dataRange.getValues();
 
   for (var i = 1; i < values.length; i++) {
-    var vn = String(values[i][8] || '').trim();
+    var vn = String(values[i][9] || '').trim();
 
     if (vn === visitorNumber.trim()) {
-      // Update Status column (col 10 = index 9)
-      sheet.getRange(i + 1, 10).setValue(newStatus);
-      // Update Action Time column (col 11 = index 10) to record when check-in/rejection happened
-      sheet.getRange(i + 1, 11).setValue(new Date());
+      // Update Status column (col 11 = index 10)
+      sheet.getRange(i + 1, 11).setValue(newStatus);
+      // Update Action Time column (col 12 = index 11) to record when check-in/rejection happened
+      sheet.getRange(i + 1, 12).setValue(new Date());
 
       return jsonResponse({
         status: 'ok',
@@ -397,6 +399,7 @@ function setupSheet(sheet) {
     'Company Name',
     'Destination',
     'Hand Phone',
+    'Email',
     'ID Photo (Drive URL)',
     'Selfie (Drive URL)',
     'Visitor Number',
@@ -520,97 +523,28 @@ function generateVisitorNumber() {
 }
 
 // ──────────────────────────────────────────────
-// WHATSAPP NOTIFICATION
+// EMAIL CONFIRMATION
 // ──────────────────────────────────────────────
 
 /**
- * Send a WhatsApp notification via WhatsApp Business Cloud API.
- * Uses script properties: WHATSAPP_TOKEN, WHATSAPP_PHONE_ID
+ * Send email confirmation via MailApp.sendEmail().
+ * MailApp is a built-in Apps Script service — no setup, no tokens needed.
  */
-function sendWhatsAppNotification(phone, visitorNumber, fullName) {
-  var token = PropertiesService.getScriptProperties().getProperty('WHATSAPP_TOKEN');
-  var phoneId = PropertiesService.getScriptProperties().getProperty('WHATSAPP_PHONE_ID');
+function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
+  var subject = 'Visitor Registration Confirmed — ' + visitorNumber;
+  var body = 'Dear ' + fullName + ',\n\n'
+    + 'Your visitor registration has been confirmed.\n\n'
+    + 'Visitor Number: ' + visitorNumber + '\n\n'
+    + 'Please show this number at the guard house for entry.\n\n'
+    + 'Thank you.';
 
-  if (!token || !phoneId) {
-    console.log('WhatsApp not configured. Skipping notification.');
-    console.log('Would send to ' + phone + ': Visitor number ' + visitorNumber + ' for ' + fullName);
-    return;
-  }
+  MailApp.sendEmail({
+    to: toEmail,
+    subject: subject,
+    body: body,
+  });
 
-  // Clean phone number: remove non-digits, ensure it starts with country code
-  var cleanPhone = phone.replace(/[^0-9]/g, '');
-  if (cleanPhone.length < 10) {
-    throw new Error('Invalid phone number format');
-  }
-
-  var url = 'https://graph.facebook.com/v18.0/' + phoneId + '/messages';
-
-  var messageData = {
-    messaging_product: 'whatsapp',
-    to: cleanPhone,
-    type: 'template',
-    template: {
-      name: 'visitor_registration_confirmation',
-      language: { code: 'en' },
-      components: [
-        {
-          type: 'body',
-          parameters: [
-            { type: 'text', text: fullName },
-            { type: 'text', text: visitorNumber }
-          ]
-        }
-      ]
-    }
-  };
-
-  // If template not yet created, send a text message as fallback
-  var textMessage = {
-    messaging_product: 'whatsapp',
-    to: cleanPhone,
-    type: 'text',
-    text: {
-      body: 'Hi ' + fullName + ',\n\nYour visitor registration is confirmed!\n\nVisitor Number: ' + visitorNumber + '\n\nPlease show this number at the guard house for entry.\n\nThank you.'
-    }
-  };
-
-  var payload = messageData;
-
-  try {
-    var response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true,
-    });
-
-    var responseCode = response.getResponseCode();
-    if (responseCode >= 200 && responseCode < 300) {
-      console.log('WhatsApp notification sent to ' + cleanPhone);
-    } else {
-      // If template fails, try text fallback
-      console.warn('WhatsApp template failed (code ' + responseCode + '), trying text fallback...');
-      try {
-        var fallbackResponse = UrlFetchApp.fetch(url, {
-          method: 'post',
-          headers: {
-            'Authorization': 'Bearer ' + token,
-            'Content-Type': 'application/json',
-          },
-          payload: JSON.stringify(textMessage),
-          muteHttpExceptions: true,
-        });
-        console.log('WhatsApp text fallback sent to ' + cleanPhone + ': ' + fallbackResponse.getResponseCode());
-      } catch (fallbackErr) {
-        console.warn('WhatsApp text fallback also failed: ' + fallbackErr.message);
-      }
-    }
-  } catch (fetchErr) {
-    throw new Error('WhatsApp API call failed: ' + fetchErr.message);
-  }
+  console.log('Email confirmation sent to ' + toEmail);
 }
 
 // ──────────────────────────────────────────────
@@ -658,8 +592,6 @@ function initialize() {
   console.log('Set the following Script Properties if needed:');
   console.log('  SHEET_ID - Google Sheet ID (optional)');
   console.log('  DRIVE_FOLDER_ID - Parent Drive folder ID for VMS uploads');
-  console.log('  WHATSAPP_TOKEN - WhatsApp Business API token');
-  console.log('  WHATSAPP_PHONE_ID - WhatsApp Business phone number ID');
 
   return 'Initialization complete. Check the logs for details.';
 }
