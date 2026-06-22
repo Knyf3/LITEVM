@@ -198,7 +198,7 @@
     var idImg = $('#result-photo-id-img');
     var selfieImg = $('#result-photo-selfie-img');
     if (v.idPhotoUrl) {
-      idImg.src = v.idPhotoUrl;
+      idImg.src = driveThumbUrl(v.idPhotoUrl);
       idImg.alt = 'ID Photo of ' + (v.fullName || 'visitor');
       idImg.classList.remove('photo-error');
     } else {
@@ -207,7 +207,7 @@
       idImg.classList.add('photo-error');
     }
     if (v.selfieUrl) {
-      selfieImg.src = v.selfieUrl;
+      selfieImg.src = driveThumbUrl(v.selfieUrl);
       selfieImg.alt = 'Selfie of ' + (v.fullName || 'visitor');
       selfieImg.classList.remove('photo-error');
     } else {
@@ -216,7 +216,7 @@
       selfieImg.classList.add('photo-error');
     }
 
-    // Photos array for lightbox
+    // Photos array for lightbox (use ORIGINAL Drive URLs for lightbox)
     state.photos = [];
     if (v.idPhotoUrl) state.photos.push({ label: 'ID Photo — ' + (v.fullName || ''), url: v.idPhotoUrl });
     if (v.selfieUrl) state.photos.push({ label: 'Selfie — ' + (v.fullName || ''), url: v.selfieUrl });
@@ -742,8 +742,22 @@
   // ──────────────────────────────────────────────
   // HELPERS
   // ──────────────────────────────────────────────
+
+  /**
+   * Convert a Google Drive view URL to a thumbnail URL for direct <img> display.
+   * Input:  https://drive.google.com/file/d/FILE_ID/view?usp=drivesdk
+   * Output: https://drive.google.com/thumbnail?id=FILE_ID&sz=w400
+   */
+  function driveThumbUrl(driveUrl) {
+    if (!driveUrl) return '';
+    var match = driveUrl.match(/\/file\/d\/([^\/]+)/);
+    if (match && match[1]) {
+      return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w400';
+    }
+    return driveUrl;
+  }
+
   function formatTimestamp(date) {
-    if (typeof date === 'string') return date;
     var d = date || new Date();
     var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     var hours = d.getHours();
