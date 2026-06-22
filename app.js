@@ -581,8 +581,8 @@
 
     var selfieThumb = document.getElementById('review-selfie-thumb');
     var selfieBadge = document.getElementById('review-selfie-badge');
-    if (state.selfie) {
-      selfieThumb.innerHTML = '<img src="' + state.selfie.dataUrl + '" alt="Selfie Photo">';
+    if (state.selfiePhoto) {
+      selfieThumb.innerHTML = '<img src="' + state.selfiePhoto.dataUrl + '" alt="Selfie Photo">';
       selfieBadge.textContent = 'Captured ✓';
       selfieBadge.classList.add('captured');
     } else {
@@ -598,7 +598,7 @@
   function submitRegistration() {
     if (state.submitting) return;
 
-    if (!state.idPhoto || !state.selfie) {
+    if (!state.idPhoto || !state.selfiePhoto) {
       showError('Please capture both photos before submitting.');
       return;
     }
@@ -628,7 +628,7 @@
       company: data.company.trim(),
       phone: data.phone.trim(),
       idPhoto: state.idPhoto.dataUrl,
-      selfie: state.selfie.dataUrl,
+      selfie: state.selfiePhoto.dataUrl,
     };
 
     var xhr = new XMLHttpRequest();
