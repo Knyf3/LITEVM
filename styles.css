@@ -68,6 +68,86 @@ body {
   justify-content: center;
 }
 
+/* --- Guard Login Overlay --- */
+.guard-login {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(15, 23, 42, 0.8);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.guard-login-card {
+  background: #FFFFFF;
+  border-radius: 16px;
+  padding: 40px 28px 28px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  animation: guardFadeIn 0.3s ease;
+}
+
+@keyframes guardFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.guard-login-icon {
+  margin-bottom: 16px;
+}
+
+.guard-login-icon svg {
+  display: inline-block;
+}
+
+.guard-login-title {
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: #1E293B;
+  margin-bottom: 4px;
+}
+
+.guard-login-subtitle {
+  font-size: 0.875rem;
+  color: #64748B;
+  margin-bottom: 24px;
+}
+
+.guard-login-input-wrapper {
+  margin-bottom: 16px;
+}
+
+.guard-login .form-input {
+  text-align: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 4px;
+  padding: 14px 16px;
+  border-radius: 10px;
+}
+
+.guard-login .field-error {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.guard-login .btn-primary {
+  margin-top: 4px;
+}
+
 /* --- Step Visibility --- */
 .step {
   display: none;

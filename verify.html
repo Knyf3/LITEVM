@@ -21,6 +21,30 @@
 
   <!-- ===== MAIN VERIFY PAGE ===== -->
   <div id="verify-page" class="verify-page">
+
+    <!-- ===== GUARD LOGIN OVERLAY ===== -->
+    <div id="guard-login" class="guard-login">
+      <div class="guard-login-card">
+        <div class="guard-login-icon">
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#4361ee" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <h2 class="guard-login-title">Guard Portal</h2>
+        <p class="guard-login-subtitle">Enter PIN to access</p>
+        <div class="guard-login-input-wrapper">
+          <input type="password" id="guard-pin-input" class="form-input"
+                 placeholder="Enter PIN" maxlength="10" inputmode="numeric" pattern="[0-9]*"
+                 autocomplete="off">
+        </div>
+        <p id="guard-login-error" class="field-error visible" style="display:none">Invalid PIN</p>
+        <button id="btn-guard-login" class="btn-primary" disabled>
+          <span>Access Guard Portal</span>
+        </button>
+      </div>
+    </div>
+
     <!-- Header -->
     <header class="page-header">
       <div class="header-logo">

@@ -28,6 +28,11 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
+    // Check if already authenticated this session
+    if (!sessionStorage.getItem('guardAuth')) {
+      showLogin();
+      return;
+    }
     checkOnlineStatus();
     setupSearchInput();
     loadTodayVisitors();
@@ -38,6 +43,78 @@
       var inp = $('#search-input');
       if (inp) inp.focus();
     }, 300);
+  }
+
+  // ──────────────────────────────────────────────
+  // GUARD AUTH
+  // ──────────────────────────────────────────────
+  function showLogin() {
+    var overlay = $('#guard-login');
+    var page = $('#verify-page');
+    if (overlay) overlay.style.display = 'flex';
+    if (page) page.style.overflow = 'hidden';
+    // Focus PIN input
+    setTimeout(function () {
+      var input = $('#guard-pin-input');
+      if (input) input.focus();
+    }, 100);
+  }
+
+  function hideLogin() {
+    var overlay = $('#guard-login');
+    var page = $('#verify-page');
+    if (overlay) overlay.style.display = 'none';
+    if (page) page.style.overflow = '';
+  }
+
+  function setupGuardLogin() {
+    var input = $('#guard-pin-input');
+    var btn = $('#btn-guard-login');
+    var error = $('#guard-login-error');
+    if (!input || !btn || !error) return;
+
+    input.addEventListener('input', function () {
+      var val = input.value.trim();
+      btn.disabled = val.length < 4;
+      // Hide error while typing
+      error.style.display = 'none';
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!btn.disabled) attemptLogin();
+      }
+    });
+
+    btn.addEventListener('click', function () {
+      attemptLogin();
+    });
+  }
+
+  function attemptLogin() {
+    var input = $('#guard-pin-input');
+    var error = $('#guard-login-error');
+    if (!input || !error) return;
+
+    var pin = input.value.trim();
+    if (pin === CONFIG.GUARD_PIN) {
+      sessionStorage.setItem('guardAuth', 'true');
+      hideLogin();
+      // Run the normal init now
+      checkOnlineStatus();
+      setupSearchInput();
+      loadTodayVisitors();
+      setInterval(loadTodayVisitors, 30000);
+      setTimeout(function () {
+        var inp = $('#search-input');
+        if (inp) inp.focus();
+      }, 300);
+    } else {
+      error.style.display = 'block';
+      input.value = '';
+      input.focus();
+    }
   }
 
   // ──────────────────────────────────────────────
@@ -849,9 +926,13 @@
   };
 
   // Auto-init on DOM ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
+  function onReady() {
+    setupGuardLogin();
     init();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onReady);
+  } else {
+    onReady();
   }
 })();

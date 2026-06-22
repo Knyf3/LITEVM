@@ -10,4 +10,5 @@ const CONFIG = {
   PHOTO_MAX_DIMENSION: 1024,  // max pixels on longest edge
   PHOTO_JPEG_QUALITY: 0.8,
   TIMEOUT_MS: 30000,
+  GUARD_PIN: '1234',
 };
