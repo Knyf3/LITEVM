@@ -926,6 +926,30 @@
   // ──────────────────────────────────────────────
   function showConfirmation(visitorNumber) {
     document.getElementById('visitor-number').textContent = visitorNumber;
+
+    // Generate QR code
+    var qrContainer = document.getElementById('qrcode-container');
+    if (qrContainer) {
+      qrContainer.innerHTML = '';
+      try {
+        if (typeof QRCode !== 'undefined') {
+          QRCode.toCanvas(qrContainer, visitorNumber, {
+            width: 180,
+            height: 180,
+            margin: 2,
+            color: {
+              dark: '#1E293B',
+              light: '#FFFFFF',
+            },
+          }, function (err) {
+            if (err) console.warn('QR generation error:', err);
+          });
+        }
+      } catch (e) {
+        console.warn('QR Code library not available:', e.message);
+      }
+    }
+
     showStep(4);
   }
 

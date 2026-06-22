@@ -2365,3 +2365,37 @@ body {
   margin-top: 4px;
   padding: 0 12px 8px;
 }
+
+/* --- QR Code --- */
+.qrcode-section {
+  display: flex;
+  justify-content: center;
+  margin: 24px 0;
+}
+
+.qrcode-card {
+  background: #FFFFFF;
+  border: 1.5px solid #E2E8F0;
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+#qrcode-container canvas {
+  display: block;
+  margin: 0 auto;
+  border-radius: 8px;
+}
+
+.qrcode-label {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #64748B;
+  line-height: 1.4;
+}
+
+/* Dark mode / contrast for the QR card text */
+.qrcode-card .qrcode-label {
+  color: #64748B;
+}

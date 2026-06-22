@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect x=%2210%22 y=%2218%22 width=%2228%22 height=%2226%22 rx=%222%22 fill=%22%234361ee%22/><path d=%22M6 20L24 6l18 14%22 fill=%22%234361ee%22/></svg>">
 </head>
 <body>
@@ -498,6 +499,14 @@
       <h2 class="confirmation-title">Registration Complete!</h2>
       <p class="confirmation-subtitle">Your details have been submitted and recorded.</p>
 
+      <!-- QR Code -->
+      <div class="qrcode-section">
+        <div class="qrcode-card">
+          <div id="qrcode-container"></div>
+          <p class="qrcode-label">Show this QR code at the entrance</p>
+        </div>
+      </div>
+
       <!-- Visitor Number -->
       <div class="visitor-number-card">
         <span class="visitor-number-label">Your Visitor Number</span>
@@ -521,7 +530,7 @@
         <h3 class="next-steps-title">Next Steps</h3>
         <ol class="next-steps-list">
           <li>Check your email within 2 minutes</li>
-          <li>Show the visitor number at the entrance</li>
+          <li>Show QR code at the entrance</li>
           <li>Guard will verify and grant access</li>
         </ol>
       </div>
