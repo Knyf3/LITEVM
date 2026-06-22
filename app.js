@@ -630,33 +630,75 @@
       idPhoto: state.idPhoto.dataUrl,
       selfie: state.selfiePhoto.dataUrl,
     };
+    var jsonBody = JSON.stringify(payload);
+
+    // Use AbortController for timeout
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () {
+      controller.abort();
+    }, CONFIG.TIMEOUT_MS || 30000);
 
     fetch(CONFIG.API_BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload),
+      body: jsonBody,
       redirect: 'follow',
+      signal: controller.signal,
     })
     .then(function (response) {
+      clearTimeout(timeoutId);
       if (!response.ok) {
-        throw new Error('Server error ' + response.status);
+        throw new Error('Server responded with status ' + response.status);
       }
-      return response.json();
+      return response.text();
     })
-    .then(function (data) {
+    .then(function (text) {
       state.submitting = false;
       showLoading(false);
 
-      if (data.status === 'ok') {
-        showConfirmation(data.visitorNumber || 'V-' + getDateStamp() + '-001');
+      var parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        console.error('Submit: server returned non-JSON:', text.substring(0, 300));
+        showError('Unexpected response from server. Please try again.');
+        return;
+      }
+
+      if (parsed.status === 'ok') {
+        showConfirmation(parsed.visitorNumber || 'V-' + getDateStamp() + '-001');
       } else {
-        showError(data.error || 'Submission failed. Please try again.');
+        showError(parsed.error || 'Submission failed. Please try again.');
       }
     })
     .catch(function (err) {
+      clearTimeout(timeoutId);
       state.submitting = false;
       showLoading(false);
-      showError('Network error. Please check your connection and try again.');
+
+      // If fetch failed (CORS / redirect / timeout), try sendBeacon as
+      // a fire-and-forget fallback — it has NO CORS restrictions and the
+      // POST itself is a simple request that always reaches the server.
+      if (navigator.sendBeacon && err.name !== 'AbortError') {
+        try {
+          navigator.sendBeacon(CONFIG.API_BASE, jsonBody);
+        } catch (beaconErr) {
+          // sendBeacon failed too — nothing more we can do
+        }
+      }
+
+      // Provide a more specific error message
+      var msg;
+      if (err.name === 'AbortError') {
+        msg = 'Request timed out. Please check your connection and try again.';
+      } else if (err.message && err.message.indexOf('status') >= 0) {
+        msg = err.message + '. Please try again.';
+      } else if (err.name === 'TypeError' && err.message.indexOf('Failed to fetch') >= 0) {
+        msg = 'Connection failed. This may be a browser security restriction. Try again or use a different browser.';
+      } else {
+        msg = err.message || 'Network error. Please check your connection and try again.';
+      }
+      showError(msg);
     });
   }
 
