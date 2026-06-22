@@ -423,6 +423,9 @@ function uploadBase64ToDrive(folder, filename, base64Data) {
   // Create file in Drive folder
   var file = folder.createFile(blob);
 
+  // Share publicly so photos can be displayed in <img> tags
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
   // Return the view URL
   return file.getUrl();
 }
