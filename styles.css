@@ -2399,3 +2399,54 @@ body {
 .qrcode-card .qrcode-label {
   color: #64748B;
 }
+
+/* ============================================
+   Responsive: Desktop & Tablet
+   ============================================ */
+@media (min-width: 768px) {
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+  }
+
+  .page-header {
+    max-width: 560px;
+    border-radius: 16px 16px 0 0;
+    margin-top: 0;
+  }
+
+  .step {
+    max-width: 560px;
+    width: 100%;
+    padding-bottom: 40px;
+  }
+
+  .card {
+    margin: 16px 0;
+  }
+
+  .action-area {
+    margin: 20px 0 0;
+  }
+
+  .page-footer {
+    max-width: 560px;
+    width: 100%;
+    margin: 16px 0 0;
+    border-radius: 0 0 16px 16px;
+  }
+
+  /* Confirmation screen */
+  .confirmation-screen {
+    max-width: 560px;
+    width: 100%;
+  }
+
+  /* loading/error overlays on desktop */
+  .loading-content,
+  .error-content {
+    max-width: 420px;
+  }
+}
