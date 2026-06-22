@@ -12,7 +12,7 @@
     currentStep: 1,
     // Photos (base64 data URLs)
     idPhoto: null,    // { dataUrl, file or null }
-    selfie: null,     // { dataUrl, file or null }
+    selfiePhoto: null, // { dataUrl, file or null }
     // Camera streams
     streams: { id: null, selfie: null },
     cameraActive: { id: false, selfie: false },
@@ -91,7 +91,7 @@
       if (!validateStep1()) return;
     }
     if (n === 3) {
-      if (!state.idPhoto || !state.selfie) return;
+      if (!state.idPhoto || !state.selfiePhoto) return;
     }
     if (n === 1) {
       stopAllCameras();
@@ -543,7 +543,7 @@
     if (!btn) return;
 
     var idOk = state.idPhoto !== null;
-    var selfieOk = state.selfie !== null;
+    var selfieOk = state.selfiePhoto !== null;
 
     if (idOk && selfieOk) {
       btn.disabled = false;
