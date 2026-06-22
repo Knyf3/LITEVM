@@ -532,19 +532,58 @@ function generateVisitorNumber() {
  */
 function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
   var subject = 'Visitor Registration Confirmed — ' + visitorNumber;
-  var body = 'Dear ' + fullName + ',\n\n'
-    + 'Your visitor registration has been confirmed.\n\n'
-    + 'Visitor Number: ' + visitorNumber + '\n\n'
-    + 'Please show this number at the guard house for entry.\n\n'
-    + 'Thank you.';
+  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(visitorNumber);
+
+  var htmlBody = ''
+    + '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;padding:24px;">'
+    + '<div style="text-align:center;padding:32px 24px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;">'
+
+    // Header
+    + '<h1 style="font-size:20px;font-weight:700;color:#1E293B;margin:0 0 4px 0;">Registration Complete!</h1>'
+    + '<p style="font-size:14px;color:#64748B;margin:0 0 24px 0;">Your details have been submitted and recorded.</p>'
+
+    // QR Code
+    + '<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:20px;display:inline-block;">'
+    + '<img src="' + qrUrl + '" alt="QR Code for ' + visitorNumber + '" style="display:block;width:180px;height:180px;border-radius:8px;">'
+    + '<p style="font-size:12px;color:#64748B;margin:12px 0 0 0;">Show this QR code at the entrance</p>'
+    + '</div>'
+
+    // Visitor Number
+    + '<div style="margin-top:20px;">'
+    + '<p style="font-size:12px;color:#64748B;margin:0 0 4px 0;text-transform:uppercase;letter-spacing:0.5px;">Visitor Number</p>'
+    + '<p style="font-size:28px;font-weight:700;color:#4361EE;margin:0;letter-spacing:1px;">' + visitorNumber + '</p>'
+    + '</div>'
+
+    // Details
+    + '<div style="margin-top:24px;padding:16px;background:#F8FAFC;border-radius:10px;text-align:left;">'
+    + '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Name:</strong> ' + escapeHtml(fullName) + '</p>'
+    + '<p style="font-size:14px;color:#1E293B;margin:0;">Please show this QR code at the guard house for entry.</p>'
+    + '</div>'
+
+    // Footer
+    + '<div style="margin-top:24px;padding:12px 16px;background:#F0FDF4;border-radius:8px;display:inline-block;">'
+    + '<p style="font-size:12px;color:#16A34A;margin:0;">&#10003; Your information is securely stored.</p>'
+    + '</div>'
+
+    + '</div>'
+    + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
+    + '</div>';
 
   MailApp.sendEmail({
     to: toEmail,
     subject: subject,
-    body: body,
+    htmlBody: htmlBody,
   });
 
   console.log('Email confirmation sent to ' + toEmail);
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // ──────────────────────────────────────────────
