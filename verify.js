@@ -100,7 +100,7 @@
     state.actionInProgress = true;
     setResultState('loading');
 
-    var url = CONFIG.API_BASE + '?action=lookup&visitorNumber=' + encodeURIComponent(vn);
+    var url = CONFIG.API_BASE + '?action=lookup&visitorNumber=' + encodeURIComponent(vn) + '&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID);
 
     var controller = new AbortController();
     var timeoutId = setTimeout(function () {
@@ -364,6 +364,7 @@
       mode: 'updateStatus',
       visitorNumber: visitorNumber,
       status: status,
+      sheetId: CONFIG.SHEET_ID,
     };
     if (reason) payload.rejectedReason = reason;
 
@@ -480,7 +481,7 @@
     var loading = $('#todays-loading');
     if (loading) loading.classList.remove('hidden');
 
-    var url = CONFIG.API_BASE + '?action=today';
+    var url = CONFIG.API_BASE + '?action=today&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID);
 
     fetch(url, {
       method: 'GET',

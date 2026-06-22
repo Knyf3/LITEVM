@@ -30,21 +30,22 @@ function doGet(e) {
     // Check for action parameter
     if (e && e.parameter && e.parameter.action) {
       var action = e.parameter.action;
+      var sheetId = e && e.parameter ? e.parameter.sheetId : null;
 
       if (action === 'lookup') {
         var visitorNumber = e.parameter.visitorNumber;
         if (!visitorNumber) {
           return jsonResponse({ status: 'notfound', message: 'Missing visitorNumber parameter' }, 400);
         }
-        return handleLookup(visitorNumber);
+        return handleLookup(visitorNumber, sheetId);
       }
 
       if (action === 'today') {
-        return handleTodayVisitors();
+        return handleTodayVisitors(sheetId);
       }
 
       if (action === 'destinations') {
-        return handleDestinations();
+        return handleDestinations(sheetId);
       }
     }
 
@@ -117,7 +118,7 @@ function handleRegistration(data) {
   var visitorNumber = generateVisitorNumber();
 
   // Write to Google Sheet
-  var sheet = getOrCreateSheet();
+  var sheet = getOrCreateSheet(data.sheetId);
   sheet.appendRow([
     new Date(),            // Timestamp
     fullName,              // Full Name
@@ -145,8 +146,8 @@ function handleRegistration(data) {
 // HANDLER: Lookup by Visitor Number
 // ──────────────────────────────────────────────
 
-function handleLookup(visitorNumber) {
-  var sheet = getOrCreateSheet();
+function handleLookup(visitorNumber, sheetId) {
+  var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
@@ -192,8 +193,8 @@ function handleLookup(visitorNumber) {
 // HANDLER: Today's Visitors
 // ──────────────────────────────────────────────
 
-function handleTodayVisitors() {
-  var sheet = getOrCreateSheet();
+function handleTodayVisitors(sheetId) {
+  var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
   var todayStart = new Date();
@@ -232,8 +233,10 @@ function handleTodayVisitors() {
 // HANDLER: Destinations (from Destination tab)
 // ──────────────────────────────────────────────
 
-function handleDestinations() {
-  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+function handleDestinations(sheetId) {
+  if (!sheetId) {
+    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  }
   if (!sheetId) {
     return jsonResponse({ status: 'error', message: 'SHEET_ID not configured' }, 500);
   }
@@ -288,7 +291,7 @@ function handleStatusUpdate(data) {
     return jsonResponse({ status: 'error', message: 'Invalid status. Must be "Checked In" or "Rejected".' }, 400);
   }
 
-  var sheet = getOrCreateSheet();
+  var sheet = getOrCreateSheet(data.sheetId);
   var dataRange = sheet.getDataRange();
   var values = dataRange.getValues();
 
@@ -340,10 +343,13 @@ function jsonResponse(obj, statusCode) {
 // GOOGLE SHEET MANAGEMENT
 // ──────────────────────────────────────────────
 
-function getOrCreateSheet() {
-  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  var ss;
+function getOrCreateSheet(sheetId) {
+  // If sheetId not provided, try Script Properties
+  if (!sheetId) {
+    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  }
 
+  var ss;
   if (sheetId) {
     try {
       ss = SpreadsheetApp.openById(sheetId);

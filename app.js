@@ -587,7 +587,7 @@
       controller.abort();
     }, 8000);
 
-    fetch(CONFIG.API_BASE + '?action=destinations', {
+    fetch(CONFIG.API_BASE + '?action=destinations&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID), {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
@@ -811,6 +811,7 @@
       phone: data.phone.trim(),
       idPhoto: state.idPhoto.dataUrl,
       selfie: state.selfiePhoto.dataUrl,
+      sheetId: CONFIG.SHEET_ID,
     };
     var jsonBody = JSON.stringify(payload);
 
