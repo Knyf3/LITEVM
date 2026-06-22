@@ -19,8 +19,43 @@
 // ──────────────────────────────────────────────
 
 /**
- * Handle POST requests from the frontend.
- * Expects JSON body with: fullName, idNumber, company, phone, idPhoto (base64), selfie (base64)
+ * Handle GET requests.
+ * ?action=lookup&visitorNumber=V-XXXX   → returns visitor data
+ * ?action=today                           → returns all today's visitors
+ * (no params)                             → health check
+ */
+function doGet(e) {
+  try {
+    // Check for action parameter
+    if (e && e.parameter && e.parameter.action) {
+      var action = e.parameter.action;
+
+      if (action === 'lookup') {
+        var visitorNumber = e.parameter.visitorNumber;
+        if (!visitorNumber) {
+          return jsonResponse({ status: 'notfound', message: 'Missing visitorNumber parameter' }, 400);
+        }
+        return handleLookup(visitorNumber);
+      }
+
+      if (action === 'today') {
+        return handleTodayVisitors();
+      }
+    }
+
+    // Default: health check
+    return jsonResponse({ status: 'LITEVM Web App is running' }, 200);
+
+  } catch (error) {
+    console.error('doGet error: ' + error.message);
+    return jsonResponse({ error: error.message, status: 'error' }, 500);
+  }
+}
+
+/**
+ * Handle POST requests.
+ * Existing: registration (fullName, idNumber, company, phone, idPhoto, selfie)
+ * New: mode=updateStatus with visitorNumber and status
  */
 function doPost(e) {
   try {
@@ -32,53 +67,13 @@ function doPost(e) {
       return jsonResponse({ status: 'error', error: 'Invalid JSON payload' }, 400);
     }
 
-    // Validate required fields
-    var required = ['fullName', 'idNumber', 'company', 'phone', 'idPhoto', 'selfie'];
-    for (var i = 0; i < required.length; i++) {
-      if (!data[required[i]]) {
-        return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
-      }
+    // Check if this is a status update
+    if (data.mode === 'updateStatus') {
+      return handleStatusUpdate(data);
     }
 
-    // Sanitize text fields
-    var fullName = sanitizeText(data.fullName);
-    var idNumber = sanitizeText(data.idNumber);
-    var company = sanitizeText(data.company);
-    var phone = sanitizePhone(data.phone);
-
-    // Create Drive folder: VMS/YYYY-MM-DD/VisitorName_Phone/
-    var folder = createVisitorFolder(fullName, phone);
-
-    // Upload photos to Drive
-    var idPhotoUrl = uploadBase64ToDrive(folder, 'id_photo.jpg', data.idPhoto);
-    var selfieUrl = uploadBase64ToDrive(folder, 'selfie.jpg', data.selfie);
-
-    // Generate visitor number (server-side, sequential per day)
-    var visitorNumber = generateVisitorNumber();
-
-    // Write to Google Sheet
-    var sheet = getOrCreateSheet();
-    sheet.appendRow([
-      new Date(),            // Timestamp
-      fullName,              // Full Name
-      idNumber,              // ID / Passport Number
-      company,               // Company Name
-      phone,                 // Hand Phone Number
-      idPhotoUrl,            // ID Photo (Drive URL)
-      selfieUrl,             // Selfie (Drive URL)
-      visitorNumber,         // Visitor Number
-      'Pending Entry'        // Status
-    ]);
-
-    // Send WhatsApp notification (non-blocking — catch errors)
-    try {
-      sendWhatsAppNotification(phone, visitorNumber, fullName);
-    } catch (waErr) {
-      console.warn('WhatsApp notification failed: ' + waErr.message);
-      // Don't fail the whole request because of WhatsApp
-    }
-
-    return jsonResponse({ visitorNumber: visitorNumber, status: 'ok' }, 200);
+    // Otherwise, handle registration (existing logic)
+    return handleRegistration(data);
 
   } catch (error) {
     console.error('doPost error: ' + error.message + '\n' + error.stack);
@@ -86,11 +81,193 @@ function doPost(e) {
   }
 }
 
-/**
- * Handle GET requests — health check.
- */
-function doGet() {
-  return jsonResponse({ status: 'LITEVM Web App is running' }, 200);
+// ──────────────────────────────────────────────
+// HANDLER: Registration (extracted from existing doPost)
+// ──────────────────────────────────────────────
+
+function handleRegistration(data) {
+  // Validate required fields
+  var required = ['fullName', 'idNumber', 'company', 'phone', 'idPhoto', 'selfie'];
+  for (var i = 0; i < required.length; i++) {
+    if (!data[required[i]]) {
+      return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
+    }
+  }
+
+  // Sanitize text fields
+  var fullName = sanitizeText(data.fullName);
+  var idNumber = sanitizeText(data.idNumber);
+  var company = sanitizeText(data.company);
+  var phone = sanitizePhone(data.phone);
+
+  // Create Drive folder: VMS/YYYY-MM-DD/VisitorName_Phone/
+  var folder = createVisitorFolder(fullName, phone);
+
+  // Upload photos to Drive
+  var idPhotoUrl = uploadBase64ToDrive(folder, 'id_photo.jpg', data.idPhoto);
+  var selfieUrl = uploadBase64ToDrive(folder, 'selfie.jpg', data.selfie);
+
+  // Generate visitor number (server-side, sequential per day)
+  var visitorNumber = generateVisitorNumber();
+
+  // Write to Google Sheet
+  var sheet = getOrCreateSheet();
+  sheet.appendRow([
+    new Date(),            // Timestamp
+    fullName,              // Full Name
+    idNumber,              // ID / Passport Number
+    company,               // Company Name
+    phone,                 // Hand Phone Number
+    idPhotoUrl,            // ID Photo (Drive URL)
+    selfieUrl,             // Selfie (Drive URL)
+    visitorNumber,         // Visitor Number
+    'Pending Entry'        // Status
+  ]);
+
+  // Send WhatsApp notification (non-blocking — catch errors)
+  try {
+    sendWhatsAppNotification(phone, visitorNumber, fullName);
+  } catch (waErr) {
+    console.warn('WhatsApp notification failed: ' + waErr.message);
+  }
+
+  return jsonResponse({ visitorNumber: visitorNumber, status: 'ok' }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Lookup by Visitor Number
+// ──────────────────────────────────────────────
+
+function handleLookup(visitorNumber) {
+  var sheet = getOrCreateSheet();
+  var data = sheet.getDataRange().getValues();
+
+  // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
+  // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company, 4=Phone,
+  //          5=ID Photo URL, 6=Selfie URL, 7=Visitor Number, 8=Status
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var vn = String(row[7] || '').trim();
+
+    if (vn === visitorNumber.trim()) {
+      var ts = row[0];
+      var registrationTime = '';
+      if (ts instanceof Date) {
+        registrationTime = formatDateForDisplay(ts);
+      } else {
+        registrationTime = String(ts);
+      }
+
+      var visitor = {
+        visitorNumber: vn,
+        fullName: String(row[1] || ''),
+        idNumber: String(row[2] || ''),
+        company: String(row[3] || ''),
+        phone: String(row[4] || ''),
+        idPhotoUrl: String(row[5] || ''),
+        selfieUrl: String(row[6] || ''),
+        status: String(row[8] || 'Pending Entry'),
+        registrationTime: registrationTime,
+      };
+
+      return jsonResponse({ status: 'ok', visitor: visitor }, 200);
+    }
+  }
+
+  return jsonResponse({ status: 'notfound', message: 'No registration found for ' + visitorNumber }, 404);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Today's Visitors
+// ──────────────────────────────────────────────
+
+function handleTodayVisitors() {
+  var sheet = getOrCreateSheet();
+  var data = sheet.getDataRange().getValues();
+
+  var todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  var todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999);
+
+  var visitors = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var ts = row[0];
+
+    // Check if timestamp is today
+    if (ts instanceof Date && ts >= todayStart && ts <= todayEnd) {
+      visitors.push({
+        visitorNumber: String(row[7] || ''),
+        fullName: String(row[1] || ''),
+        idNumber: String(row[2] || ''),
+        company: String(row[3] || ''),
+        phone: String(row[4] || ''),
+        idPhotoUrl: String(row[5] || ''),
+        selfieUrl: String(row[6] || ''),
+        status: String(row[8] || 'Pending Entry'),
+        registrationTime: formatDateForDisplay(ts),
+      });
+    }
+  }
+
+  return jsonResponse({ status: 'ok', visitors: visitors }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Update Visitor Status
+// ──────────────────────────────────────────────
+
+function handleStatusUpdate(data) {
+  var visitorNumber = data.visitorNumber;
+  var newStatus = data.status;
+
+  if (!visitorNumber) {
+    return jsonResponse({ status: 'error', message: 'Missing visitorNumber' }, 400);
+  }
+
+  if (!newStatus || (newStatus !== 'Checked In' && newStatus !== 'Rejected')) {
+    return jsonResponse({ status: 'error', message: 'Invalid status. Must be "Checked In" or "Rejected".' }, 400);
+  }
+
+  var sheet = getOrCreateSheet();
+  var dataRange = sheet.getDataRange();
+  var values = dataRange.getValues();
+
+  for (var i = 1; i < values.length; i++) {
+    var vn = String(values[i][7] || '').trim();
+
+    if (vn === visitorNumber.trim()) {
+      // Update Status column (col 9 = index 8)
+      sheet.getRange(i + 1, 9).setValue(newStatus);
+      // Update Timestamp column (col 1 = index 0) to record action time
+      sheet.getRange(i + 1, 1).setValue(new Date());
+
+      return jsonResponse({
+        status: 'ok',
+        message: 'Status updated to ' + newStatus,
+        visitorNumber: visitorNumber,
+      }, 200);
+    }
+  }
+
+  return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+}
+
+// ──────────────────────────────────────────────
+// HELPER: Format date for display
+// ──────────────────────────────────────────────
+
+function formatDateForDisplay(date) {
+  var hours = date.getHours();
+  var minutes = date.getMinutes();
+  var ampm = hours >= 12 ? 'PM' : 'AM';
+  var h12 = hours % 12 || 12;
+  var minStr = ('0' + minutes).slice(-2);
+  var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return h12 + ':' + minStr + ' ' + ampm + ' ' + date.getDate() + ' ' + months[date.getMonth()] + ' ' + date.getFullYear();
 }
 
 // ──────────────────────────────────────────────
