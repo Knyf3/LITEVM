@@ -279,6 +279,8 @@ function handleDestinations(sheetId) {
 
 // ──────────────────────────────────────────────
 // HANDLER: Update Visitor Status
+// (with LockService-guarded card assignment
+//  for Checked In path)
 // ──────────────────────────────────────────────
 
 function handleStatusUpdate(data) {
@@ -297,24 +299,73 @@ function handleStatusUpdate(data) {
   var dataRange = sheet.getDataRange();
   var values = dataRange.getValues();
 
-  for (var i = 1; i < values.length; i++) {
-    var vn = String(values[i][9] || '').trim();
-
-    if (vn === visitorNumber.trim()) {
-      // Update Status column (col 11 = index 10)
-      sheet.getRange(i + 1, 11).setValue(newStatus);
-      // Update Action Time column (col 12 = index 11) to record when check-in/rejection happened
-      sheet.getRange(i + 1, 12).setValue(new Date());
-
-      return jsonResponse({
-        status: 'ok',
-        message: 'Status updated to ' + newStatus,
-        visitorNumber: visitorNumber,
-      }, 200);
+  // Use LockService for the Checked In path to serialize concurrent requests
+  // and prevent two guards from picking the same card
+  var lock = null;
+  if (newStatus === 'Checked In') {
+    lock = LockService.getScriptLock();
+    if (!lock.tryLock(30000)) {
+      return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
     }
   }
 
-  return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+  try {
+    for (var i = 1; i < values.length; i++) {
+      var vn = String(values[i][9] || '').trim();
+
+      if (vn === visitorNumber.trim()) {
+        // Check if already processed (idempotency guard)
+        var currentStatus = String(values[i][10] || '').trim();
+        if (currentStatus === 'Checked In' || currentStatus === 'Rejected') {
+          return jsonResponse({
+            status: 'error',
+            message: 'Visitor already processed. Current status: ' + currentStatus
+          }, 409);
+        }
+
+        // Update Status column (col 11 = index 10)
+        sheet.getRange(i + 1, 11).setValue(newStatus);
+        // Update Action Time column (col 12 = index 11) to record when check-in/rejection happened
+        sheet.getRange(i + 1, 12).setValue(new Date());
+
+        var result = {
+          status: 'ok',
+          message: 'Status updated to ' + newStatus,
+          visitorNumber: visitorNumber,
+        };
+
+        // If Checked In, proceed with card assignment (inside lock)
+        if (newStatus === 'Checked In') {
+          // Extract visitor details from the row for card assignment
+          var fullName = String(values[i][1] || '').trim();
+          var destination = String(values[i][4] || '').trim();
+          var email = String(values[i][6] || '').trim();
+
+          try {
+            var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email);
+            if (cardResult) {
+              result.cardNo = cardResult.cardNo;
+              result.cardQRUrl = cardResult.cardQRUrl;
+              result.cardStatus = cardResult.status;
+            }
+          } catch (cardErr) {
+            console.warn('Card assignment failed: ' + cardErr.message);
+            result.cardNo = null;
+            result.cardStatus = 'error';
+            result.cardError = cardErr.message;
+          }
+        }
+
+        return jsonResponse(result, 200);
+      }
+    }
+
+    return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+  } finally {
+    if (lock) {
+      lock.releaseLock();
+    }
+  }
 }
 
 // ──────────────────────────────────────────────
@@ -578,6 +629,298 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
   console.log('Email confirmation sent to ' + toEmail);
 }
 
+// ──────────────────────────────────────────────
+// CARD POOL MANAGEMENT
+// ──────────────────────────────────────────────
+
+/**
+ * Get the cardno worksheet handle from the spreadsheet.
+ * Returns the Sheet object, or null if not found (logs a warning).
+ * Does NOT create the sheet if missing.
+ */
+function getCardnoSheet() {
+  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    console.warn('getCardnoSheet: SHEET_ID not configured');
+    return null;
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var cardSheet = ss.getSheetByName('cardno');
+    if (!cardSheet) {
+      console.warn('getCardnoSheet: "cardno" sheet tab not found in spreadsheet');
+      return null;
+    }
+    return cardSheet;
+  } catch (e) {
+    console.warn('getCardnoSheet: Failed to open spreadsheet — ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Look up the Access Level for a given destination from the Destination sheet.
+ * @param {string} destination — The visitor's destination (e.g. "BRI", "PLN")
+ * @returns {string|null} The Access Level value, or null if not found
+ */
+function getAccessLevelForDestination(destination) {
+  if (!destination) return null;
+
+  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    console.warn('getAccessLevelForDestination: SHEET_ID not configured');
+    return null;
+  }
+
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(sheetId);
+  } catch (e) {
+    console.warn('getAccessLevelForDestination: Cannot open spreadsheet — ' + e.message);
+    return null;
+  }
+
+  var destSheet = ss.getSheetByName('Destination');
+  if (!destSheet) {
+    console.warn('getAccessLevelForDestination: Destination sheet tab not found');
+    return null;
+  }
+
+  var data = destSheet.getDataRange().getValues();
+  var destLower = destination.trim().toLowerCase();
+
+  // Row 0 = headers; data starts at row 1
+  // Column 0 = Destination, Column 1 = Access Level
+  for (var i = 1; i < data.length; i++) {
+    var rowDest = String(data[i][0] || '').trim().toLowerCase();
+    if (rowDest === destLower) {
+      var level = String(data[i][1] || '').trim();
+      return level || null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find the first available (unassigned) card in the cardno sheet.
+ * Pure read — does NOT modify the sheet.
+ * @param {string} accessLevel — Currently unused (reserved for future access-level-based filtering)
+ * @returns {string|null} The CardNo value, or null if the pool is depleted
+ */
+function pickUnusedCard(accessLevel) {
+  var cardSheet = getCardnoSheet();
+  if (!cardSheet) return null;
+
+  var data = cardSheet.getDataRange().getValues();
+
+  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt
+  for (var i = 1; i < data.length; i++) {
+    var status = String(data[i][1] || '').trim();
+    if (status === 'Available') {
+      return String(data[i][0] || '').trim();
+    }
+  }
+
+  return null; // Pool depleted — no Available cards
+}
+
+/**
+ * Mark a specific card as Assigned in the cardno sheet.
+ * @param {string} cardNo — The card number to assign
+ * @param {string} visitorNumber — The visitor receiving this card
+ * @param {string} visitorName — The visitor's full name (logged for traceability)
+ * @returns {boolean} true on success, false if card row not found
+ */
+function assignCard(cardNo, visitorNumber, visitorName) {
+  var cardSheet = getCardnoSheet();
+  if (!cardSheet) return false;
+
+  var data = cardSheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    var rowCardNo = String(data[i][0] || '').trim();
+    if (rowCardNo === cardNo) {
+      // Atomic write: mark Status, AssignedTo, AssignedAt in contiguous range
+      cardSheet.getRange(i + 1, 2).setValue('Assigned');      // Status
+      cardSheet.getRange(i + 1, 3).setValue(visitorNumber);   // AssignedTo
+      cardSheet.getRange(i + 1, 4).setValue(new Date());      // AssignedAt
+
+      // Optimistic re-read to verify the write took
+      var checkValues = cardSheet.getRange(i + 1, 1, 1, 4).getValues();
+      if (checkValues[0][1] !== 'Assigned' || checkValues[0][2] !== visitorNumber) {
+        console.error('assignCard: Concurrency check FAILED for card ' + cardNo +
+                      ' — expected Assigned/' + visitorNumber +
+                      ', got ' + checkValues[0][1] + '/' + checkValues[0][2]);
+        return false;
+      }
+
+      return true;
+    }
+  }
+
+  console.warn('assignCard: Card number ' + cardNo + ' not found in cardno sheet');
+  return false;
+}
+
+/**
+ * Orchestrator: ties together access level lookup → card picking → assignment → email.
+ * Called from handleStatusUpdate when a visitor is checked in.
+ *
+ * @param {string} visitorNumber
+ * @param {string} fullName
+ * @param {string} destination
+ * @param {string} email
+ * @returns {{ cardNo: string|null, cardQRUrl: string|null, status: string }}
+ */
+function assignCardForVisitor(visitorNumber, fullName, destination, email) {
+  // 1. Resolve access level from the visitor's destination
+  var accessLevel = getAccessLevelForDestination(destination);
+
+  // 2. Pick an unused card (access level reserved for future filtering)
+  var cardNo = pickUnusedCard(accessLevel);
+
+  if (!cardNo) {
+    return { cardNo: null, status: 'depleted' };
+  }
+
+  // 3. Mark the card as Assigned
+  var assigned = assignCard(cardNo, visitorNumber, fullName);
+  if (!assigned) {
+    return { cardNo: null, status: 'error', message: 'Card assignment write failed' };
+  }
+
+  // 4. Generate QR code URL encoding the CARD NUMBER (for the gate reader)
+  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data='
+            + encodeURIComponent(cardNo);
+
+  // 5. Send email as backup (non-blocking — card is already assigned)
+  try {
+    sendCardAssignmentEmail(email, cardNo, fullName, visitorNumber);
+  } catch (emailErr) {
+    console.warn('Card assignment email failed for ' + visitorNumber + ': ' + emailErr.message);
+    // Email failure does not roll back — the card is assigned and guard portal shows it
+  }
+
+  return { cardNo: cardNo, cardQRUrl: qrUrl, status: 'assigned' };
+}
+
+/**
+ * Send a card assignment email with QR code encoding the card number.
+ * This is separate from the registration confirmation email — sent at check-in time.
+ *
+ * @param {string} toEmail — Visitor's email address
+ * @param {string} cardNo — The assigned card number (encoded in QR code)
+ * @param {string} visitorName — Visitor's full name
+ * @param {string} visitorNumber — Original visitor number (for subject line only)
+ */
+function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
+  var subject = 'Your Access Card — ' + visitorNumber;
+  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data='
+            + encodeURIComponent(cardNo);
+
+  var htmlBody = ''
+    + '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;padding:24px;">'
+    + '<div style="text-align:center;padding:32px 24px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;">'
+
+    // Header
+    + '<h1 style="font-size:20px;font-weight:700;color:#1E293B;margin:0 0 4px 0;">Your Access Card</h1>'
+    + '<p style="font-size:14px;color:#64748B;margin:0 0 24px 0;">Show this QR code at the gate reader for entry</p>'
+
+    // QR Code (encodes the card number, not visitor number)
+    + '<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:20px;display:inline-block;">'
+    + '<img src="' + qrUrl + '" alt="QR Code for Card ' + cardNo + '" style="display:block;width:180px;height:180px;border-radius:8px;">'
+    + '<p style="font-size:12px;color:#64748B;margin:12px 0 0 0;">Scan at gate reader</p>'
+    + '</div>'
+
+    // Card Number — displayed prominently
+    + '<div style="margin-top:20px;">'
+    + '<p style="font-size:12px;color:#64748B;margin:0 0 4px 0;text-transform:uppercase;letter-spacing:0.5px;">Card Number</p>'
+    + '<p style="font-size:28px;font-weight:700;color:#4361EE;margin:0;letter-spacing:1px;">' + escapeHtml(cardNo) + '</p>'
+    + '</div>'
+
+    // Visitor details
+    + '<div style="margin-top:24px;padding:16px;background:#F8FAFC;border-radius:10px;text-align:left;">'
+    + '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Visitor:</strong> ' + escapeHtml(visitorName) + '</p>'
+    + '<p style="font-size:14px;color:#1E293B;margin:0;">' + escapeHtml(visitorNumber) + '</p>'
+    + '</div>'
+
+    // Footer
+    + '<div style="margin-top:24px;padding:12px 16px;background:#F0FDF4;border-radius:8px;display:inline-block;">'
+    + '<p style="font-size:12px;color:#16A34A;margin:0;">&#10003; Please keep this card with you during your visit</p>'
+    + '</div>'
+
+    + '</div>'
+    + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
+    + '</div>';
+
+  MailApp.sendEmail({
+    to: toEmail,
+    subject: subject,
+    htmlBody: htmlBody,
+  });
+
+  console.log('Card assignment email sent to ' + toEmail + ' for card ' + cardNo);
+}
+
+/**
+ * Release all Assigned cards back to Available.
+ * Called by a daily time-driven trigger at 18:00.
+ * Loops through the cardno sheet; for every row where Status = "Assigned",
+ * resets Status to "Available" and clears AssignedTo / AssignedAt.
+ */
+function releaseDailyCards() {
+  var cardSheet = getCardnoSheet();
+  if (!cardSheet) {
+    console.warn('releaseDailyCards: cardno sheet not found — nothing to release');
+    return;
+  }
+
+  var data = cardSheet.getDataRange().getValues();
+  var released = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var status = String(data[i][1] || '').trim();
+    if (status === 'Assigned') {
+      cardSheet.getRange(i + 1, 2).setValue('Available');   // Status → Available
+      cardSheet.getRange(i + 1, 3).setValue('');             // Clear AssignedTo
+      cardSheet.getRange(i + 1, 4).setValue('');             // Clear AssignedAt
+      released++;
+    }
+  }
+
+  console.log('releaseDailyCards: Released ' + released + ' cards back to Available');
+}
+
+/**
+ * One-shot setup function. Deletes any existing 'releaseDailyCards' triggers,
+ * then installs a new time-driven trigger set for 18:00–19:00 daily.
+ * Run this once from the Apps Script editor after deployment.
+ */
+function setupDailyReleaseTrigger() {
+  // Remove any existing triggers for this handler to avoid duplicates
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'releaseDailyCards') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  // Install a new daily trigger at 18:00
+  ScriptApp.newTrigger('releaseDailyCards')
+    .timeBased()
+    .atHour(18)
+    .everyDays(1)
+    .create();
+
+  console.log('setupDailyReleaseTrigger: Daily release trigger installed for 18:00–19:00');
+}
+
+// ──────────────────────────────────────────────
+// SANITIZATION HELPERS
+// ──────────────────────────────────────────────
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -585,10 +928,6 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
-
-// ──────────────────────────────────────────────
-// SANITIZATION HELPERS
-// ──────────────────────────────────────────────
 
 /**
  * Sanitize text fields to prevent injection.
@@ -631,6 +970,9 @@ function initialize() {
   console.log('Set the following Script Properties if needed:');
   console.log('  SHEET_ID - Google Sheet ID (optional)');
   console.log('  DRIVE_FOLDER_ID - Parent Drive folder ID for VMS uploads');
+  console.log('');
+  console.log('After deployment, run setupDailyReleaseTrigger() once to install');
+  console.log('the nightly card release at 18:00.');
 
   return 'Initialization complete. Check the logs for details.';
 }

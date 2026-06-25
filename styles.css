@@ -1657,6 +1657,92 @@ body {
   font-size: 1rem;
 }
 
+/* --- Card Assignment (success screen) --- */
+.success-card-assignment {
+  text-align: center;
+  margin-top: 8px;
+}
+
+.success-card-divider {
+  height: 1px;
+  background: #BBF7D0;
+  margin: 16px 0;
+}
+
+.success-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #4361EE;
+  margin-bottom: 12px;
+}
+
+.success-card-number-label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #64748B;
+  margin-bottom: 4px;
+}
+
+.success-card-number {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #1E293B;
+  letter-spacing: 2px;
+  font-family: 'Courier New', Courier, monospace;
+  margin-bottom: 12px;
+}
+
+.success-card-qr-wrapper {
+  display: inline-block;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.success-card-qr-wrapper.hidden {
+  display: none;
+}
+
+.success-card-qr {
+  display: block;
+  width: 160px;
+  height: 160px;
+  border-radius: 8px;
+}
+
+.success-card-hint {
+  font-size: 0.75rem;
+  color: #64748B;
+  margin-bottom: 0;
+}
+
+/* --- Card Depleted Warning --- */
+.success-card-depleted {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: 10px;
+  margin-top: 16px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #991B1B;
+}
+
+.success-card-depleted svg {
+  flex-shrink: 0;
+}
+
 /* Rejected Card */
 .result-rejected-card {
   background: #FEF2F2;

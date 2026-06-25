@@ -210,6 +210,28 @@
           <div class="success-visitor-badge">
             Visitor: <strong id="success-vn">—</strong>
           </div>
+
+          <!-- Card Assignment (hidden until card assigned, hidden if depleted) -->
+          <div id="success-card-assignment" class="success-card-assignment hidden">
+            <div class="success-card-divider"></div>
+            <div class="success-card-header">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4361EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="10" y2="8"/><line x1="6" y1="12" x2="14" y2="12"/><line x1="6" y1="16" x2="8" y2="16"/></svg>
+              <span>Access Card</span>
+            </div>
+            <div class="success-card-number-label">Card Number</div>
+            <div class="success-card-number" id="success-card-number">—</div>
+            <div class="success-card-qr-wrapper" id="success-card-qr-wrapper">
+              <img id="success-card-qr" src="" alt="Card QR Code" class="success-card-qr">
+            </div>
+            <p class="success-card-hint">Show this QR code at the gate reader for entry</p>
+          </div>
+
+          <!-- Depleted warning (hidden unless pool is empty) -->
+          <div id="success-card-depleted" class="success-card-depleted hidden">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#e63946" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span>No card available — notify admin to restock card pool.</span>
+          </div>
+
           <button class="btn-primary btn-check-another" onclick="App.checkInAnother()">
             <span>✅ Check In Another Visitor</span>
           </button>

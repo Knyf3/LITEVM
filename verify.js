@@ -464,7 +464,11 @@
 
       if (data.status === 'ok') {
         if (status === 'Checked In') {
-          showVerifiedSuccess(state.currentVisitor);
+          showVerifiedSuccess(state.currentVisitor, {
+            cardNo: data.cardNo,
+            cardQRUrl: data.cardQRUrl,
+            cardStatus: data.cardStatus
+          });
         } else {
           showRejectedState(state.currentVisitor);
         }
@@ -484,12 +488,37 @@
   // ──────────────────────────────────────────────
   // VERIFIED SUCCESS STATE
   // ──────────────────────────────────────────────
-  function showVerifiedSuccess(v) {
+  function showVerifiedSuccess(v, cardInfo) {
     setResultState('verified');
     $('#success-name').textContent = v.fullName || '';
     $('#success-vn').textContent = v.visitorNumber || '';
     var now = new Date();
     $('#success-time').textContent = formatTimestamp(now);
+
+    // Card assignment display
+    var cardSection = $('#success-card-assignment');
+    var cardDepleted = $('#success-card-depleted');
+
+    if (cardInfo && cardInfo.cardNo) {
+      // Card was assigned — show card number and QR
+      if (cardSection) {
+        cardSection.classList.remove('hidden');
+        $('#success-card-number').textContent = cardInfo.cardNo;
+        if (cardInfo.cardQRUrl) {
+          $('#success-card-qr').src = cardInfo.cardQRUrl;
+          $('#success-card-qr-wrapper').classList.remove('hidden');
+        }
+      }
+      if (cardDepleted) cardDepleted.classList.add('hidden');
+    } else if (cardInfo && cardInfo.cardStatus === 'depleted') {
+      // Pool exhausted — show warning
+      if (cardSection) cardSection.classList.add('hidden');
+      if (cardDepleted) cardDepleted.classList.remove('hidden');
+    } else {
+      // No card info (error or not applicable) — hide both
+      if (cardSection) cardSection.classList.add('hidden');
+      if (cardDepleted) cardDepleted.classList.add('hidden');
+    }
 
     // Trigger animation
     var checkmark = $('.checkmark-path');
