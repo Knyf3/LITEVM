@@ -45,6 +45,10 @@ function doGet(e) {
       if (action === 'destinations') {
         return handleDestinations(sheetId);
       }
+
+      if (action === 'cardpool') {
+        return handleCardPoolDiagnostic(sheetId);
+      }
     }
 
     // Default: health check
@@ -275,6 +279,97 @@ function handleDestinations(sheetId) {
     destinations: destinations,
     count: destinations.length,
   }, 200);
+}
+
+// ──────────────────────────────────────────────
+// DIAGNOSTIC: Card Pool Inspection (remove after debugging)
+// ──────────────────────────────────────────────
+
+function handleCardPoolDiagnostic(sheetId) {
+  if (!sheetId) {
+    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  }
+  if (!sheetId) {
+    return jsonResponse({ status: 'error', message: 'SHEET_ID not configured' }, 500);
+  }
+
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('cardno');
+
+  if (!sheet) {
+    return jsonResponse({ status: 'error', message: 'cardno sheet tab not found' }, 404);
+  }
+
+  var data = sheet.getDataRange().getValues();
+  var headers = data.length > 0 ? data[0] : [];
+  var rows = [];
+  var limit = Math.min(data.length, 11); // header + first 10 rows
+  for (var i = 0; i < limit; i++) {
+    var row = {};
+    for (var j = 0; j < headers.length; j++) {
+      row['col' + j] = String(data[i][j] || '');
+    }
+    rows.push(row);
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    sheetName: 'cardno',
+    totalRows: data.length,
+    headers: headers,
+    columnCount: headers.length,
+    rows: rows,
+  }, 200);
+}
+
+// ──────────────────────────────────────────────
+// SEED: Populate cardno sheet (run once from editor)
+// ──────────────────────────────────────────────
+
+/**
+ * Populate the cardno sheet with a batch of cards.
+ * Run this once from the Apps Script editor after deployment.
+ * @param {number} count — Number of cards to generate (default: 50)
+ * @param {string} prefix — Card number prefix (default: '1')
+ */
+function seedCardPool(count, prefix) {
+  count = count || 50;
+  prefix = prefix || '1';
+
+  var sheet = getCardnoSheet();
+  if (!sheet) {
+    // Cardno sheet doesn't exist yet — create it
+    var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+    if (!sheetId) {
+      console.error('seedCardPool: SHEET_ID not configured');
+      return;
+    }
+    var ss = SpreadsheetApp.openById(sheetId);
+    sheet = ss.insertSheet('cardno');
+    sheet.getRange(1, 1, 1, 4).setValues([['CardNo', 'Status', 'AssignedTo', 'AssignedAt']]);
+    sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    console.log('seedCardPool: Created cardno sheet with headers');
+  }
+
+  // Check if already has data
+  var existing = sheet.getDataRange().getValues();
+  if (existing.length > 1) {
+    console.log('seedCardPool: Sheet already has ' + (existing.length - 1) + ' cards. Skipping seed.');
+    return;
+  }
+
+  // Generate cards: prefix padded to 5 digits, e.g. 10001, 10002...
+  var cards = [];
+  for (var i = 1; i <= count; i++) {
+    var padded = ('00000' + i).slice(-5);
+    cards.push([prefix + padded, 'Available', '', '']);
+  }
+
+  sheet.getRange(2, 1, cards.length, 4).setValues(cards);
+  sheet.autoResizeColumns(1, 4);
+
+  console.log('seedCardPool: Added ' + count + ' cards (e.g. ' + prefix + '00001 to ' + prefix + ('00000' + count).slice(-5) + ')');
 }
 
 // ──────────────────────────────────────────────
