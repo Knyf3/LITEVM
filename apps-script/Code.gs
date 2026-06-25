@@ -812,8 +812,8 @@ function pickUnusedCard(accessLevel) {
 
   // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt
   for (var i = 1; i < data.length; i++) {
-    var status = String(data[i][1] || '').trim();
-    if (status === 'Available') {
+    var status = String(data[i][1] || '').trim().toLowerCase();
+    if (status === 'available' || status === '') {
       return String(data[i][0] || '').trim();
     }
   }
@@ -976,8 +976,8 @@ function releaseDailyCards() {
   var released = 0;
 
   for (var i = 1; i < data.length; i++) {
-    var status = String(data[i][1] || '').trim();
-    if (status === 'Assigned') {
+    var status = String(data[i][1] || '').trim().toLowerCase();
+    if (status === 'assigned') {
       cardSheet.getRange(i + 1, 2).setValue('Available');   // Status → Available
       cardSheet.getRange(i + 1, 3).setValue('');             // Clear AssignedTo
       cardSheet.getRange(i + 1, 4).setValue('');             // Clear AssignedAt
