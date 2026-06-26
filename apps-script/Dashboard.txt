@@ -56,6 +56,28 @@ function onOpen(e) {
 }
 
 // ──────────────────────────────────────────────
+// ON EDIT — Auto-Refresh on Date Change
+// ──────────────────────────────────────────────
+
+/**
+ * Auto-refresh dashboard when date cells G1 or I1 are edited.
+ * Uses a 1-second debounce to avoid rapid reloads.
+ */
+function onEdit(e) {
+  if (!e || !e.range) return;
+  var range = e.range;
+  var sheet = range.getSheet();
+  if (sheet.getName() !== 'Dashboard') return;
+  var col = range.getColumn();
+  var row = range.getRow();
+  // Watch G1 (col 7, row 1) and I1 (col 9, row 1)
+  if (row === 1 && (col === 7 || col === 9)) {
+    Utilities.sleep(1000);
+    refreshDashboard();
+  }
+}
+
+// ──────────────────────────────────────────────
 // SETUP: Dashboard Tab Layout (run once from editor)
 // ──────────────────────────────────────────────
 
@@ -155,11 +177,11 @@ function setupDashboardLayout(sheetId) {
   sheet.getRange('A7:J7').setBackground(COLORS.white);
 
   // =============================================
-  // ROW 8-10 — KPI Row 2: Rejected | Cards Assigned | Cards Available
+  // ROW 8-10 — KPI Row 2: Rejected | Cards Assigned | Today's Visitors
   // =============================================
   setupKpiCard_(sheet, 8, 1, 'Rejected', COLORS.danger);               // A8:C10
   setupKpiCard_(sheet, 8, 4, 'Cards Assigned', COLORS.primary);         // D8:F10
-  setupKpiCard_(sheet, 8, 7, 'Cards Available', COLORS.success);        // G8:I10
+  setupKpiCard_(sheet, 8, 7, 'Today\'s Visitors', COLORS.primary);        // G8:I10
 
   // =============================================
   // ROW 11 — Blank spacer
@@ -218,6 +240,14 @@ function setupDashboardLayout(sheetId) {
   sheet.getRange('F18').setFontWeight('bold');
   sheet.getRange('F18').setFontColor(COLORS.headings);
   sheet.getRange('F18').setFontSize(12);
+
+  // =============================================
+  // ROW 25+ — Recent Check-Ins Mini-List
+  // =============================================
+  sheet.getRange('A25').setValue('Recent Check-Ins');
+  sheet.getRange('A25').setFontWeight('bold');
+  sheet.getRange('A25').setFontColor(COLORS.headings);
+  sheet.getRange('A25').setFontSize(12);
 
   // =============================================
   // Column widths (approximate, in characters)
@@ -384,6 +414,11 @@ function refreshDashboard(sheetId) {
       return false;
     }
 
+    // ── Toast: loading (bound mode only) ──
+    if (!sheetId) {
+      SpreadsheetApp.getUi().showToast('⟳ Loading dashboard data...', 'LITEVM', 5);
+    }
+
     // ── Step 1: Get date range ──
     var dateRange = getDateRange_(sheet);
 
@@ -407,7 +442,7 @@ function refreshDashboard(sheetId) {
     writeKpiValues_(sheet, kpis, 5, 7);     // Pending
     writeKpiValues_(sheet, kpis, 9, 1);     // Rejected
     writeKpiValues_(sheet, kpis, 9, 4);     // Cards Assigned
-    writeKpiValues_(sheet, kpis, 9, 7);     // Cards Available
+    writeKpiValues_(sheet, kpis, 9, 7);     // Today's Visitors
 
     // ── Step 7: Write trend values ──
     writeTrendValues_(sheet, trends, 6, 1);  // Total Visitors trend
@@ -415,13 +450,16 @@ function refreshDashboard(sheetId) {
     writeTrendValues_(sheet, trends, 6, 7);  // Pending trend
     writeTrendValues_(sheet, trends, 10, 1);  // Rejected trend
     writeTrendValues_(sheet, trends, 10, 4);  // Cards Assigned trend
-    writeTrendValues_(sheet, trends, 10, 7);  // Cards Available trend
+    writeTrendValues_(sheet, trends, 10, 7);  // Today's Visitors trend
 
     // ── Step 8: Write chart table data ──
     writeStatusDistribution_(sheet, chartTables, 13);      // A13:B...
     writeDailyTrend_(sheet, chartTables, 13);               // E13:F...
     writeTopDestinations_(sheet, chartTables, 19);          // A19:B...
     writeCardPoolSummary_(sheet, chartTables, 19);          // E19:F...
+
+    // ── Step 8b: Write Recent Check-Ins mini-list ──
+    writeRecentCheckins_(sheet, chartTables, 26);           // A26:D31
 
     // ── Step 9: Write last refreshed timestamp ──
     var now = new Date();
@@ -447,6 +485,16 @@ function refreshDashboard(sheetId) {
       sheet.getRange('A11').setFontStyle('italic');
       sheet.getRange('A11').setHorizontalAlignment('center');
       sheet.getRange('A11').setVerticalAlignment('middle');
+    }
+
+    // ── Toast: completion (bound mode only) ──
+    if (!sheetId) {
+      var h = now.getHours();
+      var m = now.getMinutes();
+      var ampm = h >= 12 ? 'PM' : 'AM';
+      var h12 = h % 12 || 12;
+      var minStr = ('0' + m).slice(-2);
+      SpreadsheetApp.getUi().showToast('✓ Dashboard updated • ' + h12 + ':' + minStr + ' ' + ampm, 'LITEVM', 3);
     }
 
     console.log('refreshDashboard: Dashboard refreshed successfully at ' + formattedNow);
@@ -798,12 +846,59 @@ function buildChartTables_(visitorLog, cardno, dateRange) {
     ['Assigned', assignedCards],
   ];
 
+  // ── Recent Check-Ins (last 5 Checked In, sorted by Action Time desc) ──
+  var recentCheckins = buildRecentCheckins_(visitorLog, dateRange);
+
   return {
     statusSummary: statusSummary,
     dailyTrend: dailyTrend,
     topDestinations: topDestinations,
     cardPoolSummary: cardPoolSummary,
+    recentCheckins: recentCheckins,
   };
+}
+
+/**
+ * Compute recent check-ins: last 5 visitors with Status 'Checked In'
+ * within the date range, sorted by Action Time descending.
+ */
+function buildRecentCheckins_(visitorLog, dateRange) {
+  var checkins = [];
+
+  for (var i = 1; i < visitorLog.length; i++) {
+    var row = visitorLog[i];
+    var ts = row[0];
+    if (!(ts instanceof Date) || isNaN(ts.getTime())) continue;
+    if (ts < dateRange.start || ts > dateRange.end) continue;
+
+    var status = String(row[10] || '').trim();
+    if (status === 'Checked In') {
+      checkins.push({
+        visitorNo: String(row[9] || ''),
+        name: String(row[1] || ''),
+        company: String(row[3] || ''),
+        actionTime: row[11] instanceof Date ? row[11] : ts,
+      });
+    }
+  }
+
+  // Sort by Action Time descending
+  checkins.sort(function(a, b) {
+    return b.actionTime - a.actionTime;
+  });
+
+  // Take top 5
+  var top = checkins.slice(0, 5);
+
+  // Build table: [Visitor #, Name, Company, Time]
+  var table = [['Visitor #', 'Name', 'Company', 'Time']];
+  for (var j = 0; j < top.length; j++) {
+    var entry = top[j];
+    var timeStr = formatDateForDisplay(entry.actionTime);
+    table.push([entry.visitorNo, entry.name, entry.company, timeStr]);
+  }
+
+  return table;
 }
 
 // ──────────────────────────────────────────────
@@ -839,28 +934,35 @@ function writeKpiValues_(sheet, kpis, row, col) {
   var valueRow = row;     // big number row
   var label = '';
   var value = 0;
+  var color = COLORS.headings;  // default color
 
   // Determine which KPI to write based on (row, col) position
   // Row 5: Total Visitors(col1), Checked In(col4), Pending(col7)
-  // Row 9: Rejected(col1), Cards Assigned(col4), Cards Available(col7)
+  // Row 9: Rejected(col1), Cards Assigned(col4), Today's Visitors(col7)
   if (row === 5 && col === 1) {
     value = kpis.totalVisitors;
     label = 'total visitors today';
+    color = COLORS.headings;
   } else if (row === 5 && col === 4) {
     value = kpis.checkedIn;
     label = 'on-site now';
+    color = COLORS.success;
   } else if (row === 5 && col === 7) {
     value = kpis.pending;
     label = 'awaiting check-in';
+    color = COLORS.warning;
   } else if (row === 9 && col === 1) {
     value = kpis.rejected;
     label = 'rejected entries';
+    color = COLORS.danger;
   } else if (row === 9 && col === 4) {
     value = kpis.cardsAssignedToday;
     label = 'cards issued today';
+    color = COLORS.primary;
   } else if (row === 9 && col === 7) {
-    value = kpis.cardsAvailable;
-    label = 'ready for use';
+    value = kpis.totalVisitors;
+    label = 'visitors today';
+    color = COLORS.headings;
   }
 
   var rangeVal = sheet.getRange(valueRow, col, 1, 3);
@@ -868,13 +970,43 @@ function writeKpiValues_(sheet, kpis, row, col) {
   rangeVal.setValue(value);
   rangeVal.setFontSize(28);
   rangeVal.setFontWeight('bold');
-  rangeVal.setFontColor(COLORS.headings);
+  rangeVal.setFontColor(color);
   rangeVal.setHorizontalAlignment('center');
   rangeVal.setVerticalAlignment('middle');
   rangeVal.setBackground(COLORS.cardBg);
 
   // Store the label as a note on the value cell
   sheet.getRange(valueRow, col).setNote(label);
+}
+
+// ──────────────────────────────────────────────
+// HELPER: Context-Aware Trend Color
+// ──────────────────────────────────────────────
+
+/**
+ * Determine trend arrow color based on KPI context.
+ * Positive KPIs (total, checked-in, cards-assigned): up=green, down=red.
+ * Negative KPIs (pending, rejected): UP=red, down=green.
+ * Flat/N/A always gets the body text color.
+ *
+ * @param {string} trendStr - Trend string (contains ▲, ▼, ◄, or —)
+ * @param {string} kpiType - KPI identifier ('totalVisitors', 'checkedIn', 'pending', 'rejected', 'cardsAssigned')
+ * @returns {string} Hex color string
+ */
+function trendColorClass_(trendStr, kpiType) {
+  var negativeKpis = { pending: true, rejected: true };
+
+  if (trendStr.indexOf('▲') >= 0) {
+    // Up arrow: good for positive KPIs, bad for negative KPIs
+    return negativeKpis.hasOwnProperty(kpiType) ? COLORS.danger : COLORS.success;
+  } else if (trendStr.indexOf('▼') >= 0) {
+    // Down arrow: bad for positive KPIs, good for negative KPIs
+    return negativeKpis.hasOwnProperty(kpiType) ? COLORS.success : COLORS.danger;
+  } else if (trendStr.indexOf('◄') >= 0) {
+    return COLORS.warning;  // Flat — amber
+  } else {
+    return COLORS.bodyText; // N/A — gray
+  }
 }
 
 // ──────────────────────────────────────────────
@@ -891,41 +1023,37 @@ function writeKpiValues_(sheet, kpis, row, col) {
  */
 function writeTrendValues_(sheet, trends, row, col) {
   var trendStr = '';
+  var kpiType = '';
 
   // Map position to trend key — same mapping as writeKpiValues_
   if (row === 6 && col === 1) {
     trendStr = 'vs last week: ' + trends.totalVisitors;
+    kpiType = 'totalVisitors';
   } else if (row === 6 && col === 4) {
     trendStr = 'vs last week: ' + trends.checkedIn;
+    kpiType = 'checkedIn';
   } else if (row === 6 && col === 7) {
     trendStr = 'vs last week: ' + trends.pending;
+    kpiType = 'pending';
   } else if (row === 10 && col === 1) {
     trendStr = 'vs last week: ' + trends.rejected;
+    kpiType = 'rejected';
   } else if (row === 10 && col === 4) {
     trendStr = 'vs last week: ' + trends.cardsAssigned;
+    kpiType = 'cardsAssigned';
   } else if (row === 10 && col === 7) {
-    trendStr = 'vs last week: ' + trends.cardsAvailable;
+    trendStr = 'vs last week: ' + trends.totalVisitors;
+    kpiType = 'totalVisitors';
   }
 
   var rangeTrend = sheet.getRange(row, col, 1, 3);
   rangeTrend.merge();
   rangeTrend.setValue(trendStr);
   rangeTrend.setFontSize(11);
-  rangeTrend.setFontColor(COLORS.bodyText);
+  rangeTrend.setFontColor(trendColorClass_(trendStr, kpiType));
   rangeTrend.setHorizontalAlignment('center');
   rangeTrend.setVerticalAlignment('middle');
   rangeTrend.setBackground(COLORS.cardBg);
-
-  // Color the trend text based on direction
-  if (trendStr.indexOf('▲') >= 0) {
-    rangeTrend.setFontColor(COLORS.success);    // Green for positive
-  } else if (trendStr.indexOf('▼') >= 0) {
-    rangeTrend.setFontColor(COLORS.danger);     // Red for negative
-  } else if (trendStr.indexOf('◄') >= 0) {
-    rangeTrend.setFontColor(COLORS.warning);    // Amber for flat
-  } else {
-    rangeTrend.setFontColor(COLORS.bodyText);   // Gray for N/A
-  }
 }
 
 // ──────────────────────────────────────────────
@@ -1059,6 +1187,57 @@ function writeCardPoolSummary_(sheet, chartTables, startRow) {
     sheet.getRange(rowNum, 6).setValue(data[i][1]);
     sheet.getRange(rowNum, 5).setFontColor(COLORS.bodyText);
     sheet.getRange(rowNum, 6).setFontColor(COLORS.bodyText);
+  }
+}
+
+// ──────────────────────────────────────────────
+// WRITE: Recent Check-Ins Mini-List
+// ──────────────────────────────────────────────
+
+/**
+ * Write the recent check-ins mini-table into the Dashboard.
+ * Shows last 5 visitors who were Checked In.
+ *
+ * @param {Sheet} sheet - Dashboard sheet
+ * @param {Object} chartTables - Chart tables from buildChartTables_
+ * @param {number} startRow - Row to start writing data
+ */
+function writeRecentCheckins_(sheet, chartTables, startRow) {
+  var data = chartTables.recentCheckins;
+  if (!data || data.length < 1) {
+    // Write empty placeholder
+    sheet.getRange(startRow, 1).setValue('No recent check-ins');
+    sheet.getRange(startRow, 1).setFontColor(COLORS.bodyText);
+    sheet.getRange(startRow, 1).setFontSize(10);
+    sheet.getRange(startRow, 1).setFontStyle('italic');
+    return;
+  }
+
+  // Write header row: A-D
+  var headers = ['Visitor #', 'Name', 'Company', 'Time'];
+  for (var c = 0; c < headers.length; c++) {
+    var headerCell = sheet.getRange(startRow, c + 1);
+    headerCell.setValue(headers[c]);
+    headerCell.setFontWeight('bold');
+    headerCell.setFontColor(COLORS.headings);
+    headerCell.setFontSize(10);
+    headerCell.setBackground(COLORS.lightGray);
+  }
+
+  // Write data rows
+  for (var i = 1; i < data.length; i++) {
+    var rowNum = startRow + i;
+    for (var j = 0; j < data[i].length; j++) {
+      var cell = sheet.getRange(rowNum, j + 1);
+      cell.setValue(data[i][j]);
+      cell.setFontColor(COLORS.bodyText);
+      cell.setFontSize(10);
+    }
+  }
+
+  // Clear leftover rows (we expect at most 5)
+  for (var r = startRow + data.length; r <= startRow + 5; r++) {
+    sheet.getRange(r, 1, 1, 4).clearContent();
   }
 }
 
