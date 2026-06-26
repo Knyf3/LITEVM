@@ -100,6 +100,11 @@ function doPost(e) {
       return handleReportGenerate(data);
     }
 
+    // Handle migration
+    if (data.mode === 'migrate') {
+      return handleMigrationResponse(data);
+    }
+
     // Check if this is a status update
     if (data.mode === 'updateStatus') {
       return handleStatusUpdate(data);
@@ -111,6 +116,30 @@ function doPost(e) {
   } catch (error) {
     console.error('doPost error: ' + error.message + '\n' + error.stack);
     return jsonResponse({ error: error.message, status: 'error' }, 500);
+  }
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Migration (Web App mode)
+// ──────────────────────────────────────────────
+
+/**
+ * Handle migration requests from the Web App.
+ * Accepts mode=migrate with a sheetId, runs pending migrations
+ * sequentially, and returns JSON with migration results.
+ *
+ * @param {Object} data - Request body with mode and sheetId
+ * @returns {TextOutput} JSON response
+ */
+function handleMigrationResponse(data) {
+  try {
+    if (!data.sheetId) {
+      return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+    }
+    var result = handleMigration(data.sheetId);
+    return jsonResponse(result, result.status === 'ok' ? 200 : 500);
+  } catch (e) {
+    return jsonResponse({ status: 'error', error: e.message }, 500);
   }
 }
 
@@ -1169,4 +1198,209 @@ function initialize() {
   console.log('the nightly card release at 18:00.');
 
   return 'Initialization complete. Check the logs for details.';
+}
+
+// ──────────────────────────────────────────────
+// MIGRATION SYSTEM
+// ──────────────────────────────────────────────
+
+var SHEET_VERSION_CELL = 'Dashboard!A1000';
+var LATEST_SHEET_VERSION = 2;
+
+var VISITORLOG_HEADERS = [
+  'Timestamp',
+  'Full Name',
+  'ID / Passport Number',
+  'Company Name',
+  'Destination',
+  'Hand Phone',
+  'Email',
+  'ID Photo (Drive URL)',
+  'Selfie (Drive URL)',
+  'Visitor Number',
+  'Status',
+  'Action Time'
+];
+
+var CARDNO_HEADERS = ['CardNo', 'Status', 'AssignedTo', 'AssignedAt'];
+
+var DESTINATION_HEADERS = ['Destination', 'Access Level'];
+
+var MIGRATION_REGISTRY = [
+  {
+    version: 1,
+    name: 'Initial structure',
+    destructive: false,
+    description: 'Validates VisitorLog, cardno, Destination, Dashboard tabs exist',
+    fn: function(ss) {
+      console.log('Migration V1: Validating baseline tabs');
+
+      // VisitorLog tab
+      var visitorLog = ss.getSheetByName('VisitorLog');
+      if (!visitorLog) {
+        console.log('Migration V1: Creating VisitorLog tab');
+        visitorLog = ss.insertSheet('VisitorLog');
+        visitorLog.getRange(1, 1, 1, VISITORLOG_HEADERS.length).setValues([VISITORLOG_HEADERS]);
+        visitorLog.getRange(1, 1, 1, VISITORLOG_HEADERS.length).setFontWeight('bold');
+        visitorLog.setFrozenRows(1);
+        for (var v = 0; v < VISITORLOG_HEADERS.length; v++) {
+          visitorLog.autoResizeColumn(v + 1);
+        }
+      } else {
+        console.log('Migration V1: VisitorLog tab exists');
+      }
+
+      // cardno tab
+      var cardno = ss.getSheetByName('cardno');
+      if (!cardno) {
+        console.log('Migration V1: Creating cardno tab');
+        cardno = ss.insertSheet('cardno');
+        cardno.getRange(1, 1, 1, CARDNO_HEADERS.length).setValues([CARDNO_HEADERS]);
+        cardno.getRange(1, 1, 1, CARDNO_HEADERS.length).setFontWeight('bold');
+        cardno.setFrozenRows(1);
+      } else {
+        console.log('Migration V1: cardno tab exists');
+      }
+
+      // Destination tab
+      var destination = ss.getSheetByName('Destination');
+      if (!destination) {
+        console.log('Migration V1: Creating Destination tab');
+        destination = ss.insertSheet('Destination');
+        destination.getRange(1, 1, 1, DESTINATION_HEADERS.length).setValues([DESTINATION_HEADERS]);
+        destination.getRange(1, 1, 1, DESTINATION_HEADERS.length).setFontWeight('bold');
+        destination.setFrozenRows(1);
+      } else {
+        console.log('Migration V1: Destination tab exists');
+      }
+
+      // Dashboard tab
+      var dashboard = ss.getSheetByName('Dashboard');
+      if (!dashboard) {
+        console.log('Migration V1: Creating Dashboard tab');
+        // Inline equivalent of setupDashboardLayout for self-contained operation
+        dashboard = ss.insertSheet('Dashboard');
+        dashboard.getRange('A1').setValue('📊 LITEVM · Dashboard');
+        dashboard.getRange('A1').setFontSize(18);
+        dashboard.getRange('A1').setFontWeight('bold');
+        dashboard.getRange('A1:H1').merge();
+        dashboard.setFrozenRows(1);
+      } else {
+        console.log('Migration V1: Dashboard tab exists');
+      }
+
+      // Write version marker
+      console.log('Migration V1: Complete');
+    }
+  },
+  {
+    version: 2,
+    name: 'Add Report tab',
+    destructive: false,
+    description: 'Creates the Report tab with layout',
+    fn: function(ss) {
+      console.log('Migration V2: Checking for Report tab');
+
+      var existing = ss.getSheetByName('Report');
+      if (existing) {
+        console.log('Migration V2: Report tab already exists — skipping');
+        return;
+      }
+
+      console.log('Migration V2: Creating Report tab');
+      var sheet = ss.insertSheet('Report');
+
+      // Row 1: Title bar merged A1:H1
+      sheet.getRange('A1').setValue('📋 Reports');
+      sheet.getRange('A1').setFontSize(18);
+      sheet.getRange('A1').setFontWeight('bold');
+      sheet.getRange('A1').setFontColor('#4361EE');
+      sheet.getRange('A1:H1').merge();
+
+      // Row 2: Date labels and cells
+      sheet.getRange('B2').setValue('Start');
+      sheet.getRange('D2').setValue('End');
+      sheet.getRange('B2').setValue(new Date());
+      sheet.getRange('D2').setValue(new Date());
+
+      // Row 3: Custom column widths
+      sheet.setColumnWidth(1, 32);  // A
+      sheet.setColumnWidth(2, 18);  // B
+      sheet.setColumnWidth(3, 14);  // C
+      sheet.setColumnWidth(4, 14);  // D
+      sheet.setColumnWidth(5, 18);  // E
+      sheet.setColumnWidth(6, 14);  // F
+      sheet.setColumnWidth(7, 14);  // G
+      sheet.setColumnWidth(8, 14);  // H
+
+      // Row 3+: Placeholder text
+      sheet.getRange('A3').setValue('Generate a report using the 📋 Daily Summary or 📋 Visitor Log menu items.');
+      sheet.getRange('A3:H3').merge();
+
+      console.log('Migration V2: Report tab created and layout ready.');
+    }
+  }
+];
+
+/**
+ * Read sheet version from Dashboard!A1000.
+ * Returns 0 if no version marker found.
+ */
+function getSheetVersion_(ss) {
+  var sheet = ss.getSheetByName('Dashboard');
+  if (!sheet) return 0;
+  var cell = sheet.getRange(SHEET_VERSION_CELL.replace('Dashboard!', '')).getValue();
+  var match = String(cell).match(/SHEET_VERSION=(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Write sheet version to Dashboard!A1000.
+ */
+function setSheetVersion_(ss, version) {
+  var sheet = ss.getSheetByName('Dashboard');
+  if (!sheet) return;
+  sheet.getRange(SHEET_VERSION_CELL.replace('Dashboard!', '')).setValue('SHEET_VERSION=' + version);
+}
+
+/**
+ * Main migration handler. Called from handleMigrationResponse.
+ * Runs all pending migrations sequentially (fail-stop).
+ * Advances version only after successful migration.
+ *
+ * @param {string} sheetId - Google Sheet ID to migrate
+ * @returns {Object} { status, fromVersion, toVersion, migrationsRun, error? }
+ */
+function handleMigration(sheetId) {
+  var ss = SpreadsheetApp.openById(sheetId);
+  var fromVersion = getSheetVersion_(ss);
+  var migrationsRun = [];
+
+  for (var i = 0; i < MIGRATION_REGISTRY.length; i++) {
+    var mig = MIGRATION_REGISTRY[i];
+    if (mig.version > fromVersion) {
+      try {
+        mig.fn(ss);
+        setSheetVersion_(ss, mig.version);
+        migrationsRun.push(mig.name + ' (v' + mig.version + ')');
+        console.log('Migration v' + mig.version + ' (' + mig.name + ') completed successfully');
+      } catch (e) {
+        console.error('Migration v' + mig.version + ' failed: ' + e.message);
+        return {
+          status: 'error',
+          error: 'Migration v' + mig.version + ' (' + mig.name + ') failed: ' + e.message,
+          fromVersion: fromVersion,
+          toVersion: mig.version - 1,
+          migrationsRun: migrationsRun
+        };
+      }
+    }
+  }
+
+  return {
+    status: 'ok',
+    fromVersion: fromVersion,
+    toVersion: LATEST_SHEET_VERSION,
+    migrationsRun: migrationsRun
+  };
 }
