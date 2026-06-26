@@ -416,7 +416,7 @@ function refreshDashboard(sheetId) {
 
     // ── Toast: loading (bound mode only) ──
     if (!sheetId) {
-      SpreadsheetApp.getUi().showToast('⟳ Loading dashboard data...', 'LITEVM', 5);
+      SpreadsheetApp.toast('⟳ Loading dashboard data...', 'LITEVM', 5);
     }
 
     // ── Step 1: Get date range ──
@@ -494,7 +494,7 @@ function refreshDashboard(sheetId) {
       var ampm = h >= 12 ? 'PM' : 'AM';
       var h12 = h % 12 || 12;
       var minStr = ('0' + m).slice(-2);
-      SpreadsheetApp.getUi().showToast('✓ Dashboard updated • ' + h12 + ':' + minStr + ' ' + ampm, 'LITEVM', 3);
+      SpreadsheetApp.toast('✓ Dashboard updated • ' + h12 + ':' + minStr + ' ' + ampm, 'LITEVM', 3);
     }
 
     console.log('refreshDashboard: Dashboard refreshed successfully at ' + formattedNow);
