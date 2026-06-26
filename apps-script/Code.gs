@@ -115,7 +115,12 @@ function doPost(e) {
       return handleStatusUpdate(data);
     }
 
-    // Otherwise, handle registration (existing logic)
+    // If mode was specified but not handled, return error
+    if (data.mode) {
+      return jsonResponse({ status: 'error', error: 'Unknown mode: ' + data.mode }, 400);
+    }
+
+    // Otherwise, handle registration (existing logic — no mode or mode=register)
     return handleRegistration(data);
 
   } catch (error) {
@@ -469,14 +474,15 @@ function seedCardPool(count, prefix) {
   count = count || 50;
   prefix = prefix || '1';
 
-  var sheet = getCardnoSheet();
+  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    console.error('seedCardPool: SHEET_ID not configured');
+    return;
+  }
+
+  var sheet = getCardnoSheet(sheetId);
   if (!sheet) {
     // Cardno sheet doesn't exist yet — create it
-    var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-    if (!sheetId) {
-      console.error('seedCardPool: SHEET_ID not configured');
-      return;
-    }
     var ss = SpreadsheetApp.openById(sheetId);
     sheet = ss.insertSheet('cardno');
     sheet.getRange(1, 1, 1, 4).setValues([['CardNo', 'Status', 'AssignedTo', 'AssignedAt']]);
@@ -570,7 +576,7 @@ function handleStatusUpdate(data) {
           var email = String(values[i][6] || '').trim();
 
           try {
-            var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email);
+            var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
             if (cardResult) {
               result.cardNo = cardResult.cardNo;
               result.cardQRUrl = cardResult.cardQRUrl;
@@ -625,20 +631,15 @@ function jsonResponse(obj, statusCode) {
 // ──────────────────────────────────────────────
 
 function getOrCreateSheet(sheetId) {
-  // If sheetId not provided, try Script Properties
   if (!sheetId) {
-    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+    throw new Error('Missing sheetId parameter. Every Web App request must include a sheetId.');
   }
 
   var ss;
-  if (sheetId) {
-    try {
-      ss = SpreadsheetApp.openById(sheetId);
-    } catch (e) {
-      ss = SpreadsheetApp.getActiveSpreadsheet();
-    }
-  } else {
-    ss = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    ss = SpreadsheetApp.openById(sheetId);
+  } catch (e) {
+    throw new Error('Cannot open sheet: ' + sheetId + '. Verify the sheet exists and is shared with the Web App owner. Error: ' + e.message);
   }
 
   var sheet = ss.getActiveSheet();
@@ -866,10 +867,9 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
  * Returns the Sheet object, or null if not found (logs a warning).
  * Does NOT create the sheet if missing.
  */
-function getCardnoSheet() {
-  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+function getCardnoSheet(sheetId) {
   if (!sheetId) {
-    console.warn('getCardnoSheet: SHEET_ID not configured');
+    console.warn('getCardnoSheet: sheetId is required');
     return null;
   }
 
@@ -877,12 +877,12 @@ function getCardnoSheet() {
     var ss = SpreadsheetApp.openById(sheetId);
     var cardSheet = ss.getSheetByName('cardno');
     if (!cardSheet) {
-      console.warn('getCardnoSheet: "cardno" sheet tab not found in spreadsheet');
+      console.warn('getCardnoSheet: "cardno" sheet tab not found in spreadsheet ' + sheetId);
       return null;
     }
     return cardSheet;
   } catch (e) {
-    console.warn('getCardnoSheet: Failed to open spreadsheet — ' + e.message);
+    console.warn('getCardnoSheet: Failed to open spreadsheet ' + sheetId + ' — ' + e.message);
     return null;
   }
 }
@@ -892,12 +892,10 @@ function getCardnoSheet() {
  * @param {string} destination — The visitor's destination (e.g. "BRI", "PLN")
  * @returns {string|null} The Access Level value, or null if not found
  */
-function getAccessLevelForDestination(destination) {
+function getAccessLevelForDestination(destination, sheetId) {
   if (!destination) return null;
-
-  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
   if (!sheetId) {
-    console.warn('getAccessLevelForDestination: SHEET_ID not configured');
+    console.warn('getAccessLevelForDestination: sheetId is required');
     return null;
   }
 
@@ -905,7 +903,7 @@ function getAccessLevelForDestination(destination) {
   try {
     ss = SpreadsheetApp.openById(sheetId);
   } catch (e) {
-    console.warn('getAccessLevelForDestination: Cannot open spreadsheet — ' + e.message);
+    console.warn('getAccessLevelForDestination: Cannot open spreadsheet ' + sheetId + ' — ' + e.message);
     return null;
   }
 
@@ -937,8 +935,8 @@ function getAccessLevelForDestination(destination) {
  * @param {string} accessLevel — Currently unused (reserved for future access-level-based filtering)
  * @returns {string|null} The CardNo value, or null if the pool is depleted
  */
-function pickUnusedCard(accessLevel) {
-  var cardSheet = getCardnoSheet();
+function pickUnusedCard(accessLevel, sheetId) {
+  var cardSheet = getCardnoSheet(sheetId);
   if (!cardSheet) return null;
 
   var data = cardSheet.getDataRange().getValues();
@@ -961,8 +959,8 @@ function pickUnusedCard(accessLevel) {
  * @param {string} visitorName — The visitor's full name (logged for traceability)
  * @returns {boolean} true on success, false if card row not found
  */
-function assignCard(cardNo, visitorNumber, visitorName) {
-  var cardSheet = getCardnoSheet();
+function assignCard(cardNo, visitorNumber, visitorName, sheetId) {
+  var cardSheet = getCardnoSheet(sheetId);
   if (!cardSheet) return false;
 
   var data = cardSheet.getDataRange().getValues();
@@ -1002,19 +1000,19 @@ function assignCard(cardNo, visitorNumber, visitorName) {
  * @param {string} email
  * @returns {{ cardNo: string|null, cardQRUrl: string|null, status: string }}
  */
-function assignCardForVisitor(visitorNumber, fullName, destination, email) {
+function assignCardForVisitor(visitorNumber, fullName, destination, email, sheetId) {
   // 1. Resolve access level from the visitor's destination
-  var accessLevel = getAccessLevelForDestination(destination);
+  var accessLevel = getAccessLevelForDestination(destination, sheetId);
 
   // 2. Pick an unused card (access level reserved for future filtering)
-  var cardNo = pickUnusedCard(accessLevel);
+  var cardNo = pickUnusedCard(accessLevel, sheetId);
 
   if (!cardNo) {
     return { cardNo: null, status: 'depleted' };
   }
 
   // 3. Mark the card as Assigned
-  var assigned = assignCard(cardNo, visitorNumber, fullName);
+  var assigned = assignCard(cardNo, visitorNumber, fullName, sheetId);
   if (!assigned) {
     return { cardNo: null, status: 'error', message: 'Card assignment write failed' };
   }
@@ -1099,7 +1097,13 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
  * resets Status to "Available" and clears AssignedTo / AssignedAt.
  */
 function releaseDailyCards() {
-  var cardSheet = getCardnoSheet();
+  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (!sheetId) {
+    console.warn('releaseDailyCards: SHEET_ID not configured — nothing to release');
+    return;
+  }
+
+  var cardSheet = getCardnoSheet(sheetId);
   if (!cardSheet) {
     console.warn('releaseDailyCards: cardno sheet not found — nothing to release');
     return;
@@ -1302,7 +1306,7 @@ var MIGRATION_REGISTRY = [
     version: 2,
     name: 'Add Report tab',
     destructive: false,
-    description: 'Creates the Report tab with layout',
+    description: 'Creates the Report tab with layout using setupReportLayout()',
     fn: function(ss) {
       console.log('Migration V2: Checking for Report tab');
 
@@ -1312,37 +1316,9 @@ var MIGRATION_REGISTRY = [
         return;
       }
 
-      console.log('Migration V2: Creating Report tab');
-      var sheet = ss.insertSheet('Report');
-
-      // Row 1: Title bar merged A1:H1
-      sheet.getRange('A1').setValue('📋 Reports');
-      sheet.getRange('A1').setFontSize(18);
-      sheet.getRange('A1').setFontWeight('bold');
-      sheet.getRange('A1').setFontColor('#4361EE');
-      sheet.getRange('A1:H1').merge();
-
-      // Row 2: Date labels and cells
-      sheet.getRange('B2').setValue('Start');
-      sheet.getRange('D2').setValue('End');
-      sheet.getRange('B2').setValue(new Date());
-      sheet.getRange('D2').setValue(new Date());
-
-      // Row 3: Custom column widths
-      sheet.setColumnWidth(1, 32);  // A
-      sheet.setColumnWidth(2, 18);  // B
-      sheet.setColumnWidth(3, 14);  // C
-      sheet.setColumnWidth(4, 14);  // D
-      sheet.setColumnWidth(5, 18);  // E
-      sheet.setColumnWidth(6, 14);  // F
-      sheet.setColumnWidth(7, 14);  // G
-      sheet.setColumnWidth(8, 14);  // H
-
-      // Row 3+: Placeholder text
-      sheet.getRange('A3').setValue('Generate a report using the 📋 Daily Summary or 📋 Visitor Log menu items.');
-      sheet.getRange('A3:H3').merge();
-
-      console.log('Migration V2: Report tab created and layout ready.');
+      // Call the centralized function
+      setupReportLayout(ss.getId());
+      console.log('Migration V2: Report tab created via setupReportLayout().');
     }
   }
 ];
@@ -1675,13 +1651,13 @@ function setupKpiCard_(sheet, row, col, label, accentColor) {
 
 function insertReloadButton_(sheet) {
   sheet.getRange('J3').setValue(
-    '⚠ Insert button: Insert > Drawing (rounded rect, text "⟳ Reload"), assign script "refreshDashboard".'
+    '⚠ Menu: Use 📊 LITEVM > Refresh Dashboard (button not needed — wrapper script handles it)'
   );
   sheet.getRange('J3').setFontColor(COLORS.danger);
   sheet.getRange('J3').setFontSize(8);
   sheet.getRange('J3').setFontStyle('italic');
 
-  console.log('insertReloadButton_: Button note added to J3. User must create button manually.');
+  console.log('insertReloadButton_: Note updated. Button not needed — wrapper script handles refresh.');
 }
 
 // ── MAIN: refreshDashboard() ──
