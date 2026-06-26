@@ -280,12 +280,12 @@ function setupDashboardLayout(sheetId) {
 
   console.log('setupDashboardLayout: Dashboard tab created and populated.');
   if (!sheetId) {
-    SpreadsheetApp.getUi().alert(
+    try { SpreadsheetApp.getUi().alert(
       '✅ Dashboard layout is ready!\n\n'
       + '• Date filters are in cells G1 (Start) and I1 (End)\n'
       + '• Click [⟳ Reload] or menu 📊 Dashboard > Reload Dashboard\n'
       + '• Data has been loaded for today\'s date range.'
-    );
+    ); } catch(e) {}
   }
 }
 
@@ -407,16 +407,16 @@ function refreshDashboard(sheetId) {
     var sheet = ss.getSheetByName('Dashboard');
     if (!sheet) {
       if (!sheetId) {
-        SpreadsheetApp.getUi().alert(
+        try { SpreadsheetApp.getUi().alert(
           'Dashboard tab not found. Run 📊 Dashboard > Setup Dashboard Layout first.'
-        );
+        ); } catch(e) {}
       }
       return false;
     }
 
     // ── Toast: loading (bound mode only) ──
     if (!sheetId) {
-      SpreadsheetApp.toast('⟳ Loading dashboard data...', 'LITEVM', 5);
+      try { SpreadsheetApp.toast('⟳ Loading dashboard data...', 'LITEVM', 5); } catch(e) {}
     }
 
     // ── Step 1: Get date range ──
@@ -494,7 +494,7 @@ function refreshDashboard(sheetId) {
       var ampm = h >= 12 ? 'PM' : 'AM';
       var h12 = h % 12 || 12;
       var minStr = ('0' + m).slice(-2);
-      SpreadsheetApp.toast('✓ Dashboard updated • ' + h12 + ':' + minStr + ' ' + ampm, 'LITEVM', 3);
+      try { SpreadsheetApp.toast('✓ Dashboard updated • ' + h12 + ':' + minStr + ' ' + ampm, 'LITEVM', 3); } catch(e) {}
     }
 
     console.log('refreshDashboard: Dashboard refreshed successfully at ' + formattedNow);
@@ -503,11 +503,11 @@ function refreshDashboard(sheetId) {
   } catch (error) {
     console.error('refreshDashboard error: ' + error.message + '\n' + error.stack);
     if (!sheetId) {
-      SpreadsheetApp.getUi().alert(
+      try { SpreadsheetApp.getUi().alert(
         '❌ Dashboard refresh failed.\n\n'
         + error.message + '\n\n'
         + 'Check the Apps Script logs for details.'
-      );
+      ); } catch(e) {}
     }
     return false;
   }
