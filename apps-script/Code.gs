@@ -95,6 +95,11 @@ function doPost(e) {
       return handleDashboardRefresh(data);
     }
 
+    // Report generation
+    if (data.mode === 'report') {
+      return handleReportGenerate(data);
+    }
+
     // Check if this is a status update
     if (data.mode === 'updateStatus') {
       return handleStatusUpdate(data);
@@ -137,6 +142,48 @@ function handleDashboardRefresh(data) {
     }
   } catch (e) {
     console.error('handleDashboardRefresh error: ' + e.message);
+    return jsonResponse({ status: 'error', error: e.message }, 500);
+  }
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Report Generation (Web App mode)
+// ──────────────────────────────────────────────
+
+/**
+ * Handle report generation requests from the Web App.
+ * Accepts mode=report with a sheetId and reportType.
+ * Valid reportType values: 'daily' (summary) or 'visitors' (log).
+ * Returns JSON status — does NOT show UI alerts.
+ *
+ * @param {Object} data - Request body with mode, sheetId, and reportType
+ * @returns {TextOutput} JSON response
+ */
+function handleReportGenerate(data) {
+  var sheetId = data.sheetId;
+  if (!sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+
+  var reportType = data.reportType || 'daily';
+
+  try {
+    var result;
+    if (reportType === 'daily') {
+      result = generateDailySummary(sheetId);
+    } else if (reportType === 'visitors') {
+      result = generateVisitorLog(sheetId);
+    } else {
+      return jsonResponse({ status: 'error', error: 'Invalid reportType. Use "daily" or "visitors".' }, 400);
+    }
+
+    if (result === true) {
+      return jsonResponse({ status: 'ok', reportType: reportType, message: 'Report generated' }, 200);
+    } else {
+      return jsonResponse({ status: 'error', error: 'Report generation failed — check logs' }, 500);
+    }
+  } catch (e) {
+    console.error('handleReportGenerate error: ' + e.message);
     return jsonResponse({ status: 'error', error: e.message }, 500);
   }
 }

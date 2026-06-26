@@ -52,6 +52,11 @@ function onOpen(e) {
     .addItem('⟳ Reload Dashboard', 'refreshDashboard')
     .addSeparator()
     .addItem('⚙ Setup Dashboard Layout', 'setupDashboardLayout')
+    .addSeparator()
+    .addItem('📋 Daily Summary', 'generateDailySummary')
+    .addItem('📋 Visitor Log', 'generateVisitorLog')
+    .addSeparator()
+    .addItem('⚙ Setup Report Layout', 'setupReportLayout')
     .addToUi();
 }
 
