@@ -405,17 +405,17 @@ function refreshDashboard(sheetId) {
     writeKpiValues_(sheet, kpis, 5, 1);     // Total Visitors
     writeKpiValues_(sheet, kpis, 5, 4);     // Checked In
     writeKpiValues_(sheet, kpis, 5, 7);     // Pending
-    writeKpiValues_(sheet, kpis, 8, 1);     // Rejected
-    writeKpiValues_(sheet, kpis, 8, 4);     // Cards Assigned
-    writeKpiValues_(sheet, kpis, 8, 7);     // Cards Available
+    writeKpiValues_(sheet, kpis, 9, 1);     // Rejected
+    writeKpiValues_(sheet, kpis, 9, 4);     // Cards Assigned
+    writeKpiValues_(sheet, kpis, 9, 7);     // Cards Available
 
     // ── Step 7: Write trend values ──
     writeTrendValues_(sheet, trends, 6, 1);  // Total Visitors trend
     writeTrendValues_(sheet, trends, 6, 4);  // Checked In trend
     writeTrendValues_(sheet, trends, 6, 7);  // Pending trend
-    writeTrendValues_(sheet, trends, 9, 1);  // Rejected trend
-    writeTrendValues_(sheet, trends, 9, 4);  // Cards Assigned trend
-    writeTrendValues_(sheet, trends, 9, 7);  // Cards Available trend
+    writeTrendValues_(sheet, trends, 10, 1);  // Rejected trend
+    writeTrendValues_(sheet, trends, 10, 4);  // Cards Assigned trend
+    writeTrendValues_(sheet, trends, 10, 7);  // Cards Available trend
 
     // ── Step 8: Write chart table data ──
     writeStatusDistribution_(sheet, chartTables, 13);      // A13:B...
@@ -842,7 +842,7 @@ function writeKpiValues_(sheet, kpis, row, col) {
 
   // Determine which KPI to write based on (row, col) position
   // Row 5: Total Visitors(col1), Checked In(col4), Pending(col7)
-  // Row 8: Rejected(col1), Cards Assigned(col4), Cards Available(col7)
+  // Row 9: Rejected(col1), Cards Assigned(col4), Cards Available(col7)
   if (row === 5 && col === 1) {
     value = kpis.totalVisitors;
     label = 'total visitors today';
@@ -852,13 +852,13 @@ function writeKpiValues_(sheet, kpis, row, col) {
   } else if (row === 5 && col === 7) {
     value = kpis.pending;
     label = 'awaiting check-in';
-  } else if (row === 8 && col === 1) {
+  } else if (row === 9 && col === 1) {
     value = kpis.rejected;
     label = 'rejected entries';
-  } else if (row === 8 && col === 4) {
+  } else if (row === 9 && col === 4) {
     value = kpis.cardsAssignedToday;
     label = 'cards issued today';
-  } else if (row === 8 && col === 7) {
+  } else if (row === 9 && col === 7) {
     value = kpis.cardsAvailable;
     label = 'ready for use';
   }
@@ -899,11 +899,11 @@ function writeTrendValues_(sheet, trends, row, col) {
     trendStr = 'vs last week: ' + trends.checkedIn;
   } else if (row === 6 && col === 7) {
     trendStr = 'vs last week: ' + trends.pending;
-  } else if (row === 9 && col === 1) {
+  } else if (row === 10 && col === 1) {
     trendStr = 'vs last week: ' + trends.rejected;
-  } else if (row === 9 && col === 4) {
+  } else if (row === 10 && col === 4) {
     trendStr = 'vs last week: ' + trends.cardsAssigned;
-  } else if (row === 9 && col === 7) {
+  } else if (row === 10 && col === 7) {
     trendStr = 'vs last week: ' + trends.cardsAvailable;
   }
 
