@@ -2,14 +2,23 @@
  * LITEVM — Dashboard Snapshot (Additional file in Apps Script project)
  *
  * Pure snapshot approach: no formulas, no triggers, no hidden helper columns.
- * refreshDashboard() reads all data in-memory and writes static values to the
- * Dashboard tab. User clicks [⟳ Reload] to refresh.
+ *
+ * DUAL-MODE ARCHITECTURE (since June 2026):
+ *   This file supports BOTH:
+ *   (a) Bound-script usage — called from button/menu in a specific sheet
+ *       using getActiveSpreadsheet()
+ *   (b) Web App invocation — called via doPost with a sheetId parameter
+ *       using SpreadsheetApp.openById(sheetId)
+ *
+ * All public functions (setupDashboardLayout, refreshDashboard) accept an
+ * optional sheetId parameter. When called with sheetId, they operate in
+ * "Web App mode" — no UI alerts, returns boolean success/failure.
  *
  * Add this file as a new script file in the existing Apps Script project:
  *   1. Open your Apps Script project
  *   2. Files > New > Script
  *   3. Paste this code, name it Dashboard.gs
- *   4. Run setupDashboardLayout() once from the editor
+ *   4. Run setupDashboardLayout() once from the editor (or via Web App)
  *   5. Save and close
  */
 
@@ -53,11 +62,20 @@ function onOpen(e) {
 /**
  * Creates the Dashboard tab with visual layout, merged cells, colors,
  * and text styles. Run ONCE from the Apps Script editor after adding
- * this file. Does NOT overwrite data if the tab already exists — it
- * clears the tab and rebuilds the layout, then runs refreshDashboard().
+ * this file, or invoke via Web App with sheetId. Does NOT overwrite
+ * data if the tab already exists — it clears the tab and rebuilds the
+ * layout, then runs refreshDashboard().
+ *
+ * @param {string} [sheetId] - Optional. When provided, opens the sheet by ID
+ *   (Web App mode). When omitted, uses getActiveSpreadsheet() (bound mode).
  */
-function setupDashboardLayout() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+function setupDashboardLayout(sheetId) {
+  var ss;
+  if (sheetId) {
+    ss = SpreadsheetApp.openById(sheetId);
+  } else {
+    ss = SpreadsheetApp.getActiveSpreadsheet();
+  }
   var sheet = ss.getSheetByName('Dashboard');
 
   // Create the Dashboard tab if it doesn't exist
@@ -228,15 +246,17 @@ function setupDashboardLayout() {
   // =============================================
   // Run refresh to populate data
   // =============================================
-  refreshDashboard();
+  refreshDashboard(sheetId);
 
   console.log('setupDashboardLayout: Dashboard tab created and populated.');
-  SpreadsheetApp.getUi().alert(
-    '✅ Dashboard layout is ready!\n\n'
-    + '• Date filters are in cells G1 (Start) and I1 (End)\n'
-    + '• Click [⟳ Reload] or menu 📊 Dashboard > Reload Dashboard\n'
-    + '• Data has been loaded for today\'s date range.'
-  );
+  if (!sheetId) {
+    SpreadsheetApp.getUi().alert(
+      '✅ Dashboard layout is ready!\n\n'
+      + '• Date filters are in cells G1 (Start) and I1 (End)\n'
+      + '• Click [⟳ Reload] or menu 📊 Dashboard > Reload Dashboard\n'
+      + '• Data has been loaded for today\'s date range.'
+    );
+  }
 }
 
 // ──────────────────────────────────────────────
@@ -339,17 +359,29 @@ function insertReloadButton_(sheet) {
  * memory, computes KPIs filtered by the date range in G1 / I1, and
  * writes static (snapshot) values to the Dashboard tab.
  *
- * Can be called manually from the menu, button, or editor.
+ * Supports dual-mode operation:
+ *   - Bound mode (no sheetId): Uses getActiveSpreadsheet(), shows UI alerts.
+ *   - Web App mode (with sheetId): Opens by ID, returns boolean, no UI.
+ *
+ * @param {string} [sheetId] - Optional sheet ID for Web App mode.
+ * @returns {boolean} True on success, false on failure.
  */
-function refreshDashboard() {
+function refreshDashboard(sheetId) {
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss;
+    if (sheetId) {
+      ss = SpreadsheetApp.openById(sheetId);
+    } else {
+      ss = SpreadsheetApp.getActiveSpreadsheet();
+    }
     var sheet = ss.getSheetByName('Dashboard');
     if (!sheet) {
-      SpreadsheetApp.getUi().alert(
-        'Dashboard tab not found. Run 📊 Dashboard > Setup Dashboard Layout first.'
-      );
-      return;
+      if (!sheetId) {
+        SpreadsheetApp.getUi().alert(
+          'Dashboard tab not found. Run 📊 Dashboard > Setup Dashboard Layout first.'
+        );
+      }
+      return false;
     }
 
     // ── Step 1: Get date range ──
@@ -418,14 +450,18 @@ function refreshDashboard() {
     }
 
     console.log('refreshDashboard: Dashboard refreshed successfully at ' + formattedNow);
+    return true;
 
   } catch (error) {
     console.error('refreshDashboard error: ' + error.message + '\n' + error.stack);
-    SpreadsheetApp.getUi().alert(
-      '❌ Dashboard refresh failed.\n\n'
-      + error.message + '\n\n'
-      + 'Check the Apps Script logs for details.'
-    );
+    if (!sheetId) {
+      SpreadsheetApp.getUi().alert(
+        '❌ Dashboard refresh failed.\n\n'
+        + error.message + '\n\n'
+        + 'Check the Apps Script logs for details.'
+      );
+    }
+    return false;
   }
 }
 

@@ -1,6 +1,16 @@
 /**
  * LITEVM — Google Apps Script Web App (Backend Middleware)
  *
+ * MULTI-CUSTOMER ARCHITECTURE:
+ *   A single Web App deployment serves multiple customer sheets. Each request
+ *   passes a sheetId parameter identifying which Google Sheet to operate on.
+ *   The frontend (config.js) has API_BASE pointing to one Web App URL, and
+ *   each customer's frontend build has its own SHEET_ID in config.js.
+ *
+ * Supported modes:
+ *   GET  — lookup, today, destinations, cardpool (all accept sheetId query param)
+ *   POST — registration, updateStatus, dashboard (all accept sheetId in JSON body)
+ *
  * Deploy as a Web App:
  *   1. File > New > Project
  *   2. Paste this code into Code.gs
@@ -10,6 +20,9 @@
  *   4. Deploy > New deployment > Web App
  *   5. Set "Execute as" to "Me" and "Who has access" to "Anyone"
  *   6. Copy the Web App URL into frontend config.js as API_BASE
+ *
+ * Dashboard.gs is a SIBLING file in the same Apps Script project that provides
+ * the snapshot dashboard for bound-script and Web App usage.
  */
 
 // ──────────────────────────────────────────────
@@ -18,10 +31,12 @@
 
 /**
  * Handle GET requests.
- * ?action=lookup&visitorNumber=V-XXXX   → returns visitor data
- * ?action=today                           → returns all today's visitors
- * ?action=destinations                    → returns Destination tab data
- * (no params)                             → health check
+ * All actions accept an optional sheetId query parameter for multi-customer support.
+ * ?action=lookup&visitorNumber=V-XXXX&sheetId=... → returns visitor data
+ * ?action=today&sheetId=...                        → returns all today's visitors
+ * ?action=destinations&sheetId=...                 → returns Destination tab data
+ * ?action=cardpool&sheetId=...                     → card pool diagnostic
+ * (no params)                                      → health check
  */
 function doGet(e) {
   try {
@@ -62,8 +77,8 @@ function doGet(e) {
 
 /**
  * Handle POST requests.
- * Existing: registration (fullName, idNumber, company, destination, phone, email, idPhoto, selfie)
- * New: mode=updateStatus with visitorNumber and status
+ * Modes: dashboard (refreshDashboard), updateStatus (visitor check-in/reject),
+ * or registration (default — creates new visitor entry).
  */
 function doPost(e) {
   try {
@@ -73,6 +88,11 @@ function doPost(e) {
       data = JSON.parse(e.postData.contents);
     } catch (parseErr) {
       return jsonResponse({ status: 'error', error: 'Invalid JSON payload' }, 400);
+    }
+
+    // Dashboard refresh
+    if (data.mode === 'dashboard') {
+      return handleDashboardRefresh(data);
     }
 
     // Check if this is a status update
@@ -86,6 +106,38 @@ function doPost(e) {
   } catch (error) {
     console.error('doPost error: ' + error.message + '\n' + error.stack);
     return jsonResponse({ error: error.message, status: 'error' }, 500);
+  }
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Dashboard Refresh (Web App mode)
+// ──────────────────────────────────────────────
+
+/**
+ * Handle dashboard refresh requests from the Web App.
+ * Accepts mode=dashboard with a sheetId, opens that sheet,
+ * and runs the full dashboard refresh pipeline.
+ * Returns JSON status — does NOT show UI alerts.
+ *
+ * @param {Object} data - Request body with mode and sheetId
+ * @returns {TextOutput} JSON response
+ */
+function handleDashboardRefresh(data) {
+  var sheetId = data.sheetId;
+  if (!sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+
+  try {
+    var result = refreshDashboard(sheetId);
+    if (result === true) {
+      return jsonResponse({ status: 'ok', message: 'Dashboard refreshed' }, 200);
+    } else {
+      return jsonResponse({ status: 'error', error: 'Dashboard refresh failed — check logs' }, 500);
+    }
+  } catch (e) {
+    console.error('handleDashboardRefresh error: ' + e.message);
+    return jsonResponse({ status: 'error', error: e.message }, 500);
   }
 }
 
