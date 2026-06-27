@@ -970,20 +970,25 @@
       if (parsed.status === 'ok') {
         var summary = parsed.summary;
         var msg = summary.ok + ' signed out';
-        if (summary.error > 0) msg += ', ' + summary.error + ' failed';
         if (summary.skipped > 0) msg += ', ' + summary.skipped + ' skipped';
+        if (summary.error > 0) msg += ', ' + summary.error + ' failed';
 
-        if (summary.error > 0 || summary.skipped > 0) {
-          // Show details for partial failure
-          var details = '';
-          parsed.results.forEach(function(r) {
-            if (r.status !== 'ok') {
-              details += '\n' + (r.visitorNumber || '?') + ': ' + (r.message || r.status);
-            }
-          });
-          showError(msg + '. Cards released.' + details);
+        if (summary.ok > 0) {
+          // Show success toast with details
+          var toastMsg = msg + '. Cards released.';
+          if (summary.error > 0 || summary.skipped > 0) {
+            var details = '';
+            parsed.results.forEach(function(r) {
+              if (r.status !== 'ok') {
+                details += '\n' + (r.visitorNumber || '?') + ': ' + (r.message || r.status);
+              }
+            });
+            toastMsg += details;
+          }
+          showToast(toastMsg);
         } else {
-          showToast(msg + '. Cards released.');
+          // Nothing succeeded — show error
+          showError(msg || 'No visitors were signed out');
         }
 
         // Clear selections
@@ -1027,14 +1032,15 @@
   }
 
   function showToast(message) {
-    var overlay = $('#error-overlay');
-    var msgEl = $('#error-message');
-    if (!overlay || !msgEl) return;
+    var toast = $('#toast-overlay');
+    var msgEl = $('#toast-message');
+    if (!toast || !msgEl) return;
     msgEl.textContent = message;
-    overlay.classList.remove('hidden');
+    toast.classList.remove('hidden');
+    toast.onclick = function() { toast.classList.add('hidden'); };
     // Auto-dismiss after 4 seconds
     setTimeout(function() {
-      overlay.classList.add('hidden');
+      toast.classList.add('hidden');
     }, 4000);
   }
 

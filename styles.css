@@ -889,6 +889,34 @@ body {
   display: none;
 }
 
+/* --- Success Toast --- */
+.toast-overlay {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  background: #16A34A;
+  color: #FFFFFF;
+  padding: 14px 24px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(22, 163, 74, 0.3);
+  max-width: 90vw;
+  text-align: center;
+  animation: toastSlideIn 0.3s ease;
+}
+
+.toast-overlay.hidden {
+  display: none;
+}
+
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
 .error-content {
   background: #FFFFFF;
   border-radius: 16px;

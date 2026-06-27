@@ -93,6 +93,17 @@ function doPost(e) {
       return handleMigrationResponse(data);
     }
 
+    // Handle bulk sign-out
+    if (data.mode === 'bulkSignOut') {
+      return handleBulkSignOut(data);
+    }
+
+    // Handle auto sign-out trigger setup
+    if (data.mode === 'setupAutoSignOut') {
+      setupAutoSignOutTrigger();
+      return jsonResponse({ status: 'ok', message: 'Auto sign-out trigger set for 21:00' }, 200);
+    }
+
     // Check if this is a status update
     if (data.mode === 'updateStatus') {
       return handleStatusUpdate(data);
@@ -488,6 +499,13 @@ function handleStatusUpdate(data) {
           // Write Sign-Out: Status to col 12, Sign-Out Time to col 14
           sheet.getRange(i + 1, 12).setValue('Signed Out');
           sheet.getRange(i + 1, 14).setValue(new Date());
+
+          // Release card immediately on sign-out
+          try {
+            releaseCardForVisitor(visitorNumber, data.sheetId);
+          } catch (cardErr) {
+            console.warn('Card release failed for ' + visitorNumber + ': ' + cardErr.message);
+          }
 
           return jsonResponse({ status: 'ok', message: 'Visitor signed out', visitorNumber: visitorNumber }, 200);
         }
@@ -1031,9 +1049,228 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
   console.log('Card assignment email sent to ' + toEmail + ' for card ' + cardNo);
 }
 
+// ══════════════════════════════════════════════
+// BULK SIGN-OUT & CARD RELEASE
+// ══════════════════════════════════════════════
+
+/**
+ * Release a specific visitor's assigned card back to Available.
+ * Searches the cardno sheet for a row where AssignedTo matches the visitor number.
+ *
+ * @param {string} visitorNumber — The visitor number whose card to release
+ * @param {string} sheetId — The Google Sheet ID
+ * @returns {boolean} true if card was found and released, false otherwise
+ */
+function releaseCardForVisitor(visitorNumber, sheetId) {
+  if (!visitorNumber || !sheetId) return false;
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var cardSheet = ss.getSheetByName('cardno');
+    if (!cardSheet) return false;
+
+    var data = cardSheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var assignedTo = String(data[i][2] || '').trim();
+      if (assignedTo === visitorNumber.trim()) {
+        cardSheet.getRange(i + 1, 2, 1, 3).setValues([['Available', '', '']]);
+        return true;
+      }
+    }
+    return false; // Card not found for this visitor
+  } catch (e) {
+    console.warn('releaseCardForVisitor error: ' + e.message);
+    return false;
+  }
+}
+
+/**
+ * Handle bulk sign-out of multiple visitors.
+ * Accepts { mode: 'bulkSignOut', visitorNumbers: [...], sheetId: '...' }
+ * Uses LockService with 120s timeout for large batches.
+ * Iterates through visitorNumbers array, signs out each one, releases cards.
+ * Caps at 25 items per request.
+ *
+ * @param {Object} data — Request payload
+ * @returns {TextOutput} JSON response with per-visitor results and summary
+ */
+function handleBulkSignOut(data) {
+  var visitorNumbers = data.visitorNumbers;
+  var sheetId = data.sheetId;
+
+  if (!visitorNumbers || !Array.isArray(visitorNumbers) || visitorNumbers.length === 0) {
+    return jsonResponse({ status: 'error', error: 'visitorNumbers must be a non-empty array' }, 400);
+  }
+
+  if (visitorNumbers.length > 25) {
+    return jsonResponse({ status: 'error', error: 'Maximum 25 visitors per batch' }, 400);
+  }
+
+  if (!sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(120000)) {
+    return jsonResponse({ status: 'error', error: 'System busy. Please try again.' }, 503);
+  }
+
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = ss.getSheetByName('VisitorLog');
+    if (!sheet) {
+      return jsonResponse({ status: 'error', error: 'VisitorLog sheet not found' }, 404);
+    }
+
+    var results = [];
+    var summary = { ok: 0, skipped: 0, error: 0 };
+
+    for (var v = 0; v < visitorNumbers.length; v++) {
+      var vn = visitorNumbers[v].trim();
+      if (!vn) {
+        results.push({ visitorNumber: vn, status: 'skipped', message: 'Empty visitor number' });
+        summary.skipped++;
+        continue;
+      }
+
+      try {
+        // Read fresh data each iteration (avoid stale cache)
+        var dataRange = sheet.getDataRange();
+        var values = dataRange.getValues();
+        var found = false;
+
+        for (var i = 1; i < values.length; i++) {
+          var rowVn = String(values[i][10] || '').trim();
+          if (rowVn !== vn) continue;
+
+          found = true;
+          var currentStatus = String(values[i][11] || '').trim();
+
+          // Stale checkbox protection
+          if (currentStatus === 'Signed Out') {
+            results.push({ visitorNumber: vn, status: 'skipped', message: 'Already signed out' });
+            summary.skipped++;
+            break;
+          }
+          if (currentStatus !== 'Checked In') {
+            results.push({ visitorNumber: vn, status: 'skipped', message: 'Status is "' + currentStatus + '" — must be "Checked In"' });
+            summary.skipped++;
+            break;
+          }
+
+          // Write Signed Out status + timestamp
+          sheet.getRange(i + 1, 12).setValue('Signed Out');
+          sheet.getRange(i + 1, 14).setValue(new Date());
+
+          // Release card
+          var cardReleased = releaseCardForVisitor(vn, sheetId);
+
+          results.push({
+            visitorNumber: vn,
+            status: 'ok',
+            message: 'Signed out successfully' + (cardReleased ? ' (card released)' : ' (no card found)'),
+            cardReleased: cardReleased,
+          });
+          summary.ok++;
+          break;
+        }
+
+        if (!found) {
+          results.push({ visitorNumber: vn, status: 'error', message: 'Visitor number not found' });
+          summary.error++;
+        }
+      } catch (e) {
+        console.warn('handleBulkSignOut: Error for ' + vn + ': ' + e.message);
+        results.push({ visitorNumber: vn, status: 'error', message: e.message });
+        summary.error++;
+      }
+
+      // Flush every 10 items to keep writes durable
+      if ((v + 1) % 10 === 0) {
+        SpreadsheetApp.flush();
+      }
+    }
+
+    SpreadsheetApp.flush();
+
+    return jsonResponse({
+      status: 'ok',
+      results: results,
+      summary: summary,
+    }, 200);
+  } catch (e) {
+    return jsonResponse({ status: 'error', error: 'Bulk sign-out failed: ' + e.message }, 500);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Auto sign-out all checked-in visitors across all configured sheets.
+ * Reads CUSTOMER_SHEETS from ScriptProperties (comma-separated sheetIds).
+ * Intended to be called by a time-driven trigger at 21:00 daily.
+ */
+function autoSignOut() {
+  // Read CUSTOMER_SHEETS from ScriptProperties (comma-separated sheetIds)
+  var sheetsProp = PropertiesService.getScriptProperties().getProperty('CUSTOMER_SHEETS');
+  if (!sheetsProp) {
+    console.log('autoSignOut: No CUSTOMER_SHEETS configured');
+    return;
+  }
+  var sheetIds = sheetsProp.split(',');
+
+  for (var s = 0; s < sheetIds.length; s++) {
+    var sheetId = sheetIds[s].trim();
+    if (!sheetId) continue;
+    try {
+      var ss = SpreadsheetApp.openById(sheetId);
+      var sheet = ss.getSheetByName('VisitorLog');
+      if (!sheet) continue;
+
+      var data = sheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        var status = String(data[i][11] || '').trim(); // col 11 = Status
+        if (status === 'Checked In') {
+          var visitorNumber = String(data[i][10] || '').trim(); // col 10 = Visitor#
+          if (visitorNumber) {
+            // Write Signed Out status + timestamp
+            sheet.getRange(i + 1, 12).setValue('Signed Out');  // col 12 = Status (1-indexed)
+            sheet.getRange(i + 1, 14).setValue(new Date());    // col 14 = Sign-Out Time
+            // Release card
+            releaseCardForVisitor(visitorNumber, sheetId);
+          }
+        }
+      }
+      console.log('autoSignOut: Processed sheet ' + sheetId);
+    } catch (e) {
+      console.error('autoSignOut: Error for sheet ' + sheetId + ': ' + e.message);
+    }
+  }
+}
+
+/**
+ * Install or reinstall the 21:00 auto sign-out time-driven trigger.
+ * Removes any existing autoSignOut triggers first to avoid duplicates.
+ */
+function setupAutoSignOutTrigger() {
+  // Remove existing auto sign-out triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'autoSignOut') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  // Install new trigger at 21:00 daily
+  ScriptApp.newTrigger('autoSignOut')
+    .timeBased()
+    .atHour(21)
+    .everyDays(1)
+    .create();
+  console.log('setupAutoSignOutTrigger: Auto sign-out trigger installed for 21:00');
+}
+
 /**
  * Release all Assigned cards back to Available.
- * Called by a daily time-driven trigger at 18:00.
+ * Called by a daily time-driven trigger at 02:00 (moved from 18:00).
  * Loops through the cardno sheet; for every row where Status = "Assigned",
  * resets Status to "Available" and clears AssignedTo / AssignedAt.
  */
@@ -1080,14 +1317,14 @@ function setupDailyReleaseTrigger() {
     }
   }
 
-  // Install a new daily trigger at 18:00
+  // Install a new daily trigger at 02:00 (safety net, moved from 18:00)
   ScriptApp.newTrigger('releaseDailyCards')
     .timeBased()
-    .atHour(18)
+    .atHour(2)
     .everyDays(1)
     .create();
 
-  console.log('setupDailyReleaseTrigger: Daily release trigger installed for 18:00–19:00');
+  console.log('setupDailyReleaseTrigger: Daily release trigger installed for 02:00–03:00');
 }
 
 // ──────────────────────────────────────────────
