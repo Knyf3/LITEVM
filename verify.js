@@ -14,7 +14,7 @@
     lightboxIndex: 0,           // 0 = ID, 1 = Selfie
     photos: [],                 // [{label, url}]
     todayVisitors: [],          // full list of today's visitors
-    currentFilter: 'all',       // 'all' | 'pending' | 'checked-in' | 'rejected'
+    currentFilter: 'all',       // 'all' | 'pending' | 'checkedin' | 'done' | 'rejected'
     inlinePendingVn: null,      // visitor number for inline quick check-in
     selectedVisitors: {},       // { visitorNumber: true }
     isBulkProcessing: false,
@@ -288,6 +288,15 @@
     $('#result-company').textContent = v.company || '—';
     $('#result-visitation-date').textContent = v.visitationDate || '—';
     $('#result-phone').textContent = v.phone || '—';
+
+    // Card number for checked-in visitors
+    var cardRow = $('#result-card-no-row');
+    if (v.cardNo) {
+      $('#result-card-no').textContent = v.cardNo;
+      if (cardRow) cardRow.classList.remove('hidden');
+    } else {
+      if (cardRow) cardRow.classList.add('hidden');
+    }
 
     // Photos
     var idImg = $('#result-photo-id-img');
@@ -692,13 +701,14 @@
     // Update counts
     var all = visitors.length;
     var pending = visitors.filter(function (v) { return v.status === 'Pending Entry' || !v.status; }).length;
-    var done = visitors.filter(function (v) { return v.status === 'Checked In'; }).length;
+    var checkedin = visitors.filter(function (v) { return v.status === 'Checked In'; }).length;
+    var done = visitors.filter(function (v) { return v.status === 'Signed Out'; }).length;
     var rej = visitors.filter(function (v) { return v.status === 'Rejected'; }).length;
-    var signedOut = visitors.filter(function (v) { return v.status === 'Signed Out'; }).length;
 
     $('#count-all').textContent = all;
     $('#count-pending').textContent = pending;
-    $('#count-checked-in').textContent = done;
+    $('#count-checkedin').textContent = checkedin;
+    $('#count-done').textContent = done;
     $('#count-rejected').textContent = rej;
     $('#todays-count-badge').textContent = all;
 
@@ -706,8 +716,10 @@
     var filtered = visitors;
     if (state.currentFilter === 'pending') {
       filtered = visitors.filter(function (v) { return v.status === 'Pending Entry' || !v.status; });
-    } else if (state.currentFilter === 'checked-in') {
-      filtered = visitors.filter(function (v) { return v.status === 'Checked In' || v.status === 'Signed Out'; });
+    } else if (state.currentFilter === 'checkedin') {
+      filtered = visitors.filter(function (v) { return v.status === 'Checked In'; });
+    } else if (state.currentFilter === 'done') {
+      filtered = visitors.filter(function (v) { return v.status === 'Signed Out' || v.status === 'Rejected'; });
     } else if (state.currentFilter === 'rejected') {
       filtered = visitors.filter(function (v) { return v.status === 'Rejected'; });
     }
@@ -717,9 +729,13 @@
     if (textFilter && textFilter.value.trim()) {
       var q = textFilter.value.trim().toLowerCase();
       filtered = filtered.filter(function (v) {
-        return (v.fullName || '').toLowerCase().indexOf(q) >= 0 ||
+        var matches = (v.fullName || '').toLowerCase().indexOf(q) >= 0 ||
                (v.visitorNumber || '').toLowerCase().indexOf(q) >= 0 ||
                (v.company || '').toLowerCase().indexOf(q) >= 0;
+        if (!matches && v.cardNo) {
+          matches = v.cardNo.toLowerCase().indexOf(q) >= 0;
+        }
+        return matches;
       });
     }
 
@@ -731,22 +747,23 @@
     empty.classList.add('hidden');
 
     var html = '';
-    var categoryMap = { pending: [], 'checked-in': [], rejected: [] };
+    var categoryMap = { pending: [], checkedin: [], checkedin_signout: [], rejected: [] };
 
     filtered.forEach(function (v) {
       var s = v.status || 'Pending Entry';
       var cat = 'pending';
-      if (s === 'Checked In') cat = 'checked-in';
+      if (s === 'Checked In') cat = 'checkedin';
       else if (s === 'Rejected') cat = 'rejected';
-      else if (s === 'Signed Out') cat = 'checked-in';
+      else if (s === 'Signed Out') cat = 'checkedin_signout';
       if (!categoryMap[cat]) categoryMap[cat] = [];
       categoryMap[cat].push(v);
     });
 
-    // Render in category order: pending, checked-in, rejected
+    // Render in category order: pending, checkedin, done (signed out), rejected
     var categories = [
       { key: 'pending', label: 'Pending', icon: '🔴' },
-      { key: 'checked-in', label: 'Checked In', icon: '✅' },
+      { key: 'checkedin', label: 'Checked In', icon: '🟢' },
+      { key: 'checkedin_signout', label: 'Done', icon: '✅' },
       { key: 'rejected', label: 'Rejected', icon: '❌' },
     ];
 
@@ -794,7 +811,13 @@
           html += '    <button class="btn-today-checkin" onclick="App.quickCheckIn(\'' + escAttr(v.visitorNumber) + '\')" aria-label="Quick check in">Check In</button>';
           html += '  </div>';
         } else if (isCheckedIn) {
-          html += '  <span class="today-status-badge checked-in-badge">Checked In</span>';
+          html += '  <div class="today-card-actions">';
+          html += '    <span class="today-status-badge checked-in-badge">Checked In</span>';
+          if (v.cardNo) {
+            html += '    <span class="today-cardno">Card: ' + escHtml(v.cardNo) + '</span>';
+          }
+          html += '    <button class="btn-today-signout" onclick="App.quickSignOut(\'' + escAttr(v.visitorNumber) + '\')" aria-label="Sign out">Sign Out</button>';
+          html += '  </div>';
           if (v.signInTime) {
             html += '  <span class="today-action-time">' + escHtml(v.signInTime) + '</span>';
           }
@@ -1098,6 +1121,71 @@
   }
 
   // ──────────────────────────────────────────────
+  // QUICK SIGN OUT (from today's list)
+  // ──────────────────────────────────────────────
+  function quickSignOut(visitorNumber) {
+    if (!visitorNumber) return;
+    var visitor = state.todayVisitors.find(function (v) { return v.visitorNumber === visitorNumber; });
+    if (!visitor) return;
+
+    state.currentVisitor = visitor;
+
+    // Show the existing confirm dialog for sign-out
+    showConfirmDialog('sign-out');
+
+    // Override the action to use the specific visitor number
+    var actionBtn = document.querySelector('.btn-confirm-signout');
+    if (actionBtn) {
+      actionBtn.onclick = function() {
+        closeDialog();
+        executeQuickSignOut(visitorNumber);
+      };
+    }
+  }
+
+  function executeQuickSignOut(visitorNumber) {
+    showProgress('Signing out...');
+
+    var payload = {
+      mode: 'updateStatus',
+      visitorNumber: visitorNumber,
+      status: 'Signed Out',
+      sheetId: CONFIG.SHEET_ID,
+    };
+
+    fetch(CONFIG.API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(text) {
+      hideProgress();
+      var parsed;
+      try { parsed = JSON.parse(text); } catch (e) {
+        showError('Unexpected server response');
+        return;
+      }
+      if (parsed.status === 'ok') {
+        showToast('Signed out. Card released.');
+        // Remove from selected visitors if present
+        delete state.selectedVisitors[visitorNumber];
+        updateBulkSignOutButton();
+        // Reload list
+        loadTodayVisitors();
+      } else {
+        showError(parsed.error || 'Sign out failed');
+      }
+    })
+    .catch(function(err) {
+      hideProgress();
+      showError(err.message || 'Network error');
+    });
+  }
+
+  // ──────────────────────────────────────────────
   // FILTER TODAY'S LIST
   // ──────────────────────────────────────────────
   function filterToday(filter) {
@@ -1277,6 +1365,7 @@
     dismissError: dismissError,
     toggleSelectAll: toggleSelectAll,
     confirmBulkSignOut: confirmBulkSignOut,
+    quickSignOut: quickSignOut,
   };
 
   // Auto-init on DOM ready

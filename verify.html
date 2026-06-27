@@ -143,6 +143,11 @@
               <span class="review-label">Phone</span>
               <span class="review-value" id="result-phone">—</span>
             </div>
+            <div class="review-divider"></div>
+            <div class="review-row hidden" id="result-card-no-row">
+              <span class="review-label">Card Number</span>
+              <span class="review-value" id="result-card-no">—</span>
+            </div>
           </div>
 
           <!-- Photos -->
@@ -323,7 +328,8 @@
       <div class="todays-filter-tabs" id="todays-filter-tabs">
         <button class="filter-tab active" data-filter="all" onclick="App.filterToday('all')">All (<span id="count-all">0</span>)</button>
         <button class="filter-tab" data-filter="pending" onclick="App.filterToday('pending')">Pending (<span id="count-pending">0</span>)</button>
-        <button class="filter-tab" data-filter="checked-in" onclick="App.filterToday('checked-in')">Done (<span id="count-checked-in">0</span>)</button>
+        <button class="filter-tab" data-filter="checkedin" onclick="App.filterToday('checkedin')">Checked In (<span id="count-checkedin">0</span>)</button>
+        <button class="filter-tab" data-filter="done" onclick="App.filterToday('done')">Done (<span id="count-done">0</span>)</button>
         <button class="filter-tab" data-filter="rejected" onclick="App.filterToday('rejected')">Rej. (<span id="count-rejected">0</span>)</button>
       </div>
 
