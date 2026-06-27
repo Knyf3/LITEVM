@@ -62,6 +62,14 @@ function doGet(e) {
       if (action === 'cardpool') {
         return handleCardPoolDiagnostic(sheetId);
       }
+
+      if (action === 'lookupByCard') {
+        var cardNo = e.parameter.cardNo;
+        if (!cardNo) {
+          return jsonResponse({ status: 'notfound', message: 'Missing cardNo parameter' }, 400);
+        }
+        return handleLookupByCard(cardNo, sheetId);
+      }
     }
 
     // Default: health check
@@ -230,6 +238,60 @@ function getCardNumberForVisitor(visitorNumber, sheetId) {
     console.warn('getCardNumberForVisitor error: ' + e.message);
   }
   return '';
+}
+
+/**
+ * Look up a visitor by their assigned card number.
+ * Searches the cardno sheet for the card, finds the assigned visitor number,
+ * then looks up the visitor in VisitorLog.
+ */
+function handleLookupByCard(cardNo, sheetId) {
+  if (!cardNo || !sheetId) {
+    return jsonResponse({ status: 'error', message: 'Missing cardNo or sheetId' }, 400);
+  }
+  
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    
+    // Step 1: Find visitor number from cardno sheet
+    var cardSheet = ss.getSheetByName('cardno');
+    if (!cardSheet) {
+      return jsonResponse({ status: 'notfound', message: 'cardno sheet not found' }, 404);
+    }
+    
+    var cardData = cardSheet.getDataRange().getValues();
+    var visitorNumber = '';
+    var cardStatus = '';
+    
+    for (var i = 1; i < cardData.length; i++) {
+      if (String(cardData[i][0] || '').trim() === cardNo.trim()) {
+        visitorNumber = String(cardData[i][2] || '').trim();
+        cardStatus = String(cardData[i][1] || '').trim();
+        break;
+      }
+    }
+    
+    if (!visitorNumber) {
+      return jsonResponse({ status: 'notfound', message: 'Card number ' + cardNo + ' not found or not assigned' }, 404);
+    }
+    
+    // Step 2: Look up the visitor by visitor number
+    var result = handleLookup(visitorNumber, sheetId);
+    var responseText = result.getContent();
+    var responseData = JSON.parse(responseText);
+    
+    if (responseData.status === 'ok') {
+      responseData.visitor.cardNo = cardNo;
+      responseData.visitor.cardStatus = cardStatus;
+      return jsonResponse(responseData, 200);
+    }
+    
+    return jsonResponse({ status: 'notfound', message: 'Visitor ' + visitorNumber + ' not found (card ' + cardNo + ')' }, 404);
+    
+  } catch (e) {
+    console.error('handleLookupByCard error: ' + e.message);
+    return jsonResponse({ status: 'error', message: 'Lookup by card failed: ' + e.message }, 500);
+  }
 }
 
 function handleLookup(visitorNumber, sheetId) {

@@ -214,6 +214,24 @@ function handleRegistration(data) {
 // HANDLER: Lookup by Visitor Number
 // ──────────────────────────────────────────────
 
+function getCardNumberForVisitor(visitorNumber, sheetId) {
+  if (!visitorNumber || !sheetId) return '';
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var cardSheet = ss.getSheetByName('cardno');
+    if (!cardSheet) return '';
+    var data = cardSheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][2] || '').trim() === visitorNumber.trim()) {
+        return String(data[i][0] || '').trim();
+      }
+    }
+  } catch (e) {
+    console.warn('getCardNumberForVisitor error: ' + e.message);
+  }
+  return '';
+}
+
 function handleLookup(visitorNumber, sheetId) {
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
@@ -237,6 +255,8 @@ function handleLookup(visitorNumber, sheetId) {
         registrationTime = String(ts);
       }
 
+      var status = String(row[11] || 'Pending Entry');
+
       var visitor = {
         visitorNumber: vn,
         fullName: String(row[1] || ''),
@@ -248,11 +268,15 @@ function handleLookup(visitorNumber, sheetId) {
         email: String(row[7] || ''),
         idPhotoUrl: String(row[8] || ''),
         selfieUrl: String(row[9] || ''),
-        status: String(row[11] || 'Pending Entry'),
+        status: status,
         registrationTime: registrationTime,
         signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
         signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
       };
+
+      if (status === 'Checked In') {
+        visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
+      }
 
       return jsonResponse({ status: 'ok', visitor: visitor }, 200);
     }
@@ -288,8 +312,10 @@ function handleTodayVisitors(sheetId) {
     // Filter by Visitation Date (col 5) matching today
     if (visitDateStr === todayStr) {
       var ts = row[0];
-      visitors.push({
-        visitorNumber: String(row[10] || ''),
+      var status = String(row[11] || 'Pending Entry');
+      var vn = String(row[10] || '');
+      var visitor = {
+        visitorNumber: vn,
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
@@ -299,11 +325,15 @@ function handleTodayVisitors(sheetId) {
         email: String(row[7] || ''),
         idPhotoUrl: String(row[8] || ''),
         selfieUrl: String(row[9] || ''),
-        status: String(row[11] || 'Pending Entry'),
+        status: status,
         registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
         signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
         signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
-      });
+      };
+      if (status === 'Checked In') {
+        visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
+      }
+      visitors.push(visitor);
     }
   }
 

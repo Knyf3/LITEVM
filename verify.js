@@ -212,6 +212,11 @@
       if (data.status === 'ok' && data.visitor) {
         showVisitor(data.visitor);
       } else if (data.status === 'notfound') {
+        // If input doesn't look like a visitor number, try card lookup
+        if (!/^V-/i.test(vn)) {
+          tryCardLookup(vn);
+          return;
+        }
         setResultState('notfound');
         $('#not-found-message').textContent = data.message || 'No registration found for "' + vn + '".';
         $('#not-found-hint').textContent = suggestFormatHint(vn);
@@ -225,6 +230,41 @@
       clearTimeout(timeoutId);
       state.actionInProgress = false;
       if (err.name === 'AbortError') return; // handled by timeout
+      setResultState('notfound');
+      $('#not-found-message').textContent = 'Network error. Please check your connection.';
+      $('#not-found-hint').textContent = 'Tap "Try Again" to retry.';
+    });
+  }
+
+  function tryCardLookup(cardNo) {
+    var url = CONFIG.API_BASE + '?action=lookupByCard&cardNo=' + encodeURIComponent(cardNo) + '&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID);
+
+    fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(CONFIG.TIMEOUT_MS || 10000),
+    })
+    .then(function (res) { return res.text(); })
+    .then(function (text) {
+      state.actionInProgress = false;
+      var data;
+      try { data = JSON.parse(text); } catch (e) {
+        setResultState('notfound');
+        $('#not-found-message').textContent = 'Card number not found.';
+        $('#not-found-hint').textContent = 'Enter a visitor number (V-...) or a card number.';
+        return;
+      }
+      if (data.status === 'ok' && data.visitor) {
+        showVisitor(data.visitor);
+      } else {
+        setResultState('notfound');
+        $('#not-found-message').textContent = data.message || 'No registration found for card ' + cardNo;
+        $('#not-found-hint').textContent = 'Enter a visitor number (V-...) or a card number.';
+      }
+    })
+    .catch(function (err) {
+      state.actionInProgress = false;
+      if (err.name === 'AbortError') return;
       setResultState('notfound');
       $('#not-found-message').textContent = 'Network error. Please check your connection.';
       $('#not-found-hint').textContent = 'Tap "Try Again" to retry.';
