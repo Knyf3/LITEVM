@@ -551,11 +551,10 @@ function handleStatusUpdate(data) {
 function formatDateForDisplay(date) {
   var hours = date.getHours();
   var minutes = date.getMinutes();
-  var ampm = hours >= 12 ? 'PM' : 'AM';
-  var h12 = hours % 12 || 12;
+  var hrStr = ('0' + hours).slice(-2);
   var minStr = ('0' + minutes).slice(-2);
   var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return h12 + ':' + minStr + ' ' + ampm + ' ' + date.getDate() + ' ' + months[date.getMonth()] + ' ' + date.getFullYear();
+  return hrStr + ':' + minStr + ' ' + date.getDate() + ' ' + months[date.getMonth()] + ' ' + date.getFullYear();
 }
 
 // ──────────────────────────────────────────────

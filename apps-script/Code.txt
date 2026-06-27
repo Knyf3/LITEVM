@@ -232,7 +232,7 @@ function handleLookup(visitorNumber, sheetId) {
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: String(row[5] || ''),
+        visitationDate: getDateString_(row[5]),
         phone: String(row[6] || ''),
         email: String(row[7] || ''),
         idPhotoUrl: String(row[8] || ''),
@@ -254,17 +254,25 @@ function handleLookup(visitorNumber, sheetId) {
 // HANDLER: Today's Visitors
 // ──────────────────────────────────────────────
 
+function getDateString_(cell) {
+  if (cell instanceof Date && !isNaN(cell.getTime())) {
+    return Utilities.formatDate(cell, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  return String(cell || '').trim();
+}
+
 function handleTodayVisitors(sheetId) {
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
-  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var timeZone = Session.getScriptTimeZone();
+  var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
   var visitors = [];
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var visitDateStr = String(row[5] || '').trim();
+    var visitDateStr = getDateString_(row[5]);
 
     // Filter by Visitation Date (col 5) matching today
     if (visitDateStr === todayStr) {
@@ -275,7 +283,7 @@ function handleTodayVisitors(sheetId) {
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: String(row[5] || ''),
+        visitationDate: getDateString_(row[5]),
         phone: String(row[6] || ''),
         email: String(row[7] || ''),
         idPhotoUrl: String(row[8] || ''),
