@@ -443,18 +443,18 @@ function handleStatusUpdate(data) {
     return jsonResponse({ status: 'error', message: 'Missing visitorNumber' }, 400);
   }
 
-  if (!newStatus || (newStatus !== 'Checked In' && newStatus !== 'Rejected')) {
-    return jsonResponse({ status: 'error', message: 'Invalid status. Must be "Checked In" or "Rejected".' }, 400);
+  if (!newStatus || (newStatus !== 'Checked In' && newStatus !== 'Rejected' && newStatus !== 'Signed Out')) {
+    return jsonResponse({ status: 'error', message: 'Invalid status. Must be "Checked In", "Rejected", or "Signed Out".' }, 400);
   }
 
   var sheet = getOrCreateSheet(data.sheetId);
   var dataRange = sheet.getDataRange();
   var values = dataRange.getValues();
 
-  // Use LockService for the Checked In path to serialize concurrent requests
-  // and prevent two guards from picking the same card
+  // Use LockService for the Checked In and Signed Out paths to serialize concurrent requests
+  // and prevent two guards from picking the same card or signing out the same visitor
   var lock = null;
-  if (newStatus === 'Checked In') {
+  if (newStatus === 'Checked In' || newStatus === 'Signed Out') {
     lock = LockService.getScriptLock();
     if (!lock.tryLock(30000)) {
       return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
@@ -466,19 +466,36 @@ function handleStatusUpdate(data) {
       var vn = String(values[i][10] || '').trim();
 
       if (vn === visitorNumber.trim()) {
-        // Check if already processed (idempotency guard)
         var currentStatus = String(values[i][11] || '').trim();
-        if (currentStatus === 'Checked In' || currentStatus === 'Rejected') {
-          return jsonResponse({
-            status: 'error',
-            message: 'Visitor already processed. Current status: ' + currentStatus
-          }, 409);
+
+        // ── SIGNED OUT PATH ──
+        if (newStatus === 'Signed Out') {
+          if (currentStatus === 'Signed Out') {
+            return jsonResponse({ status: 'error', message: 'Visitor already signed out.', visitorNumber: visitorNumber }, 409);
+          }
+          if (currentStatus !== 'Checked In') {
+            return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
+          }
+
+          // Write Sign-Out: Status to col 12, Sign-Out Time to col 14
+          sheet.getRange(i + 1, 12).setValue('Signed Out');
+          sheet.getRange(i + 1, 14).setValue(new Date());
+
+          return jsonResponse({ status: 'ok', message: 'Visitor signed out', visitorNumber: visitorNumber }, 200);
+        }
+
+        // ── CHECK-IN / REJECT PATH ──
+        // Idempotency guard — prevent re-processing
+        if (currentStatus === 'Checked In' || currentStatus === 'Rejected' || currentStatus === 'Signed Out') {
+          return jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
         }
 
         // Update Status column (col 12 = index 11)
         sheet.getRange(i + 1, 12).setValue(newStatus);
-        // Update Sign-In Time column (col 13 = index 12) to record when check-in/rejection happened
+        // Update Sign-In Time column (col 13 = index 12)
         sheet.getRange(i + 1, 13).setValue(new Date());
+        // Clear any old Sign-Out Time on check-in re-entry (col 14 = index 13)
+        sheet.getRange(i + 1, 14).setValue('');
 
         var result = {
           status: 'ok',
@@ -488,7 +505,6 @@ function handleStatusUpdate(data) {
 
         // If Checked In, proceed with card assignment (inside lock)
         if (newStatus === 'Checked In') {
-          // Extract visitor details from the row for card assignment
           var fullName = String(values[i][1] || '').trim();
           var destination = String(values[i][4] || '').trim();
           var email = String(values[i][7] || '').trim();

@@ -256,6 +256,9 @@
     } else if (status === 'Rejected') {
       badge.classList.add('rejected');
       statusText.textContent = 'Rejected';
+    } else if (status === 'Signed Out') {
+      badge.classList.add('signed-out');
+      statusText.textContent = 'Signed Out';
     } else {
       badge.classList.add('pending');
       statusText.textContent = 'Pending Entry';
@@ -314,18 +317,31 @@
     // Action buttons visibility
     var actions = $('#result-actions');
     var processed = $('#result-processed-info');
+    var signoutBtn = $('#btn-signout');
     if (status === 'Pending Entry') {
       actions.classList.remove('hidden');
-      processed.classList.add('hidden');
+      if (signoutBtn) signoutBtn.classList.add('hidden');
+      $('#btn-verify').classList.remove('hidden');
       $('#btn-verify').disabled = false;
+      $('#btn-reject').classList.remove('hidden');
       $('#btn-reject').disabled = false;
+      processed.classList.add('hidden');
+    } else if (status === 'Checked In') {
+      // Show only sign-out button for checked-in visitors
+      actions.classList.remove('hidden');
+      if (signoutBtn) signoutBtn.classList.remove('hidden');
+      $('#btn-verify').classList.add('hidden');
+      $('#btn-reject').classList.add('hidden');
+      processed.classList.add('hidden');
     } else {
       actions.classList.add('hidden');
       processed.classList.remove('hidden');
-      if (status === 'Checked In') {
-        $('#processed-info-text').textContent = 'This visitor has already checked in. (Status: Checked In)';
-      } else if (status === 'Rejected') {
+      if (status === 'Rejected') {
         $('#processed-info-text').textContent = 'This registration was previously rejected. (Status: Rejected)';
+      } else if (status === 'Signed Out') {
+        $('#processed-info-text').textContent = 'This visitor has already signed out. (Status: Signed Out)';
+      } else {
+        $('#processed-info-text').textContent = 'This visitor has already checked in. (Status: Checked In)';
       }
     }
 
@@ -354,6 +370,7 @@
       notfound: 'result-notfound',
       verified: 'result-verified',
       rejected: 'result-rejected',
+      signedout: 'result-signedout',
     };
 
     if (map[s]) {
@@ -383,6 +400,11 @@
     showConfirmDialog('reject');
   }
 
+  function confirmSignOut() {
+    if (!state.currentVisitor) return;
+    showConfirmDialog('sign-out');
+  }
+
   function showConfirmDialog(type) {
     var v = state.currentVisitor;
     var dialog = $('#confirm-dialog');
@@ -402,6 +424,13 @@
       actionBtn.className = 'btn-confirm-action btn-confirm-reject';
       reasonSection.classList.remove('hidden');
       if (reasonTextarea) reasonTextarea.value = '';
+    } else if (type === 'sign-out') {
+      icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
+      title.textContent = 'Confirm Sign Out';
+      msg.innerHTML = 'Are you sure you want to sign out <strong>' + (v.fullName || 'this visitor') + '</strong>?';
+      actionBtn.textContent = 'Confirm Sign Out';
+      actionBtn.className = 'btn-confirm-action btn-confirm-signout';
+      reasonSection.classList.add('hidden');
     } else {
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#16A34A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
       title.textContent = 'Confirm Check-In';
@@ -424,7 +453,7 @@
   function executeAction() {
     var dialog = $('#confirm-dialog');
     var type = dialog._actionType || 'check-in';
-    var status = type === 'reject' ? 'Rejected' : 'Checked In';
+    var status = type === 'reject' ? 'Rejected' : (type === 'sign-out' ? 'Signed Out' : 'Checked In');
     var reason = '';
     if (type === 'reject') {
       var ta = $('#reject-reason');
@@ -476,6 +505,8 @@
             cardQRUrl: data.cardQRUrl,
             cardStatus: data.cardStatus
           });
+        } else if (status === 'Signed Out') {
+          showSignedOutState(state.currentVisitor);
         } else {
           showRejectedState(state.currentVisitor);
         }
@@ -569,6 +600,27 @@
   }
 
   // ──────────────────────────────────────────────
+  // SIGNED OUT STATE
+  // ──────────────────────────────────────────────
+  function showSignedOutState(v) {
+    setResultState('signedout');
+    $('#signedout-name').textContent = v.fullName || '';
+    var now = new Date();
+    $('#signedout-time').textContent = formatTimestamp(now);
+
+    // Pulse animation
+    var card = $('.result-signedout-card');
+    if (card) {
+      card.style.animation = 'none';
+      void card.offsetHeight;
+      card.style.animation = 'successPulse 0.4s ease';
+    }
+
+    // Update state
+    if (state.currentVisitor) state.currentVisitor.status = 'Signed Out';
+  }
+
+  // ──────────────────────────────────────────────
   // CHECK IN ANOTHER / RESET
   // ──────────────────────────────────────────────
   function checkInAnother() {
@@ -630,6 +682,7 @@
     var pending = visitors.filter(function (v) { return v.status === 'Pending Entry' || !v.status; }).length;
     var done = visitors.filter(function (v) { return v.status === 'Checked In'; }).length;
     var rej = visitors.filter(function (v) { return v.status === 'Rejected'; }).length;
+    var signedOut = visitors.filter(function (v) { return v.status === 'Signed Out'; }).length;
 
     $('#count-all').textContent = all;
     $('#count-pending').textContent = pending;
@@ -642,7 +695,7 @@
     if (state.currentFilter === 'pending') {
       filtered = visitors.filter(function (v) { return v.status === 'Pending Entry' || !v.status; });
     } else if (state.currentFilter === 'checked-in') {
-      filtered = visitors.filter(function (v) { return v.status === 'Checked In'; });
+      filtered = visitors.filter(function (v) { return v.status === 'Checked In' || v.status === 'Signed Out'; });
     } else if (state.currentFilter === 'rejected') {
       filtered = visitors.filter(function (v) { return v.status === 'Rejected'; });
     }
@@ -673,6 +726,7 @@
       var cat = 'pending';
       if (s === 'Checked In') cat = 'checked-in';
       else if (s === 'Rejected') cat = 'rejected';
+      else if (s === 'Signed Out') cat = 'checked-in';
       if (!categoryMap[cat]) categoryMap[cat] = [];
       categoryMap[cat].push(v);
     });
@@ -714,6 +768,11 @@
           html += '  <span class="today-status-badge checked-in-badge">Checked In</span>';
           if (v.signInTime) {
             html += '  <span class="today-action-time">' + escHtml(v.signInTime) + '</span>';
+          }
+        } else if (s === 'Signed Out') {
+          html += '  <span class="today-status-badge signed-out-badge">Signed Out</span>';
+          if (v.signOutTime) {
+            html += '  <span class="today-action-time">Signed Out: ' + escHtml(v.signOutTime) + '</span>';
           }
         } else {
           html += '  <span class="today-status-badge rejected-badge">Rejected</span>';
@@ -943,6 +1002,7 @@
     lookup: lookup,
     confirmCheckIn: confirmCheckIn,
     confirmReject: confirmReject,
+    confirmSignOut: confirmSignOut,
     closeDialog: closeDialog,
     executeAction: executeAction,
     checkInAnother: checkInAnother,

@@ -1355,6 +1355,11 @@ body {
   color: #e63946;
 }
 
+.status-badge.signed-out {
+  background: #FFFBEB;
+  color: #D97706;
+}
+
 /* Result card */
 .result-card {
   margin: 0;
@@ -1523,6 +1528,46 @@ body {
 .btn-reject:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Sign-out button (amber) */
+.btn-signout {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 12px;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-family: 'Inter', -apple-system, sans-serif;
+  border: 2px solid #F59E0B;
+  border-radius: 12px;
+  background: #F59E0B;
+  color: #FFFFFF;
+  cursor: pointer;
+  min-height: 52px;
+  transition: background 0.2s, border-color 0.2s, transform 0.1s, opacity 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.btn-signout:hover:not(:disabled) {
+  background: #D97706;
+  border-color: #D97706;
+}
+
+.btn-signout:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-signout:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-signout.hidden {
+  display: none;
 }
 
 /* Already processed info */
@@ -1800,6 +1845,63 @@ body {
 
 .rejected-timestamp-card strong {
   color: #e63946;
+}
+
+/* Signed Out Success Card */
+.result-signedout-card {
+  background: #FFFBEB;
+  border: 2px solid #F59E0B;
+  border-radius: 14px;
+  padding: 32px 20px;
+  text-align: center;
+  margin: 0;
+}
+
+.signedout-icon {
+  margin-bottom: 12px;
+}
+
+.signedout-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 12px 0 4px;
+}
+
+.signedout-name {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: #D97706;
+  margin-bottom: 2px;
+}
+
+.signedout-subtitle {
+  font-size: 0.9375rem;
+  color: #475569;
+  margin-bottom: 20px;
+}
+
+.signedout-timestamp-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #FFFFFF;
+  border: 1px solid #F59E0B;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  color: #475569;
+  margin-bottom: 20px;
+}
+
+.signedout-timestamp-card strong {
+  color: #D97706;
+}
+
+/* Today's list signed-out badge */
+.signed-out-badge {
+  background: #FFFBEB;
+  color: #D97706;
 }
 
 /* Section Divider */
@@ -2337,6 +2439,15 @@ body {
   background: #c1121f;
 }
 
+.btn-confirm-signout {
+  background: #F59E0B;
+  color: #FFFFFF;
+}
+
+.btn-confirm-signout:hover {
+  background: #D97706;
+}
+
 /* Inline Confirm Bar */
 .inline-confirm-bar {
   position: fixed;
@@ -2449,6 +2560,9 @@ body {
   .btn-reject:hover {
     background: #e63946;
   }
+  .btn-signout:hover {
+    background: #F59E0B;
+  }
   .result-photo-thumb:hover {
     border-color: #E2E8F0;
     transform: none;
@@ -2464,6 +2578,9 @@ body {
     animation: none !important;
   }
   .result-rejected-card {
+    animation: none !important;
+  }
+  .result-signedout-card {
     animation: none !important;
   }
   .inline-confirm-bar {

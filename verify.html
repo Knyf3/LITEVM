@@ -77,7 +77,7 @@
       <p id="search-hint" class="search-hint">Enter a visitor number (e.g. V-20250622-001)</p>
     </div>
 
-    <!-- Lookup Result Section (data-state: empty | loading | found | notfound | already-processed | verified | rejected) -->
+    <!-- Lookup Result Section (data-state: empty | loading | found | notfound | verified | rejected | signedout) -->
     <div id="lookup-result-section" class="lookup-result-section" data-state="empty">
 
       <!-- LOADING STATE -->
@@ -168,6 +168,14 @@
             <button class="btn-verify" id="btn-verify" onclick="App.confirmCheckIn()" aria-label="Verify and check-in visitor">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               Verify &amp; Check-in
+            </button>
+            <button class="btn-signout hidden" id="btn-signout" onclick="App.confirmSignOut()" aria-label="Sign out visitor">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              Sign Out
             </button>
             <button class="btn-reject" id="btn-reject" onclick="App.confirmReject()" aria-label="Reject visitor">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
@@ -263,6 +271,28 @@
           <div class="rejected-timestamp-card" id="rejected-timestamp-card">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             <span>Rejected at: <strong id="rejected-time">—</strong></span>
+          </div>
+          <button class="btn-secondary" onclick="App.checkInAnother()">↩ Back to Search</button>
+        </div>
+      </div>
+
+      <!-- SIGNED OUT SUCCESS STATE -->
+      <div id="result-signedout" class="result-state">
+        <div class="result-signedout-card">
+          <div class="signedout-icon">
+            <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" fill="#FFFBEB" stroke="#F59E0B" stroke-width="2"/>
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </div>
+          <h2 class="signedout-title">Visitor Signed Out</h2>
+          <p class="signedout-name" id="signedout-name">—</p>
+          <p class="signedout-subtitle">has been signed out.</p>
+          <div class="signedout-timestamp-card">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span>Signed out at: <strong id="signedout-time">—</strong></span>
           </div>
           <button class="btn-secondary" onclick="App.checkInAnother()">↩ Back to Search</button>
         </div>
