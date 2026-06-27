@@ -9,11 +9,29 @@ function onOpen() {
     var ui = SpreadsheetApp.getUi();
     ui.createMenu('📊 LITEVM')
       .addItem('⚙ Run Migration', 'runMigration')
+      .addItem('⚙ Setup Auto Sign-Out (21:00)', 'runSetupAutoSignOut')
+      .addItem('⚙ Register Sheet for Auto Sign-Out', 'runRegisterSheet')
       .addToUi();
   } catch(e) {}
 }
 
 function runMigration() { callWebApp_({ mode: 'migrate' }); }
+
+function runSetupAutoSignOut() { callWebApp_({ mode: 'setupAutoSignOut' }); }
+
+function runRegisterSheet() {
+  var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var props = PropertiesService.getScriptProperties();
+  var existing = props.getProperty('CUSTOMER_SHEETS') || '';
+  var sheets = existing ? existing.split(',') : [];
+  if (sheets.indexOf(sheetId) === -1) {
+    sheets.push(sheetId);
+    props.setProperty('CUSTOMER_SHEETS', sheets.join(','));
+    try { SpreadsheetApp.getActiveSpreadsheet().toast('✓ Sheet registered for auto sign-out', 'LITEVM', 3); } catch(e) {}
+  } else {
+    try { SpreadsheetApp.getActiveSpreadsheet().toast('ℹ Sheet already registered', 'LITEVM', 3); } catch(e) {}
+  }
+}
 
 function callWebApp_(params) {
   var webAppUrl = PropertiesService.getScriptProperties().getProperty('WEB_APP_URL');

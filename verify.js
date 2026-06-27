@@ -16,6 +16,8 @@
     todayVisitors: [],          // full list of today's visitors
     currentFilter: 'all',       // 'all' | 'pending' | 'checked-in' | 'rejected'
     inlinePendingVn: null,      // visitor number for inline quick check-in
+    selectedVisitors: {},       // { visitorNumber: true }
+    isBulkProcessing: false,
   };
 
   // ──────────────────────────────────────────────
@@ -37,7 +39,7 @@
     setupSearchInput();
     loadTodayVisitors();
     // Auto-refresh today's visitors every 30 seconds
-    setInterval(loadTodayVisitors, 30000);
+    window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
     // Focus search on load
     setTimeout(function () {
       var inp = $('#search-input');
@@ -105,7 +107,7 @@
       checkOnlineStatus();
       setupSearchInput();
       loadTodayVisitors();
-      setInterval(loadTodayVisitors, 30000);
+      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
       setTimeout(function () {
         var inp = $('#search-input');
         if (inp) inp.focus();
@@ -663,6 +665,16 @@
       if (data.status === 'ok' && Array.isArray(data.visitors)) {
         state.todayVisitors = data.visitors;
         renderTodayVisitors();
+        // Re-apply selections after refresh
+        if (state.selectedVisitors) {
+          var cbs = document.querySelectorAll('.visitor-checkbox');
+          cbs.forEach(function(cb) {
+            if (state.selectedVisitors[cb.dataset.vn]) {
+              cb.checked = true;
+            }
+          });
+          updateBulkSignOutButton();
+        }
       }
     })
     .catch(function () {
@@ -750,14 +762,31 @@
         var isCheckedIn = s === 'Checked In';
 
         html += '<div class="today-visitor-card" data-vn="' + escAttr(v.visitorNumber) + '" data-status="' + escAttr(s) + '">';
-        html += '  <div class="today-card-main">';
-        html += '    <div class="today-card-info">';
-        html += '      <span class="today-vn">' + escHtml(v.visitorNumber || '') + '</span>';
-        html += '      <span class="today-time">' + escHtml(v.registrationTime || '') + '</span>';
+        html += '  <div class="today-card-row">';
+
+        // Checkbox for checked-in rows, placeholder for others
+        if (isCheckedIn) {
+          html += '    <label class="today-checkbox" onclick="event.stopPropagation()">';
+          html += '      <input type="checkbox" class="visitor-checkbox" data-vn="' + escAttr(v.visitorNumber) + '"';
+          if (state.selectedVisitors[v.visitorNumber]) {
+            html += ' checked';
+          }
+          html += '      >';
+          html += '    </label>';
+        } else {
+          html += '    <div class="today-checkbox-placeholder"></div>';
+        }
+
+        html += '    <div class="today-card-main">';
+        html += '      <div class="today-card-info">';
+        html += '        <span class="today-vn">' + escHtml(v.visitorNumber || '') + '</span>';
+        html += '        <span class="today-time">' + escHtml(v.registrationTime || '') + '</span>';
+        html += '      </div>';
+        html += '      <span class="today-name">' + escHtml(v.fullName || '') + '</span>';
+        html += '      <span class="today-company">' + escHtml(v.company || '') + '</span>';
         html += '    </div>';
-        html += '    <span class="today-name">' + escHtml(v.fullName || '') + '</span>';
-        html += '    <span class="today-company">' + escHtml(v.company || '') + '</span>';
-        html += '  </div>';
+
+        html += '  </div>'; // close today-card-row
 
         if (isPending) {
           html += '  <div class="today-card-actions">';
@@ -786,6 +815,227 @@
     });
 
     list.innerHTML = html;
+
+    // Set up checkbox event delegation on the container
+    setupCheckboxDelegation();
+  }
+
+  // ──────────────────────────────────────────────
+  // CHECKBOX DELEGATION (for bulk sign-out)
+  // ──────────────────────────────────────────────
+  function setupCheckboxDelegation() {
+    var container = $('#todays-list');
+    if (!container) return;
+    // Remove old listener by cloning (won't have listener) and readding
+    // Instead, just use a flag to avoid duplicates
+    if (container._checkboxListenerAttached) return;
+    container._checkboxListenerAttached = true;
+
+    container.addEventListener('change', function(e) {
+      if (e.target.classList.contains('visitor-checkbox')) {
+        var vn = e.target.dataset.vn;
+        if (e.target.checked) {
+          state.selectedVisitors[vn] = true;
+        } else {
+          delete state.selectedVisitors[vn];
+        }
+        updateBulkSignOutButton();
+      }
+    });
+  }
+
+  // ──────────────────────────────────────────────
+  // SELECT ALL / BULK SIGN-OUT
+  // ──────────────────────────────────────────────
+  function toggleSelectAll(checkbox) {
+    if (checkbox.checked) {
+      // Select all rows with status 'Checked In'
+      var rows = document.querySelectorAll('.today-visitor-card');
+      rows.forEach(function(row) {
+        var statusEl = row.querySelector('.checked-in-badge');
+        if (statusEl) {
+          var cb = row.querySelector('.visitor-checkbox');
+          if (cb) {
+            cb.checked = true;
+            state.selectedVisitors[cb.dataset.vn] = true;
+          }
+        }
+      });
+    } else {
+      // Deselect all
+      var cbs = document.querySelectorAll('.visitor-checkbox');
+      cbs.forEach(function(cb) { cb.checked = false; });
+      state.selectedVisitors = {};
+    }
+    updateBulkSignOutButton();
+  }
+
+  function updateBulkSignOutButton() {
+    var count = Object.keys(state.selectedVisitors).length;
+    var bar = document.getElementById('bulk-signout-bar');
+    var btn = document.getElementById('btn-bulk-signout');
+    var label = document.getElementById('bulk-signout-label');
+
+    if (!bar || !btn || !label) return;
+
+    if (count > 0) {
+      bar.classList.remove('hidden');
+      label.textContent = 'Sign Out Selected (' + count + ')';
+      btn.disabled = false;
+    } else {
+      bar.classList.add('hidden');
+      btn.disabled = true;
+    }
+  }
+
+  function confirmBulkSignOut() {
+    var count = Object.keys(state.selectedVisitors).length;
+    if (count === 0) return;
+    if (state.isBulkProcessing) return;
+
+    var dialog = $('#confirm-dialog');
+    var icon = $('#confirm-icon');
+    var title = $('#confirm-title');
+    var msg = $('#confirm-message');
+    var vn = $('#confirm-vn');
+    var reasonSection = $('#confirm-reason-section');
+    var actionBtn = $('#btn-confirm-action');
+
+    if (!dialog || !icon || !title || !msg || !vn || !reasonSection || !actionBtn) return;
+
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
+    title.textContent = 'Bulk Sign Out';
+    msg.textContent = 'Sign out ' + count + ' visitor' + (count > 1 ? 's' : '') + '? Their badges will be released.';
+    vn.textContent = count + ' selected';
+    reasonSection.classList.add('hidden');
+    actionBtn.textContent = 'Sign Out All';
+    actionBtn.className = 'btn-confirm-action btn-confirm-signout';
+
+    // Override the execute action for bulk
+    dialog._actionType = 'bulk-signout';
+    actionBtn.onclick = function() {
+      dialog.classList.add('hidden');
+      executeBulkSignOut();
+    };
+
+    // Cancel
+    var cancelBtn = document.querySelector('.btn-confirm-cancel');
+    if (cancelBtn) {
+      cancelBtn.onclick = function() {
+        dialog.classList.add('hidden');
+      };
+    }
+
+    dialog.classList.remove('hidden');
+  }
+
+  function executeBulkSignOut() {
+    state.isBulkProcessing = true;
+    var visitorNumbers = Object.keys(state.selectedVisitors);
+
+    // Disable auto-refresh during operation
+    if (window.todayRefreshInterval) {
+      clearInterval(window.todayRefreshInterval);
+      window.todayRefreshInterval = null;
+    }
+
+    // Show progress
+    showProgress('Signing out visitors...');
+
+    var payload = {
+      mode: 'bulkSignOut',
+      visitorNumbers: visitorNumbers,
+      sheetId: CONFIG.SHEET_ID,
+    };
+
+    fetch(CONFIG.API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(60000),
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(text) {
+      state.isBulkProcessing = false;
+      hideProgress();
+
+      var parsed;
+      try { parsed = JSON.parse(text); } catch (e) {
+        showError('Unexpected server response');
+        restartTodayRefresh();
+        return;
+      }
+
+      if (parsed.status === 'ok') {
+        var summary = parsed.summary;
+        var msg = summary.ok + ' signed out';
+        if (summary.error > 0) msg += ', ' + summary.error + ' failed';
+        if (summary.skipped > 0) msg += ', ' + summary.skipped + ' skipped';
+
+        if (summary.error > 0 || summary.skipped > 0) {
+          // Show details for partial failure
+          var details = '';
+          parsed.results.forEach(function(r) {
+            if (r.status !== 'ok') {
+              details += '\n' + (r.visitorNumber || '?') + ': ' + (r.message || r.status);
+            }
+          });
+          showError(msg + '. Cards released.' + details);
+        } else {
+          showToast(msg + '. Cards released.');
+        }
+
+        // Clear selections
+        state.selectedVisitors = {};
+        updateBulkSignOutButton();
+
+        // Reload today's list
+        loadTodayVisitors();
+      } else {
+        showError(parsed.error || 'Bulk sign-out failed');
+        restartTodayRefresh();
+      }
+    })
+    .catch(function(err) {
+      state.isBulkProcessing = false;
+      hideProgress();
+      showError(err.message || 'Network error');
+      restartTodayRefresh();
+    });
+  }
+
+  function restartTodayRefresh() {
+    if (!window.todayRefreshInterval) {
+      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // PROGRESS / TOAST HELPERS
+  // ──────────────────────────────────────────────
+  function showProgress(text) {
+    var el = document.getElementById('bulk-progress');
+    var textEl = document.getElementById('bulk-progress-text');
+    if (el) el.classList.remove('hidden');
+    if (textEl && text) textEl.textContent = text;
+  }
+
+  function hideProgress() {
+    var el = document.getElementById('bulk-progress');
+    if (el) el.classList.add('hidden');
+  }
+
+  function showToast(message) {
+    var overlay = $('#error-overlay');
+    var msgEl = $('#error-message');
+    if (!overlay || !msgEl) return;
+    msgEl.textContent = message;
+    overlay.classList.remove('hidden');
+    // Auto-dismiss after 4 seconds
+    setTimeout(function() {
+      overlay.classList.add('hidden');
+    }, 4000);
   }
 
   // ──────────────────────────────────────────────
@@ -1019,6 +1269,8 @@
     executeInlineCheckIn: executeInlineCheckIn,
     showError: showError,
     dismissError: dismissError,
+    toggleSelectAll: toggleSelectAll,
+    confirmBulkSignOut: confirmBulkSignOut,
   };
 
   // Auto-init on DOM ready

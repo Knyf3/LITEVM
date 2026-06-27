@@ -309,7 +309,12 @@
     <!-- Today's Visitors Section -->
     <div class="card" id="todays-visitors-section">
       <div class="todays-header">
-        <h2 class="card-title">Today's Visitors</h2>
+        <div class="todays-header-left">
+          <label class="today-checkbox today-header-checkbox" title="Select all checked-in visitors">
+            <input type="checkbox" id="select-all-checkin" onchange="App.toggleSelectAll(this)">
+          </label>
+          <h2 class="card-title">Today's Visitors</h2>
+        </div>
         <span class="todays-count-badge" id="todays-count-badge">0</span>
       </div>
       <p class="card-subtitle">Quick access to today's pre-registrations</p>
@@ -350,6 +355,27 @@
           <circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="0"/>
         </svg>
         <span>Loading visitors...</span>
+      </div>
+    </div>
+
+    <!-- ===== BULK SIGN-OUT STICKY BAR ===== -->
+    <div id="bulk-signout-bar" class="bulk-signout-bar hidden">
+      <span id="bulk-signout-label" class="bulk-label">Sign Out Selected (0)</span>
+      <button id="btn-bulk-signout" class="btn btn-bulk-signout" onclick="App.confirmBulkSignOut()" disabled>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+        Sign Out
+      </button>
+    </div>
+
+    <!-- ===== BULK PROGRESS OVERLAY ===== -->
+    <div id="bulk-progress" class="hidden">
+      <div class="bulk-progress-content">
+        <div class="spinner"></div>
+        <span id="bulk-progress-text">Signing out visitors...</span>
       </div>
     </div>
 
