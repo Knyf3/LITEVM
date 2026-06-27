@@ -264,17 +264,24 @@
     // Meta
     $('#result-visitor-number').textContent = v.visitorNumber || '—';
     $('#result-timestamp').textContent = v.registrationTime || '—';
-    if (v.actionTime) {
-      $('#result-action-time').textContent = v.actionTime;
-      $('#result-action-time-row').classList.remove('hidden');
+    if (v.signInTime) {
+      $('#result-sign-in-time').textContent = v.signInTime;
+      $('#result-sign-in-time-row').classList.remove('hidden');
     } else {
-      $('#result-action-time-row').classList.add('hidden');
+      $('#result-sign-in-time-row').classList.add('hidden');
+    }
+    if (v.signOutTime) {
+      $('#result-sign-out-time').textContent = v.signOutTime;
+      $('#result-sign-out-time-row').classList.remove('hidden');
+    } else {
+      $('#result-sign-out-time-row').classList.add('hidden');
     }
 
     // Identity
     $('#result-name').textContent = v.fullName || '—';
     $('#result-id').textContent = v.idNumber || '—';
     $('#result-company').textContent = v.company || '—';
+    $('#result-visitation-date').textContent = v.visitationDate || '—';
     $('#result-phone').textContent = v.phone || '—';
 
     // Photos
@@ -705,13 +712,13 @@
           html += '  </div>';
         } else if (isCheckedIn) {
           html += '  <span class="today-status-badge checked-in-badge">Checked In</span>';
-          if (v.actionTime) {
-            html += '  <span class="today-action-time">' + escHtml(v.actionTime) + '</span>';
+          if (v.signInTime) {
+            html += '  <span class="today-action-time">' + escHtml(v.signInTime) + '</span>';
           }
         } else {
           html += '  <span class="today-status-badge rejected-badge">Rejected</span>';
-          if (v.actionTime) {
-            html += '  <span class="today-action-time">' + escHtml(v.actionTime) + '</span>';
+          if (v.signInTime) {
+            html += '  <span class="today-action-time">' + escHtml(v.signInTime) + '</span>';
           }
         }
 

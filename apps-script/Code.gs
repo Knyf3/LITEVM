@@ -144,7 +144,7 @@ function handleMigrationResponse(data) {
 
 function handleRegistration(data) {
   // Validate required fields
-  var required = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'email', 'idPhoto', 'selfie'];
+  var required = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
       return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
@@ -156,6 +156,7 @@ function handleRegistration(data) {
   var idNumber = sanitizeText(data.idNumber);
   var company = sanitizeText(data.company);
   var destination = sanitizeText(data.destination);
+  var visitationDate = sanitizeText(data.visitationDate);
   var phone = sanitizePhone(data.phone);
   var email = sanitizeText(data.email);
 
@@ -177,12 +178,15 @@ function handleRegistration(data) {
     idNumber,              // 2 ID / Passport Number
     company,               // 3 Company Name
     destination,           // 4 Destination
-    phone,                 // 5 Hand Phone Number
-    email,                 // 6 Email (NEW)
-    idPhotoUrl,            // 7 ID Photo (Drive URL)
-    selfieUrl,             // 8 Selfie (Drive URL)
-    visitorNumber,         // 9 Visitor Number
-    'Pending Entry'        // 10 Status
+    visitationDate,        // 5 Visitation Date (NEW)
+    phone,                 // 6 Hand Phone (was 5)
+    email,                 // 7 Email (was 6)
+    idPhotoUrl,            // 8 ID Photo (was 7)
+    selfieUrl,             // 9 Selfie (was 8)
+    visitorNumber,         // 10 Visitor # (was 9)
+    'Pending Entry',       // 11 Status (was 10)
+    '',                    // 12 Sign-In Time (NEW, empty)
+    '',                    // 13 Sign-Out Time (NEW, empty)
   ]);
 
   // Send email confirmation (non-blocking — catch errors)
@@ -205,12 +209,13 @@ function handleLookup(visitorNumber, sheetId) {
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
   // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
-  //          4=Destination, 5=Phone, 6=Email, 7=ID Photo URL, 8=Selfie URL,
-  //          9=Visitor Number, 10=Status, 11=Action Time
+  //          4=Destination, 5=Visitation Date, 6=Phone, 7=Email,
+  //          8=ID Photo URL, 9=Selfie URL, 10=Visitor Number,
+  //          11=Status, 12=Sign-In Time, 13=Sign-Out Time
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[9] || '').trim();
+    var vn = String(row[10] || '').trim();
 
     if (vn === visitorNumber.trim()) {
       var ts = row[0];
@@ -227,13 +232,15 @@ function handleLookup(visitorNumber, sheetId) {
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        phone: String(row[5] || ''),
-        email: String(row[6] || ''),
-        idPhotoUrl: String(row[7] || ''),
-        selfieUrl: String(row[8] || ''),
-        status: String(row[10] || 'Pending Entry'),
+        visitationDate: String(row[5] || ''),
+        phone: String(row[6] || ''),
+        email: String(row[7] || ''),
+        idPhotoUrl: String(row[8] || ''),
+        selfieUrl: String(row[9] || ''),
+        status: String(row[11] || 'Pending Entry'),
         registrationTime: registrationTime,
-        actionTime: row[11] ? (row[11] instanceof Date ? formatDateForDisplay(row[11]) : String(row[11])) : '',
+        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
+        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
       };
 
       return jsonResponse({ status: 'ok', visitor: visitor }, 200);
@@ -251,32 +258,32 @@ function handleTodayVisitors(sheetId) {
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
-  var todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  var todayEnd = new Date();
-  todayEnd.setHours(23, 59, 59, 999);
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   var visitors = [];
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var ts = row[0];
+    var visitDateStr = String(row[5] || '').trim();
 
-    // Check if timestamp is today
-    if (ts instanceof Date && ts >= todayStart && ts <= todayEnd) {
+    // Filter by Visitation Date (col 5) matching today
+    if (visitDateStr === todayStr) {
+      var ts = row[0];
       visitors.push({
-        visitorNumber: String(row[9] || ''),
+        visitorNumber: String(row[10] || ''),
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        phone: String(row[5] || ''),
-        email: String(row[6] || ''),
-        idPhotoUrl: String(row[7] || ''),
-        selfieUrl: String(row[8] || ''),
-        status: String(row[10] || 'Pending Entry'),
-        registrationTime: formatDateForDisplay(ts),
-        actionTime: row[11] ? (row[11] instanceof Date ? formatDateForDisplay(row[11]) : String(row[11])) : '',
+        visitationDate: String(row[5] || ''),
+        phone: String(row[6] || ''),
+        email: String(row[7] || ''),
+        idPhotoUrl: String(row[8] || ''),
+        selfieUrl: String(row[9] || ''),
+        status: String(row[11] || 'Pending Entry'),
+        registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
+        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
+        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
       });
     }
   }
@@ -456,11 +463,11 @@ function handleStatusUpdate(data) {
 
   try {
     for (var i = 1; i < values.length; i++) {
-      var vn = String(values[i][9] || '').trim();
+      var vn = String(values[i][10] || '').trim();
 
       if (vn === visitorNumber.trim()) {
         // Check if already processed (idempotency guard)
-        var currentStatus = String(values[i][10] || '').trim();
+        var currentStatus = String(values[i][11] || '').trim();
         if (currentStatus === 'Checked In' || currentStatus === 'Rejected') {
           return jsonResponse({
             status: 'error',
@@ -468,10 +475,10 @@ function handleStatusUpdate(data) {
           }, 409);
         }
 
-        // Update Status column (col 11 = index 10)
-        sheet.getRange(i + 1, 11).setValue(newStatus);
-        // Update Action Time column (col 12 = index 11) to record when check-in/rejection happened
-        sheet.getRange(i + 1, 12).setValue(new Date());
+        // Update Status column (col 12 = index 11)
+        sheet.getRange(i + 1, 12).setValue(newStatus);
+        // Update Sign-In Time column (col 13 = index 12) to record when check-in/rejection happened
+        sheet.getRange(i + 1, 13).setValue(new Date());
 
         var result = {
           status: 'ok',
@@ -484,7 +491,7 @@ function handleStatusUpdate(data) {
           // Extract visitor details from the row for card assignment
           var fullName = String(values[i][1] || '').trim();
           var destination = String(values[i][4] || '').trim();
-          var email = String(values[i][6] || '').trim();
+          var email = String(values[i][7] || '').trim();
 
           try {
             var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
@@ -1125,7 +1132,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = 'VisitorLog!A1000';
-var LATEST_SHEET_VERSION = 1;
+var LATEST_SHEET_VERSION = 2;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -1133,13 +1140,15 @@ var VISITORLOG_HEADERS = [
   'ID / Passport Number',
   'Company Name',
   'Destination',
+  'Visitation Date',
   'Hand Phone',
   'Email',
   'ID Photo (Drive URL)',
   'Selfie (Drive URL)',
   'Visitor Number',
   'Status',
-  'Action Time'
+  'Sign-In Time',
+  'Sign-Out Time'
 ];
 
 var CARDNO_HEADERS = ['CardNo', 'Status', 'AssignedTo', 'AssignedAt'];
@@ -1196,6 +1205,34 @@ var MIGRATION_REGISTRY = [
 
       // Write version marker
       console.log('Migration V1: Complete');
+    }
+  },
+  {
+    version: 2,
+    name: 'Add Visitation Date, Sign-In Time, Sign-Out Time',
+    destructive: false,
+    description: 'Inserts Visitation Date column, renames Action Time to Sign-In Time, adds Sign-Out Time',
+    fn: function(ss) {
+      console.log('Migration V2: Updating VisitorLog headers');
+      var sheet = ss.getSheetByName('VisitorLog');
+      if (!sheet) {
+        console.log('Migration V2: VisitorLog not found — skipping');
+        return;
+      }
+
+      // Only run if current header count is less than 14
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.length >= 14) {
+        console.log('Migration V2: Headers already 14+ columns — skipping');
+        return;
+      }
+
+      // Write new 14-column headers
+      var newHeaders = VISITORLOG_HEADERS;
+      sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+      sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight('bold');
+
+      console.log('Migration V2: Headers updated to 14 columns');
     }
   },
 ];

@@ -35,11 +35,23 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
+    setDefaultVisitationDate();
     checkOnlineStatus();
     setupFormValidation();
     updateContinueButton();
     fetchDestinations();
     showStep(1);
+  }
+
+  // ──────────────────────────────────────────────
+  // DEFAULT VISITATION DATE
+  // ──────────────────────────────────────────────
+  function setDefaultVisitationDate() {
+    var el = document.getElementById('visitationDate');
+    if (!el) return;
+    var today = new Date().toISOString().split('T')[0];
+    el.value = today;
+    el.setAttribute('min', today);
   }
 
   // ──────────────────────────────────────────────
@@ -138,10 +150,16 @@
         if (!val || val.trim().length === 0) return 'Please select a destination';
         return '';
       },
+      visitationDate: function (val) {
+        if (!val) return 'Please select a visitation date';
+        var today = new Date().toISOString().split('T')[0];
+        if (val < today) return 'Visitation date cannot be in the past';
+        return '';
+      },
     };
 
   function setupFormValidation() {
-    var fields = ['fullName', 'idNumber', 'company', 'phone', 'email'];
+    var fields = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email'];
     fields.forEach(function (name) {
       var input = document.getElementById(name);
       if (!input) return;
@@ -204,7 +222,7 @@
   }
 
   function validateStep1() {
-    var fields = ['fullName', 'idNumber', 'company', 'destination', 'phone', 'email'];
+    var fields = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email'];
     var allValid = true;
     var firstInvalid = null;
 
@@ -229,6 +247,7 @@
     var idEl = document.getElementById('idNumber');
     var compEl = document.getElementById('company');
     var destEl = document.getElementById('destination');
+    var visitDateEl = document.getElementById('visitationDate');
     var phoneEl = document.getElementById('phone');
     var emailEl = document.getElementById('email');
     return {
@@ -236,6 +255,7 @@
       idNumber: idEl ? idEl.value : '',
       company: compEl ? compEl.value : '',
       destination: destEl ? destEl.value : '',
+      visitationDate: visitDateEl ? visitDateEl.value : '',
       phone: phoneEl ? phoneEl.value : '',
       email: emailEl ? emailEl.value : '',
     };
@@ -250,6 +270,7 @@
                    validators.idNumber(data.idNumber) === '' &&
                    validators.company(data.company) === '' &&
                    validators.destination(data.destination) === '' &&
+                   validators.visitationDate(data.visitationDate) === '' &&
                    validators.phone(data.phone) === '' &&
                    validators.email(data.email) === '';
 
@@ -754,6 +775,7 @@
     document.getElementById('review-id').textContent = data.idNumber || '—';
     document.getElementById('review-company').textContent = data.company || '—';
     document.getElementById('review-destination').textContent = data.destination || '—';
+    document.getElementById('review-visitation-date').textContent = data.visitationDate || '—';
     document.getElementById('review-phone').textContent = data.phone || '—';
     document.getElementById('review-email').textContent = data.email || '—';
 
@@ -817,6 +839,7 @@
       idNumber: data.idNumber.trim(),
       company: data.company.trim(),
       destination: data.destination.trim(),
+      visitationDate: data.visitationDate.trim(),
       phone: data.phone.trim(),
       email: data.email.trim(),
       idPhoto: state.idPhoto.dataUrl,

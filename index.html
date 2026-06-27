@@ -133,6 +133,23 @@
           <span id="destination-live" class="sr-only hidden" aria-live="polite"></span>
         </div>
 
+        <!-- Visitation Date -->
+        <div class="field-group" id="field-visitationDate">
+          <label for="visitationDate" class="field-label">Visitation Date</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+            </svg>
+            <input type="date" id="visitationDate" name="visitationDate" class="form-input" required
+                   aria-describedby="visitationDate-error visitationDate-hint">
+          </div>
+          <p id="visitationDate-hint" class="field-hint">Select the date you plan to visit</p>
+          <p id="visitationDate-error" class="field-error" role="alert"></p>
+        </div>
+
         <!-- Phone -->
         <div class="field-group" id="field-phone">
           <label for="phone" class="field-label">Hand Phone Number</label>
@@ -425,6 +442,19 @@
             Destination
           </span>
           <span class="review-value" id="review-destination">—</span>
+        </div>
+        <div class="review-divider"></div>
+        <div class="review-row">
+          <span class="review-label">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+            </svg>
+            Visitation Date
+          </span>
+          <span class="review-value" id="review-visitation-date">—</span>
         </div>
         <div class="review-divider"></div>
         <div class="review-row">
