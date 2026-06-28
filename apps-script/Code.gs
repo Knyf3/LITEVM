@@ -101,6 +101,11 @@ function doPost(e) {
       return handleMigrationResponse(data);
     }
 
+    // Handle report generation
+    if (data.action === 'report') {
+      return handleReport(data, data.sheetId);
+    }
+
     // Handle bulk sign-out
     if (data.mode === 'bulkSignOut') {
       return handleBulkSignOut(data);
@@ -400,6 +405,76 @@ function handleTodayVisitors(sheetId) {
   }
 
   return jsonResponse({ status: 'ok', visitors: visitors }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Report (date-range visitor list)
+// ──────────────────────────────────────────────
+
+function handleReport(data, sheetId) {
+  SpreadsheetApp.flush();
+
+  var sheet = getOrCreateSheet(data.sheetId || sheetId);
+  var allData = sheet.getDataRange().getValues();
+
+  var fromDate = data.fromDate || '';
+  var toDate = data.toDate || '';
+  var timeZone = Session.getScriptTimeZone();
+
+  var visitors = [];
+  var pendingCount = 0;
+  var checkedInCount = 0;
+  var signedOutCount = 0;
+
+  for (var i = 1; i < allData.length; i++) {
+    var row = allData[i];
+    var visitDateStr = getDateString_(row[5]);
+
+    // Apply date range filter
+    if (fromDate && visitDateStr < fromDate) continue;
+    if (toDate && visitDateStr > toDate) continue;
+
+    var ts = row[0];
+    var status = String(row[11] || 'Pending Entry');
+    var vn = String(row[10] || '');
+
+    var visitor = {
+      visitorNumber: vn,
+      fullName: String(row[1] || ''),
+      idNumber: String(row[2] || ''),
+      company: String(row[3] || ''),
+      destination: String(row[4] || ''),
+      visitationDate: visitDateStr,
+      phone: String(row[6] || ''),
+      email: String(row[7] || ''),
+      status: status,
+      registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
+      signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
+      signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+    };
+
+    if (status === 'Pending Entry' || status === 'Pending') {
+      pendingCount++;
+    } else if (status === 'Checked In') {
+      checkedInCount++;
+    } else if (status === 'Signed Out') {
+      signedOutCount++;
+    }
+
+    visitors.push(visitor);
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    visitors: visitors,
+    count: visitors.length,
+    summary: {
+      total: visitors.length,
+      pending: pendingCount,
+      checkedIn: checkedInCount,
+      signedOut: signedOutCount,
+    },
+  }, 200);
 }
 
 // ──────────────────────────────────────────────
@@ -729,13 +804,15 @@ function setupSheet(sheet) {
     'ID / Passport Number',
     'Company Name',
     'Destination',
+    'Visitation Date',
     'Hand Phone',
     'Email',
     'ID Photo (Drive URL)',
     'Selfie (Drive URL)',
     'Visitor Number',
     'Status',
-    'Action Time'
+    'Sign-In Time',
+    'Sign-Out Time'
   ];
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
