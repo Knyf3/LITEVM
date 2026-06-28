@@ -209,8 +209,8 @@
     state.isLoading = true;
     showLoading();
 
-    var url = CONFIG.API_BASE + '?action=report&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID) + '&_t=' + Date.now();
-    var body = JSON.stringify({ fromDate: from, toDate: to });
+    var url = CONFIG.API_BASE + '?_t=' + Date.now();
+    var body = JSON.stringify({ action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to });
 
     fetch(url, {
       method: 'POST',
