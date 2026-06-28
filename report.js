@@ -245,6 +245,7 @@
     updateSummary(data.summary);
     renderTable();
     $('csv-btn').disabled = state.allData.length === 0;
+    $('print-btn').disabled = state.allData.length === 0;
   }
 
   function updateSummary(summary) {
