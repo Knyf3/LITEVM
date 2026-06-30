@@ -46,6 +46,7 @@
     }
     $('pin-overlay').classList.add('hidden');
     $('main-content').classList.remove('hidden');
+    App.render();
     setupApp();
   }
 
@@ -61,6 +62,7 @@
           sessionStorage.setItem('guardAuth', 'true');
           $('pin-overlay').classList.add('hidden');
           $('main-content').classList.remove('hidden');
+          App.render();
           setupApp();
         } else {
           error.classList.remove('hidden');
@@ -437,6 +439,9 @@
     init: init,
     generateReport: generateReport,
     exportCSV: exportCSV,
+    t: window.App.t,
+    setLang: window.App.setLang,
+    render: window.App.render,
   };
 
 })();

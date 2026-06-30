@@ -277,6 +277,32 @@ body {
   font-weight: 600;
 }
 
+/* --- Language Toggle Button --- */
+.lang-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #FFFFFF;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 10;
+  min-width: 36px;
+  min-height: 28px;
+  line-height: 1;
+  transition: background 0.2s;
+}
+.lang-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.page-header {
+  position: relative;
+}
+
 .progress-line {
   width: 40px;
   height: 2px;

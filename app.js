@@ -41,6 +41,7 @@
     updateContinueButton();
     fetchDestinations();
     showStep(1);
+    App.render();
   }
 
   // ──────────────────────────────────────────────
@@ -123,37 +124,37 @@
   // ──────────────────────────────────────────────
   var validators = {
       fullName: function (val) {
-        if (!val || val.trim().length < 2) return 'Please enter your full name';
+        if (!val || val.trim().length < 2) return App.t('err-full-name');
         return '';
       },
       idNumber: function (val) {
-        if (!val || val.trim().length < 6) return 'Please enter a valid ID or passport number';
-        if (!/^[a-zA-Z0-9\s\-\\.\/]+$/.test(val.trim())) return 'Only letters, numbers, hyphens allowed';
+        if (!val || val.trim().length < 6) return App.t('err-id-number');
+        if (!/^[a-zA-Z0-9\s\-\\.\/]+$/.test(val.trim())) return App.t('err-id-format');
         return '';
       },
       company: function (val) {
-        if (!val || val.trim().length < 2) return 'Please enter your company name';
+        if (!val || val.trim().length < 2) return App.t('err-company');
         return '';
       },
       phone: function (val) {
-        if (!val || val.trim().length < 8) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
-        var cleaned = val.trim().replace(/[\s\-\\(\)]/g, '');
-        if (!/^\+?\d{7,15}$/.test(cleaned)) return 'Please enter a valid phone number (e.g. +60 12-345 6789)';
+        if (!val || val.trim().length < 8) return App.t('err-phone');
+        var cleaned = val.trim().replace(/[\s\-\(\)]/g, '');
+        if (!/^\+?\d{7,15}$/.test(cleaned)) return App.t('err-phone');
         return '';
       },
       email: function (val) {
-        if (!val || val.trim() === '') return 'Please enter your email address';
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim())) return 'Please enter a valid email address';
+        if (!val || val.trim() === '') return App.t('err-email-empty');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val.trim())) return App.t('err-email-format');
         return '';
       },
       destination: function (val) {
-        if (!val || val.trim().length === 0) return 'Please select a destination';
+        if (!val || val.trim().length === 0) return App.t('err-destination');
         return '';
       },
       visitationDate: function (val) {
-        if (!val) return 'Please select a visitation date';
+        if (!val) return App.t('err-visitation-date');
         var today = new Date().toISOString().split('T')[0];
-        if (val < today) return 'Visitation date cannot be in the past';
+        if (val < today) return App.t('err-visitation-past');
         return '';
       },
     };
@@ -277,11 +278,11 @@
     if (allValid) {
       btn.disabled = false;
       var sub = btn.querySelector('.btn-subtitle');
-      if (sub) sub.textContent = 'Tap to continue';
+      if (sub) sub.textContent = App.t('btn-subtitle-tap');
     } else {
       btn.disabled = true;
       var sub = btn.querySelector('.btn-subtitle');
-      if (sub) sub.textContent = '(fill all fields to continue)';
+      if (sub) sub.textContent = App.t('btn-subtitle-fill');
     }
   }
 
@@ -379,7 +380,7 @@
     var spinner = document.getElementById(zone + '-spinner');
     spinner.classList.remove('hidden');
     var spinnerText = spinner.querySelector('span');
-    if (spinnerText) spinnerText.textContent = 'Processing photo...';
+    if (spinnerText) spinnerText.textContent = App.t('processing-photo');
 
     processImage(rawDataUrl, CONFIG.PHOTO_MAX_DIMENSION).then(function (resizedDataUrl) {
       spinner.classList.add('hidden');
@@ -502,7 +503,7 @@
       if (!file) return;
 
       if (file.size > CONFIG.PHOTO_MAX_SIZE) {
-        alert('Photo is too large. Maximum size is 5MB.');
+        alert(App.t('photo-too-large'));
         fileInput.value = '';
         return;
       }
@@ -514,7 +515,7 @@
         var spinner = document.getElementById(zone + '-spinner');
         spinner.classList.remove('hidden');
         var spinnerText = spinner.querySelector('span');
-        if (spinnerText) spinnerText.textContent = 'Processing photo...';
+        if (spinnerText) spinnerText.textContent = App.t('processing-photo');
 
         processImage(dataUrl, CONFIG.PHOTO_MAX_DIMENSION).then(function (resized) {
           spinner.classList.add('hidden');
@@ -607,7 +608,7 @@
     state.destinationsLoading = true;
     state.destinationsError = null;
     select.disabled = true;
-    select.innerHTML = '<option value="" disabled selected>Loading destinations...</option>';
+    select.innerHTML = '<option value="" disabled selected>' + App.t('placeholder-destination-loading') + '</option>';
 
     var controller = new AbortController();
     state.destinationsAbort = controller;
@@ -669,7 +670,7 @@
       if (destArray.length === 0) {
         state.destinationsError = 'No destinations configured';
         select.disabled = true;
-        select.innerHTML = '<option value="" disabled selected>No destinations available</option>';
+        select.innerHTML = '<option value="" disabled selected>' + App.t('no-destinations') + '</option>';
         var errorEl = document.getElementById('destination-error');
         if (errorEl) {
           errorEl.textContent = 'No destinations configured';
@@ -681,7 +682,7 @@
 
       // Populate select
       select.disabled = false;
-      var html = '<option value="" disabled selected>Select destination</option>';
+      var html = '<option value="" disabled selected>' + App.t('placeholder-destination-select') + '</option>';
       for (var j = 0; j < destArray.length; j++) {
         var escaped = destArray[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         html += '<option value="' + escaped + '">' + escaped + '</option>';
@@ -710,17 +711,17 @@
 
       if (state.fetchRetries < 3) {
         // Auto-retry
-        select.innerHTML = '<option value="" disabled selected>Retrying... (' + state.fetchRetries + '/3)</option>';
+        select.innerHTML = '<option value="" disabled selected>' + App.t('retrying-destinations') + ' (' + state.fetchRetries + '/3)</option>';
         setTimeout(fetchDestinations, 1500);
       } else {
         select.disabled = true;
-        select.innerHTML = '<option value="" disabled selected>Failed to load</option>';
+        select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
         var errorEl = document.getElementById('destination-error');
         if (errorEl) {
-          errorEl.textContent = 'Failed to load destinations. ';
+          errorEl.textContent = App.t('failed-load-destinations');
           var retryLink = document.createElement('a');
           retryLink.href = '#';
-          retryLink.textContent = 'Tap to retry';
+          retryLink.textContent = App.t('tap-to-retry');
           retryLink.style.color = '#4361ee';
           retryLink.style.textDecoration = 'underline';
           retryLink.style.cursor = 'pointer';
@@ -730,7 +731,7 @@
             fetchDestinations();
           };
           errorEl.innerHTML = '';
-          errorEl.appendChild(document.createTextNode('Failed to load destinations. '));
+          errorEl.appendChild(document.createTextNode(App.t('failed-load-destinations')));
           errorEl.appendChild(retryLink);
           errorEl.classList.add('visible');
         }
@@ -757,11 +758,11 @@
     if (idOk && selfieOk) {
       btn.disabled = false;
       var sub = btn.querySelector('.btn-subtitle');
-      if (sub) sub.textContent = 'Review your information';
+      if (sub) sub.textContent = App.t('btn-subtitle-review');
     } else {
       btn.disabled = true;
       var sub = btn.querySelector('.btn-subtitle');
-      if (sub) sub.textContent = '(capture both photos to continue)';
+      if (sub) sub.textContent = App.t('btn-subtitle-capture');
     }
   }
 
@@ -783,11 +784,11 @@
     var idBadge = document.getElementById('review-id-badge');
     if (state.idPhoto) {
       idThumb.innerHTML = '<img src="' + state.idPhoto.dataUrl + '" alt="ID Photo">';
-      idBadge.textContent = 'Captured ✓';
+      idBadge.textContent = App.t('captured');
       idBadge.classList.add('captured');
     } else {
       idThumb.innerHTML = '';
-      idBadge.textContent = 'Not captured';
+      idBadge.textContent = App.t('not-captured');
       idBadge.classList.remove('captured');
     }
 
@@ -795,11 +796,11 @@
     var selfieBadge = document.getElementById('review-selfie-badge');
     if (state.selfiePhoto) {
       selfieThumb.innerHTML = '<img src="' + state.selfiePhoto.dataUrl + '" alt="Selfie Photo">';
-      selfieBadge.textContent = 'Captured ✓';
+      selfieBadge.textContent = App.t('captured');
       selfieBadge.classList.add('captured');
     } else {
       selfieThumb.innerHTML = '';
-      selfieBadge.textContent = 'Not captured';
+      selfieBadge.textContent = App.t('not-captured');
       selfieBadge.classList.remove('captured');
     }
   }
@@ -811,22 +812,22 @@
     if (state.submitting) return;
 
     if (!state.idPhoto || !state.selfiePhoto) {
-      showError('Please capture both photos before submitting.');
+      showError(App.t('err-capture-both-photos'));
       return;
     }
 
     if (!validateStep1()) {
-      showError('Please fill all required fields correctly.');
+      showError(App.t('err-fill-all-fields'));
       return;
     }
 
     if (!navigator.onLine) {
-      showError('You are offline. Please check your internet connection and try again.');
+      showError(App.t('err-offline-submit'));
       return;
     }
 
     if (!CONFIG.API_BASE) {
-      showError('API endpoint not configured. Please contact the administrator.');
+      showError(App.t('err-api-not-configured'));
       return;
     }
 
@@ -845,6 +846,7 @@
       idPhoto: state.idPhoto.dataUrl,
       selfie: state.selfiePhoto.dataUrl,
       sheetId: CONFIG.SHEET_ID,
+      origin: window.location.origin,
     };
     var jsonBody = JSON.stringify(payload);
 
@@ -877,14 +879,14 @@
         parsed = JSON.parse(text);
       } catch (e) {
         console.error('Submit: server returned non-JSON:', text.substring(0, 300));
-        showError('Unexpected response from server. Please try again.');
+        showError(App.t('err-unexpected-response'));
         return;
       }
 
       if (parsed.status === 'ok') {
         showConfirmation(parsed.visitorNumber || 'V-' + getDateStamp() + '-001');
       } else {
-        showError(parsed.error || 'Submission failed. Please try again.');
+        showError(parsed.error || App.t('err-submission-failed'));
       }
     })
     .catch(function (err) {
@@ -906,13 +908,13 @@
       // Provide a more specific error message
       var msg;
       if (err.name === 'AbortError') {
-        msg = 'Request timed out. Please check your connection and try again.';
+        msg = App.t('err-request-timeout');
       } else if (err.message && err.message.indexOf('status') >= 0) {
-        msg = err.message + '. Please try again.';
+        msg = err.message + '. ' + App.t('err-network');
       } else if (err.name === 'TypeError' && err.message.indexOf('Failed to fetch') >= 0) {
-        msg = 'Connection failed. This may be a browser security restriction. Try again or use a different browser.';
+        msg = App.t('err-connection-failed');
       } else {
-        msg = err.message || 'Network error. Please check your connection and try again.';
+        msg = err.message || App.t('err-network');
       }
       showError(msg);
     });
@@ -935,7 +937,7 @@
     var overlay = document.getElementById('error-overlay');
     var msgEl = document.getElementById('error-message');
     if (!overlay || !msgEl) return;
-    msgEl.textContent = message || 'An error occurred. Please try again.';
+    msgEl.textContent = message || App.t('error-occurred');
     overlay.classList.remove('hidden');
   }
 
@@ -1006,6 +1008,9 @@
     dismissError: dismissError,
     retryFetchDestinations: retryFetchDestinations,
     close: close,
+    t: window.App.t,
+    setLang: window.App.setLang,
+    render: window.App.render,
   };
 
   // Auto-init on DOM ready

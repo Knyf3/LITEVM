@@ -35,6 +35,7 @@
       showLogin();
       return;
     }
+    App.render();
     checkOnlineStatus();
     setupSearchInput();
     loadTodayVisitors();
@@ -104,6 +105,7 @@
       sessionStorage.setItem('guardAuth', 'true');
       hideLogin();
       // Run the normal init now
+      App.render();
       checkOnlineStatus();
       setupSearchInput();
       loadTodayVisitors();
@@ -186,8 +188,8 @@
       controller.abort();
       state.actionInProgress = false;
       setResultState('notfound');
-      $('#not-found-message').textContent = 'Request timed out. Please check your connection.';
-      $('#not-found-hint').textContent = 'Make sure you have an internet connection and try again.';
+      $('#not-found-message').textContent = App.t('request-timed-out');
+      $('#not-found-hint').textContent = App.t('make-sure-connection');
     }, CONFIG.TIMEOUT_MS || 10000);
 
     fetch(url, {
@@ -204,7 +206,7 @@
       state.actionInProgress = false;
       var data;
       try { data = JSON.parse(text); } catch (e) {
-        showError('Unexpected server response. Please try again.');
+        showError(App.t('unexpected-server-response'));
         setResultState('empty');
         return;
       }
@@ -218,12 +220,12 @@
           return;
         }
         setResultState('notfound');
-        $('#not-found-message').textContent = data.message || 'No registration found for "' + vn + '".';
+        $('#not-found-message').textContent = data.message || App.t('not-found-message');
         $('#not-found-hint').textContent = suggestFormatHint(vn);
       } else {
         setResultState('notfound');
-        $('#not-found-message').textContent = data.message || 'No registration found.';
-        $('#not-found-hint').textContent = 'Please check the number and try again.';
+        $('#not-found-message').textContent = data.message || App.t('not-found-message');
+        $('#not-found-hint').textContent = App.t('not-found-hint');
       }
     })
     .catch(function (err) {
@@ -231,8 +233,8 @@
       state.actionInProgress = false;
       if (err.name === 'AbortError') return; // handled by timeout
       setResultState('notfound');
-      $('#not-found-message').textContent = 'Network error. Please check your connection.';
-      $('#not-found-hint').textContent = 'Tap "Try Again" to retry.';
+      $('#not-found-message').textContent = App.t('network-error');
+      $('#not-found-hint').textContent = App.t('tap-try-again-retry');
     });
   }
 
@@ -250,8 +252,8 @@
       var data;
       try { data = JSON.parse(text); } catch (e) {
         setResultState('notfound');
-        $('#not-found-message').textContent = 'Card number not found.';
-        $('#not-found-hint').textContent = 'Enter a visitor number (V-...) or a card number.';
+        $('#not-found-message').textContent = App.t('err-card-not-found');
+        $('#not-found-hint').textContent = App.t('err-visitor-number-format');
         return;
       }
       if (data.status === 'ok' && data.visitor) {
@@ -259,24 +261,24 @@
       } else {
         setResultState('notfound');
         $('#not-found-message').textContent = data.message || 'No registration found for card ' + cardNo;
-        $('#not-found-hint').textContent = 'Enter a visitor number (V-...) or a card number.';
+        $('#not-found-hint').textContent = App.t('err-visitor-number-format');
       }
     })
     .catch(function (err) {
       state.actionInProgress = false;
       if (err.name === 'AbortError') return;
       setResultState('notfound');
-      $('#not-found-message').textContent = 'Network error. Please check your connection.';
-      $('#not-found-hint').textContent = 'Tap "Try Again" to retry.';
+      $('#not-found-message').textContent = App.t('network-error');
+      $('#not-found-hint').textContent = App.t('tap-try-again-retry');
     });
   }
 
   function suggestFormatHint(vn) {
     var match = vn.match(/V-(\d{8})-\d{3}/);
     if (match) {
-      return 'No match found for today. Make sure the number is correct.';
+      return App.t('err-no-match-today');
     }
-    return 'Visitor numbers follow the format V-YYYYMMDD-NNN (e.g. V-20250622-001). Please check the number and try again.';
+    return App.t('err-visitor-number-format');
   }
 
   // ──────────────────────────────────────────────
@@ -294,16 +296,16 @@
 
     if (status === 'Checked In') {
       badge.classList.add('checked-in');
-      statusText.textContent = 'Checked In';
+      statusText.textContent = App.t('status-checked-in');
     } else if (status === 'Rejected') {
       badge.classList.add('rejected');
-      statusText.textContent = 'Rejected';
+      statusText.textContent = App.t('status-rejected');
     } else if (status === 'Signed Out') {
       badge.classList.add('signed-out');
-      statusText.textContent = 'Signed Out';
+      statusText.textContent = App.t('status-signed-out');
     } else {
       badge.classList.add('pending');
-      statusText.textContent = 'Pending Entry';
+      statusText.textContent = App.t('status-pending');
     }
 
     // Meta
@@ -388,11 +390,11 @@
       actions.classList.add('hidden');
       processed.classList.remove('hidden');
       if (status === 'Rejected') {
-        $('#processed-info-text').textContent = 'This registration was previously rejected. (Status: Rejected)';
+        $('#processed-info-text').textContent = App.t('prev-rejected');
       } else if (status === 'Signed Out') {
-        $('#processed-info-text').textContent = 'This visitor has already signed out. (Status: Signed Out)';
+        $('#processed-info-text').textContent = App.t('already-signed-out');
       } else {
-        $('#processed-info-text').textContent = 'This visitor has already checked in. (Status: Checked In)';
+        $('#processed-info-text').textContent = App.t('already-checked-in');
       }
     }
 
@@ -469,29 +471,29 @@
 
     if (type === 'reject') {
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#e63946" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
-      title.textContent = 'Confirm Rejection';
-      msg.innerHTML = 'Are you sure you want to reject <strong>' + (v.fullName || 'this visitor') + '</strong>?';
-      actionBtn.textContent = 'Confirm Reject';
+      title.textContent = App.t('confirm-rejection');
+      msg.innerHTML = App.t('confirm-reject-msg') + ' <strong>' + (v.fullName || 'this visitor') + '</strong>?';
+      actionBtn.textContent = App.t('confirm-action-reject');
       actionBtn.className = 'btn-confirm-action btn-confirm-reject';
       reasonSection.classList.remove('hidden');
       if (reasonTextarea) reasonTextarea.value = '';
     } else if (type === 'sign-out') {
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
-      title.textContent = 'Confirm Sign Out';
-      msg.innerHTML = 'Are you sure you want to sign out <strong>' + (v.fullName || 'this visitor') + '</strong>?';
-      actionBtn.textContent = 'Confirm Sign Out';
+      title.textContent = App.t('confirm-sign-out');
+      msg.innerHTML = App.t('confirm-signout-msg') + ' <strong>' + (v.fullName || 'this visitor') + '</strong>?';
+      actionBtn.textContent = App.t('confirm-action-signout');
       actionBtn.className = 'btn-confirm-action btn-confirm-signout';
       reasonSection.classList.add('hidden');
     } else {
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#16A34A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
-      title.textContent = 'Confirm Check-In';
-      msg.innerHTML = 'Are you sure you want to check in <strong>' + (v.fullName || 'this visitor') + '</strong>?';
-      actionBtn.textContent = 'Confirm Check-In';
+      title.textContent = App.t('confirm-checkin');
+      msg.innerHTML = App.t('confirm-checkin-msg') + ' <strong>' + (v.fullName || 'this visitor') + '</strong>?';
+      actionBtn.textContent = App.t('confirm-action-checkin');
       actionBtn.className = 'btn-confirm-action btn-confirm-verify';
       reasonSection.classList.add('hidden');
     }
 
-    vn.textContent = 'Visitor: ' + (v.visitorNumber || '—');
+    vn.textContent = App.t('visitor') + ' ' + (v.visitorNumber || '—');
     dialog._actionType = type;
     dialog.classList.remove('hidden');
   }
@@ -529,6 +531,7 @@
       visitorNumber: visitorNumber,
       status: status,
       sheetId: CONFIG.SHEET_ID,
+      origin: window.location.origin,
     };
     if (reason) payload.rejectedReason = reason;
 
@@ -545,7 +548,7 @@
 
       var data;
       try { data = JSON.parse(text); } catch (e) {
-        showError('Unexpected server response. Please try again.');
+        showError(App.t('unexpected-server-response'));
         return;
       }
 
@@ -564,13 +567,13 @@
         // Refresh today's list
         loadTodayVisitors();
       } else {
-        showError(data.message || 'Failed to update status. Please try again.');
+        showError(data.message || App.t('err-failed-update-status'));
       }
     })
     .catch(function (err) {
       state.actionInProgress = false;
       if (overlay) overlay.classList.add('hidden');
-      showError('Network error. Please check your connection and try again.');
+      showError(App.t('err-network'));
     });
   }
 
@@ -967,11 +970,11 @@
     if (!dialog || !icon || !title || !msg || !vn || !reasonSection || !actionBtn) return;
 
     icon.innerHTML = '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
-    title.textContent = 'Bulk Sign Out';
-    msg.textContent = 'Sign out ' + count + ' visitor' + (count > 1 ? 's' : '') + '? Their badges will be released.';
-    vn.textContent = count + ' selected';
+    title.textContent = App.t('bulk-sign-out');
+    msg.textContent = App.t('btn-sign-out') + ' ' + count + ' ' + App.t('visitors') + (count > 1 ? '' : '') + '? ' + App.t('cards-released');
+    vn.textContent = count + ' ' + App.t('sign-out-selected');
     reasonSection.classList.add('hidden');
-    actionBtn.textContent = 'Sign Out All';
+    actionBtn.textContent = App.t('sign-out-all');
     actionBtn.className = 'btn-confirm-action btn-confirm-signout';
 
     // Override the execute action for bulk
@@ -1003,12 +1006,13 @@
     }
 
     // Show progress
-    showProgress('Signing out visitors...');
+    showProgress(App.t('signing-out-visitors'));
 
     var payload = {
       mode: 'bulkSignOut',
       visitorNumbers: visitorNumbers,
       sheetId: CONFIG.SHEET_ID,
+      origin: window.location.origin,
     };
 
     fetch(CONFIG.API_BASE, {
@@ -1132,7 +1136,7 @@
 
     var bar = $('#inline-confirm-bar');
     if (!bar) return;
-    $('#inline-confirm-text').textContent = 'Check in ' + (visitor.fullName || 'this visitor') + '?';
+    $('#inline-confirm-text').textContent = App.t('check-in') + ' ' + (visitor.fullName || 'this visitor') + '?';
     bar.classList.remove('hidden');
     bar.setAttribute('data-vn', vn);
 
@@ -1191,6 +1195,7 @@
       visitorNumber: visitorNumber,
       status: 'Signed Out',
       sheetId: CONFIG.SHEET_ID,
+      origin: window.location.origin,
     };
 
     fetch(CONFIG.API_BASE, {
@@ -1299,7 +1304,7 @@
     var overlay = $('#error-overlay');
     var msgEl = $('#error-message');
     if (!overlay || !msgEl) return;
-    msgEl.textContent = message || 'An error occurred. Please try again.';
+    msgEl.textContent = message || App.t('an-error-occurred');
     overlay.classList.remove('hidden');
   }
 
@@ -1406,6 +1411,9 @@
     toggleSelectAll: toggleSelectAll,
     confirmBulkSignOut: confirmBulkSignOut,
     quickSignOut: quickSignOut,
+    t: window.App.t,
+    setLang: window.App.setLang,
+    render: window.App.render,
   };
 
   // Auto-init on DOM ready

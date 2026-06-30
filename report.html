@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="description" content="LITEVM — Visitor Reports">
-  <title>LITEVM — Visitor Reports</title>
+  <title data-i18n="title-report">LITEVM — Visitor Reports</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -15,23 +15,24 @@
   <!-- PIN Gate Overlay -->
   <div id="pin-overlay" class="pin-overlay">
     <div class="pin-card">
-      <h2>🔒 LITEVM Reports</h2>
-      <p>Enter PIN to continue</p>
+      <h2 data-i18n="pin-reports">🔒 LITEVM Reports</h2>
+      <p data-i18n="enter-pin-continue">Enter PIN to continue</p>
       <div class="pin-input-row">
         <input type="password" id="pin-input" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
       </div>
-      <p id="pin-error" class="pin-error hidden">Incorrect PIN</p>
+      <p id="pin-error" class="pin-error hidden" data-i18n="incorrect-pin">Incorrect PIN</p>
     </div>
   </div>
 
   <!-- Main Content (hidden until PIN verified) -->
   <div id="main-content" class="hidden">
-    <div class="header">
+    <div class="header header-with-toggle">
       <div class="header-inner">
-        <h1>📋 Visitor Reports</h1>
+        <h1 data-i18n="reports">📋 Visitor Reports</h1>
         <div class="header-links">
-          <a href="verify.html" class="header-link">🔙 Guard Portal</a>
+          <a href="verify.html" class="header-link" data-i18n="nav-guard-portal">🔙 Guard Portal</a>
         </div>
+        <button class="lang-toggle" onclick="App.setLang(App._lang === 'en' ? 'id' : 'en')" aria-label="Toggle language">ID</button>
       </div>
     </div>
 
@@ -40,41 +41,41 @@
       <div class="report-filters card">
         <div class="filter-row date-row">
           <div class="date-group">
-            <label>From</label>
+            <label data-i18n="from">From</label>
             <input type="date" id="date-from">
           </div>
           <div class="date-group">
-            <label>To</label>
+            <label data-i18n="to">To</label>
             <input type="date" id="date-to">
           </div>
           <div class="preset-group">
-            <button class="preset-btn active" data-preset="today">Today</button>
-            <button class="preset-btn" data-preset="yesterday">Yesterday</button>
-            <button class="preset-btn" data-preset="7days">7 Days</button>
-            <button class="preset-btn" data-preset="month">This Month</button>
+            <button class="preset-btn active" data-preset="today" data-i18n="preset-today">Today</button>
+            <button class="preset-btn" data-preset="yesterday" data-i18n="preset-yesterday">Yesterday</button>
+            <button class="preset-btn" data-preset="7days" data-i18n="preset-7days">7 Days</button>
+            <button class="preset-btn" data-preset="month" data-i18n="preset-month">This Month</button>
           </div>
         </div>
         <div class="filter-row search-row">
           <div class="search-group">
-            <input type="text" id="report-search" placeholder="🔍 Search name, company, or visitor number...">
+            <input type="text" id="report-search" data-i18n-placeholder="placeholder-search-report" placeholder="🔍 Search name, company, or visitor number...">
           </div>
           <div class="filter-group">
             <select id="status-filter">
-              <option value="">All Statuses</option>
-              <option value="Registered">Registered</option>
-              <option value="Checked In">Checked In</option>
-              <option value="Signed Out">Signed Out</option>
+              <option value="" data-i18n="all-statuses">All Statuses</option>
+              <option value="Registered" data-i18n="status-registered">Registered</option>
+              <option value="Checked In" data-i18n="status-checked-in">Checked In</option>
+              <option value="Signed Out" data-i18n="status-signed-out">Signed Out</option>
             </select>
           </div>
-          <button id="generate-btn" class="btn btn-primary">Generate</button>
-          <button id="csv-btn" class="btn btn-secondary" disabled>📥 CSV</button>
-          <button id="print-btn" class="btn btn-secondary no-print" onclick="window.print()" disabled>🖨️ Print / PDF</button>
+          <button id="generate-btn" class="btn btn-primary"><span data-i18n="btn-generate-report">Generate Report</span></button>
+          <button id="csv-btn" class="btn btn-secondary" disabled data-i18n="btn-export-csv">📥 CSV</button>
+          <button id="print-btn" class="btn btn-secondary no-print" onclick="window.print()" disabled data-i18n="btn-print-pdf">🖨️ Print / PDF</button>
         </div>
       </div>
 
       <!-- Summary Bar -->
       <div id="summary-bar" class="summary-bar hidden">
-        <span id="summary-text">Loading...</span>
+        <span id="summary-text" data-i18n="loading">Loading...</span>
       </div>
 
       <!-- Report Table -->
@@ -82,15 +83,15 @@
         <table class="report-table" id="report-table">
           <thead>
             <tr>
-              <th>#</th>
-              <th>Visitor #</th>
-              <th>Name</th>
-              <th>Company</th>
-              <th>Destination</th>
-              <th>Date</th>
-              <th>Status</th>
-              <th>Sign-In</th>
-              <th>Sign-Out</th>
+              <th data-i18n="table-num">#</th>
+              <th data-i18n="table-visitor">Visitor #</th>
+              <th data-i18n="table-name">Name</th>
+              <th data-i18n="table-company">Company</th>
+              <th data-i18n="table-destination">Destination</th>
+              <th data-i18n="table-date">Date</th>
+              <th data-i18n="table-status">Status</th>
+              <th data-i18n="table-sign-in">Sign-In</th>
+              <th data-i18n="table-sign-out">Sign-Out</th>
             </tr>
           </thead>
           <tbody id="report-tbody"></tbody>
@@ -100,21 +101,21 @@
         <div id="mobile-cards" class="mobile-cards"></div>
 
         <div id="pagination" class="pagination hidden">
-          <button id="prev-page" class="page-btn">← Prev</button>
-          <span id="page-info" class="page-info">Page 1 of 1</span>
-          <button id="next-page" class="page-btn">Next →</button>
+          <button id="prev-page" class="page-btn" data-i18n="btn-prev">← Prev</button>
+          <span id="page-info" class="page-info" data-i18n="page-of">Page 1 of 1</span>
+          <button id="next-page" class="page-btn" data-i18n="btn-next">Next →</button>
         </div>
       </div>
 
       <!-- Empty state -->
       <div id="empty-state" class="empty-state hidden">
-        <p>No visitors found for this date range.</p>
+        <p data-i18n="no-results">No visitors found for this date range.</p>
       </div>
 
       <!-- Loading Overlay -->
       <div id="loading-overlay" class="loading-overlay hidden">
         <div class="spinner"></div>
-        <p>Loading report...</p>
+        <p data-i18n="loading-report">Generating report...</p>
       </div>
 
       <!-- Error Toast -->
@@ -123,6 +124,7 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="lang.js?v=1"></script>
   <script src="report.js"></script>
 </body>
 </html>
