@@ -952,22 +952,19 @@
   function showConfirmation(visitorNumber) {
     document.getElementById('visitor-number').textContent = visitorNumber;
 
-    // Generate QR code
+    // Generate QR code using qrcodejs
     var qrContainer = document.getElementById('qrcode-container');
     if (qrContainer) {
       qrContainer.innerHTML = '';
       try {
         if (typeof QRCode !== 'undefined') {
-          QRCode.toCanvas(qrContainer, visitorNumber, {
-            width: 180,
-            height: 180,
-            margin: 2,
-            color: {
-              dark: '#1E293B',
-              light: '#FFFFFF',
-            },
-          }, function (err) {
-            if (err) console.warn('QR generation error:', err);
+          new QRCode(qrContainer, {
+            text: visitorNumber,
+            width: 200,
+            height: 200,
+            colorDark: '#1E293B',
+            colorLight: '#FFFFFF',
+            correctLevel: QRCode.CorrectLevel.H,
           });
         }
       } catch (e) {

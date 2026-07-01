@@ -1269,8 +1269,8 @@ function generateVisitorNumber() {
  * MailApp is a built-in Apps Script service — no setup, no tokens needed.
  */
 function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
-  var subject = 'Visitor Registration Confirmed — ' + visitorNumber;
-  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(visitorNumber);
+  var subject = 'LITEVM — Visitor Registration Confirmation';
+  var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(visitorNumber);
 
   var htmlBody = ''
     + '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;padding:24px;">'
@@ -1282,7 +1282,9 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
 
     // QR Code
     + '<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:20px;display:inline-block;">'
-    + '<img src="' + qrUrl + '" alt="QR Code for ' + visitorNumber + '" style="display:block;width:180px;height:180px;border-radius:8px;">'
+    + '<a href="' + qrUrl + '" target="_blank">'
+    + '<img src="' + qrUrl + '" alt="QR Code for ' + visitorNumber + '" style="display:block;width:200px;height:200px;border-radius:8px;">'
+    + '</a>'
     + '<p style="font-size:12px;color:#64748B;margin:12px 0 0 0;">Show this QR code at the entrance</p>'
     + '</div>'
 
