@@ -23,6 +23,8 @@
  *
  */
 
+var CODE_VERSION = '1.0.0';  // Increment this to track deployed versions
+
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
 // ──────────────────────────────────────────────
@@ -265,8 +267,12 @@ function doGet(e) {
       }
     }
 
-    // Default: health check
-    return jsonResponse({ status: 'LITEVM Web App is running' }, 200);
+    // Default: health check — return version info
+    return jsonResponse({
+      status: 'ok',
+      message: 'LITEVM Web App is running',
+      version: CODE_VERSION,
+    }, 200);
 
   } catch (error) {
     console.error('doGet error: ' + error.message);
