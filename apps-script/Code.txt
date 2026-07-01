@@ -70,7 +70,7 @@ function _loadMasterConfig() {
       sheetId: sid,
       allowedOrigins: String(row[1] || '').trim(),
       tier: String(row[2] || 'free').trim().toLowerCase(),
-      visitorLimit: parseInt(row[3] || 50, 10),
+      visitorLimit: row[3] !== undefined && row[3] !== null && row[3] !== '' ? parseInt(row[3], 10) : 50,
       status: String(row[4] || 'active').trim().toLowerCase(),
       notes: String(row[5] || '').trim(),
     };
