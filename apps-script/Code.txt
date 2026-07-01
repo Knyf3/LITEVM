@@ -24,6 +24,193 @@
  */
 
 // ──────────────────────────────────────────────
+// MASTER CONFIG CACHE (per-execution)
+// ──────────────────────────────────────────────
+var _masterConfig = null;
+
+/**
+ * Open the master config Google Sheet by its ID stored in Script Properties.
+ * The MASTER_CONFIG_ID property is set once and never exposed to the frontend.
+ */
+function _getMasterConfigSheet() {
+  var configId = PropertiesService.getScriptProperties().getProperty('MASTER_CONFIG_ID');
+  if (!configId) return null;
+  try {
+    return SpreadsheetApp.openById(configId);
+  } catch (e) {
+    console.error('Failed to open master config: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Load all customer rows from the "Customers" tab of the master config sheet.
+ * Caches the result in the per-execution global _masterConfig.
+ *
+ * Customers tab schema (6 columns):
+ *   sheetId | allowedOrigins | tier | visitorLimit | status | notes
+ *
+ * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes }
+ */
+function _loadMasterConfig() {
+  if (_masterConfig !== null) return _masterConfig;
+  var sheet = _getMasterConfigSheet();
+  if (!sheet) { _masterConfig = {}; return {}; }
+  var custSheet = sheet.getSheetByName('Customers');
+  if (!custSheet) { _masterConfig = {}; return {}; }
+  var data = custSheet.getDataRange().getValues();
+  var config = {};
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var sid = String(row[0] || '').trim();
+    if (!sid) continue;
+    config[sid] = {
+      sheetId: sid,
+      allowedOrigins: String(row[1] || '').trim(),
+      tier: String(row[2] || 'free').trim().toLowerCase(),
+      visitorLimit: parseInt(row[3] || 50, 10),
+      status: String(row[4] || 'active').trim().toLowerCase(),
+      notes: String(row[5] || '').trim(),
+    };
+  }
+  _masterConfig = config;
+  return config;
+}
+
+/**
+ * Get a single customer's config by sheetId from the cached master config.
+ *
+ * @param {string} sheetId - The Google Sheet ID of the customer
+ * @returns {Object|null} Customer config object or null if not found
+ */
+function _getCustomerConfig(sheetId) {
+  var config = _loadMasterConfig();
+  return config[sheetId] || null;
+}
+
+/**
+ * Validate an incoming request against the master config.
+ *
+ * Validation steps:
+ *   1. If sheetId is not in master config → deny with INVALID_CUSTOMER
+ *   2. If customer status is not 'active' → deny with ACCOUNT_DISABLED
+ *   3. If endpointType is NOT 'register' → skip origin check, allow
+ *   4. If origin is reported → check against allowedOrigins whitelist
+ *   5. If origin not whitelisted → deny with ORIGIN_BLOCKED
+ *
+ * Denied requests are logged to the DeniedLog tab of the master config sheet.
+ *
+ * @param {Object} e - The doGet/doPost event object
+ * @param {string} sheetId - Customer's Google Sheet ID
+ * @param {string} endpointType - 'health' | 'get' | 'register' | 'status' | 'admin'
+ * @returns {Object} { valid: boolean, error?: string, message?: string, tier?, visitorLimit?, status? }
+ */
+function validateRequest(e, sheetId, endpointType) {
+  // Health check — no validation needed
+  if (!endpointType || endpointType === 'health') {
+    return { valid: true };
+  }
+
+  // Must have a sheetId for any data operation
+  if (!sheetId) {
+    return { valid: false, error: 'MISSING_SHEET_ID', message: 'Customer identifier required.' };
+  }
+
+  // Look up customer in master config
+  var customer = _getCustomerConfig(sheetId);
+  if (!customer) {
+    logDeniedRequest(sheetId, null, 'UNKNOWN_CUSTOMER', endpointType, null);
+    return { valid: false, error: 'INVALID_CUSTOMER', message: 'Invalid customer configuration.' };
+  }
+
+  // Check account status
+  if (customer.status !== 'active') {
+    logDeniedRequest(sheetId, null, 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
+    return { valid: false, error: 'ACCOUNT_DISABLED', message: 'This service is currently unavailable.' };
+  }
+
+  // Only enforce origin checks on registration endpoint
+  if (endpointType !== 'register') {
+    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+  }
+
+  // ─── REGISTRATION-SPECIFIC CHECKS ───
+
+  // Get the reported origin from the JSON body or URL parameter
+  var origin = '';
+  try {
+    if (e && e.postData) {
+      var body = JSON.parse(e.postData.contents);
+      origin = body.origin || '';
+    }
+  } catch (er) { /* ignore parse errors */ }
+  if (!origin && e && e.parameter && e.parameter.origin) {
+    origin = e.parameter.origin;
+  }
+
+  // Check origin against whitelist
+  if (origin) {
+    var allowed = customer.allowedOrigins;
+    if (allowed) {
+      var origins = allowed.split(',').map(function(d) {
+        return d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+      });
+      var cleanOrigin = origin.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+      var matched = false;
+      for (var i = 0; i < origins.length; i++) {
+        if (origins[i] && cleanOrigin === origins[i]) {
+          matched = true;
+          break;
+        }
+        // Also match subdomains: if allowed is "example.com", "visitor.example.com" matches
+        if (origins[i] && cleanOrigin.endsWith('.' + origins[i])) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        logDeniedRequest(sheetId, origin, 'ORIGIN_BLOCKED', endpointType, null);
+        return { valid: false, error: 'ORIGIN_BLOCKED', message: 'Registration unavailable from this location. Please contact the front desk.' };
+      }
+    } else {
+      // No origins configured — allow (legacy mode) but log warning
+      console.warn('[validateRequest] No allowedOrigins configured for sheet ' + sheetId + ' — allowing request from ' + origin);
+    }
+  } else {
+    // No origin provided — log warning but don't block (some clients don't send origin)
+    console.warn('[validateRequest] No origin provided for registration on sheet ' + sheetId + ' — allowing request');
+  }
+
+  // All checks passed
+  return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+}
+
+/**
+ * Log a denied request to the DeniedLog tab of the master config sheet.
+ * Creates the tab with headers if it does not already exist.
+ *
+ * @param {string} sheetId - Customer sheet ID
+ * @param {string} origin - Request origin (may be empty)
+ * @param {string} reason - Denial reason code
+ * @param {string} endpointType - Endpoint type string
+ * @param {string} userAgent - User-Agent header (may be empty)
+ */
+function logDeniedRequest(sheetId, origin, reason, endpointType, userAgent) {
+  try {
+    var sheet = _getMasterConfigSheet();
+    if (!sheet) return;
+    var deniedSheet = sheet.getSheetByName('DeniedLog');
+    if (!deniedSheet) {
+      deniedSheet = sheet.insertSheet('DeniedLog');
+      deniedSheet.appendRow(['Timestamp', 'SheetId', 'Origin', 'Reason', 'EndpointType', 'UserAgent']);
+    }
+    deniedSheet.appendRow([new Date(), sheetId || '', origin || '', reason || '', endpointType || '', userAgent || '']);
+  } catch (e) {
+    console.error('Failed to log denied request: ' + e.message);
+  }
+}
+
+// ──────────────────────────────────────────────
 // WEB APP ENTRY POINTS
 // ──────────────────────────────────────────────
 
@@ -42,6 +229,12 @@ function doGet(e) {
     if (e && e.parameter && e.parameter.action) {
       var action = e.parameter.action;
       var sheetId = e && e.parameter ? e.parameter.sheetId : null;
+
+      // Validate request (skip for health check — when there's an action, validate)
+      var validation = validateRequest(e, sheetId, 'get');
+      if (!validation.valid) {
+        return jsonResponse({ status: 'error', error: validation.message || 'Request blocked.' }, 403);
+      }
 
       if (action === 'lookup') {
         var visitorNumber = e.parameter.visitorNumber;
@@ -94,6 +287,20 @@ function doPost(e) {
       data = JSON.parse(e.postData.contents);
     } catch (parseErr) {
       return jsonResponse({ status: 'error', error: 'Invalid JSON payload' }, 400);
+    }
+
+    // Determine endpoint type and validate request
+    var epType = 'register'; // default for registration (no mode)
+    if (data.mode === 'updateStatus') epType = 'status';
+    else if (data.mode === 'migrate') epType = 'admin';
+    else if (data.action === 'report') epType = 'admin';
+    else if (data.mode === 'bulkSignOut') epType = 'admin';
+    else if (data.mode === 'setupAutoSignOut') epType = 'admin';
+    else if (data.mode) epType = 'admin';
+
+    var validation = validateRequest(e, data.sheetId, epType);
+    if (!validation.valid) {
+      return jsonResponse({ status: 'error', error: validation.message || 'Request blocked.' }, 403);
     }
 
     // Handle migration
