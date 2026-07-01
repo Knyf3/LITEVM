@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.0.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.1.0';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
@@ -88,6 +88,76 @@ function _loadMasterConfig() {
 function _getCustomerConfig(sheetId) {
   var config = _loadMasterConfig();
   return config[sheetId] || null;
+}
+
+/**
+ * Count today's registrations for a customer sheet by Visitation Date.
+ * Scans VisitorLog, counts rows where col 5 matches today's date.
+ * Returns null on error (caller decides fail-open vs fail-closed).
+ *
+ * @param {string} sheetId - Customer's Google Sheet ID
+ * @returns {number|null} Count of today's registrations, or null on error
+ */
+function getDailyVisitorCount_(sheetId) {
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = ss.getSheetByName('VisitorLog');
+    if (!sheet) return 0;
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return 0; // header only
+
+    var timeZone = Session.getScriptTimeZone();
+    var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+
+    var count = 0;
+    for (var i = 1; i < data.length; i++) {
+      var cell = data[i][5]; // Col F = Visitation Date (index 5)
+      var dateStr = '';
+      if (cell instanceof Date && !isNaN(cell.getTime())) {
+        dateStr = Utilities.formatDate(cell, timeZone, 'yyyy-MM-dd');
+      } else {
+        dateStr = String(cell || '').trim();
+      }
+      if (dateStr === todayStr) count++;
+    }
+
+    return count;
+  } catch (e) {
+    console.error('getDailyVisitorCount_ error for sheet ' + sheetId + ': ' + e.message);
+    return null; // Caller decides fail-open vs fail-closed
+  }
+}
+
+/**
+ * Check if the customer has remaining visitor slots for today.
+ * Reads customer config, compares current count vs visitorLimit.
+ *
+ * @param {string} sheetId - Customer's Google Sheet ID
+ * @returns {Object} { allowed: boolean, current: number, limit: number, pct: number }
+ */
+function checkVisitorLimit_(sheetId) {
+  var customer = _getCustomerConfig(sheetId);
+  if (!customer) {
+    return { allowed: true, current: 0, limit: 999999, pct: 0 };
+  }
+
+  var limit = customer.visitorLimit;
+  var current = getDailyVisitorCount_(sheetId);
+
+  // Fail-open: if count errored (null), allow registration
+  if (current === null) {
+    return { allowed: true, current: 0, limit: limit, pct: 0 };
+  }
+
+  var pct = limit > 0 ? Math.round((current / limit) * 100) : 0;
+
+  return {
+    allowed: current < limit,
+    current: current,
+    limit: limit,
+    pct: pct,
+  };
 }
 
 /**
@@ -223,6 +293,7 @@ function logDeniedRequest(sheetId, origin, reason, endpointType, userAgent) {
  * ?action=today&sheetId=...                        → returns all today's visitors
  * ?action=destinations&sheetId=...                 → returns Destination tab data
  * ?action=cardpool&sheetId=...                     → card pool diagnostic
+ * ?action=allowance&sheetId=...                    → returns daily usage vs limit
  * (no params)                                      → health check
  */
 function doGet(e) {
@@ -264,6 +335,23 @@ function doGet(e) {
           return jsonResponse({ status: 'notfound', message: 'Missing cardNo parameter' }, 400);
         }
         return handleLookupByCard(cardNo, sheetId);
+      }
+
+      if (action === 'allowance') {
+        if (!sheetId) {
+          return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+        }
+        var limitCheck = checkVisitorLimit_(sheetId);
+        return jsonResponse({
+          status: 'ok',
+          usage: {
+            current: limitCheck.current,
+            limit: limitCheck.limit,
+            pct: limitCheck.pct,
+          },
+          warning: limitCheck.pct >= 80 && limitCheck.pct < 100 ? 'approaching_limit' : null,
+          blocked: !limitCheck.allowed,
+        }, 200);
       }
     }
 
@@ -340,8 +428,27 @@ function doPost(e) {
       return jsonResponse({ status: 'error', error: 'Unknown mode: ' + data.mode }, 400);
     }
 
-    // Otherwise, handle registration (existing logic — no mode or mode=register)
-    return handleRegistration(data);
+    // ── VISITOR LIMIT CHECK (registration only) ──
+    // Use LockService to prevent race conditions (two concurrent registrations
+    // both passing the limit check before either appends a row).
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(30000)) {
+      return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
+    }
+    try {
+      var limitCheck = checkVisitorLimit_(data.sheetId);
+      if (!limitCheck.allowed) {
+        return jsonResponse({
+          status: 'error',
+          error: 'Daily visitor limit reached. Please contact the office or try again tomorrow.',
+          code: 'DAILY_LIMIT_REACHED',
+          usage: { current: limitCheck.current, limit: limitCheck.limit, pct: limitCheck.pct },
+        }, 429);
+      }
+      return handleRegistration(data, limitCheck.limit);
+    } finally {
+      lock.releaseLock();
+    }
 
   } catch (error) {
     console.error('doPost error: ' + error.message + '\n' + error.stack);
@@ -379,7 +486,7 @@ function handleMigrationResponse(data) {
 // HANDLER: Registration
 // ──────────────────────────────────────────────
 
-function handleRegistration(data) {
+function handleRegistration(data, visitorLimit) {
   // Validate required fields
   var required = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
@@ -433,7 +540,17 @@ function handleRegistration(data) {
     console.warn('Email notification failed: ' + emailErr.message);
   }
 
-  return jsonResponse({ visitorNumber: visitorNumber, status: 'ok' }, 200);
+  // Get updated count for response
+  var updatedCount = getDailyVisitorCount_(data.sheetId);
+  var response = { visitorNumber: visitorNumber, status: 'ok' };
+  if (visitorLimit && updatedCount !== null) {
+    response.usage = {
+      current: updatedCount,
+      limit: visitorLimit,
+      pct: Math.round((updatedCount / visitorLimit) * 100),
+    };
+  }
+  return jsonResponse(response, 200);
 }
 
 // ──────────────────────────────────────────────
