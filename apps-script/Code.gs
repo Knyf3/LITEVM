@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.1.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.1.1';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
