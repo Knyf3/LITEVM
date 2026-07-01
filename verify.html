@@ -10,6 +10,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect x=%2210%22 y=%2218%22 width=%2228%22 height=%2226%22 rx=%222%22 fill=%22%234361ee%22/><path d=%22M6 20L24 6l18 14%22 fill=%22%234361ee%22/></svg>">
+  <!-- QR/Barcode scanner library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 </head>
 <body>
   <!-- ===== OFFLINE BANNER ===== -->
@@ -73,9 +75,20 @@
         <input type="text" id="search-input" class="form-input search-input" data-i18n-placeholder="placeholder-search" placeholder="Enter visitor number (e.g. V-20250622-001)" aria-label="Search visitor by number" autocomplete="off" autocapitalize="off" maxlength="25" spellcheck="false">
       </div>
 
-      <button id="btn-lookup" class="btn-primary lookup-btn" onclick="App.lookup()" disabled>
-        <span id="btn-lookup-text" data-i18n="btn-look-up">Look Up</span>
-      </button>
+      <div class="scan-lookup-row">
+        <button id="btn-lookup" class="btn-primary lookup-btn" onclick="App.lookup()" disabled>
+          <span id="btn-lookup-text" data-i18n="btn-look-up">Look Up</span>
+        </button>
+        <button id="btn-scan" class="btn-scan" onclick="App.scanBarcode()" title="Scan QR / Barcode" aria-label="Scan visitor number from QR or barcode">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="5" height="5" rx="1"/>
+            <rect x="16" y="3" width="5" height="5" rx="1"/>
+            <rect x="3" y="16" width="5" height="5" rx="1"/>
+            <rect x="16" y="16" width="5" height="5" rx="1"/>
+            <line x1="8" y1="12" x2="16" y2="12"/>
+          </svg>
+        </button>
+      </div>
       <p id="search-hint" class="search-hint" data-i18n="search-hint">Enter a visitor number (e.g. V-20250622-001)</p>
     </div>
 
@@ -395,6 +408,22 @@
       </svg>
       <span data-i18n="secured-encrypted">Secured & encrypted via HTTPS</span>
     </footer>
+  </div>
+
+  <!-- ===== SCANNER MODAL ===== -->
+  <div id="scanner-modal" class="scanner-overlay hidden" role="dialog" aria-modal="true" aria-label="Barcode scanner">
+    <div class="scanner-content">
+      <div class="scanner-header">
+        <span class="scanner-title" data-i18n="scanner-title">Scan Visitor Number</span>
+        <button class="scanner-close" onclick="App.closeScanner()" aria-label="Close scanner">&times;</button>
+      </div>
+      <p class="scanner-hint" data-i18n="scanner-hint">Point camera at a QR code or barcode containing the visitor number</p>
+      <div id="scanner-viewport" class="scanner-viewport"></div>
+      <p id="scanner-status" class="scanner-status" data-i18n="scanner-waiting">Waiting for scan...</p>
+      <button class="btn-secondary scanner-cancel-btn" onclick="App.closeScanner()">
+        <span data-i18n="btn-cancel">Cancel</span>
+      </button>
+    </div>
   </div>
 
   <!-- ===== PHOTO LIGHTBOX ===== -->

@@ -1366,22 +1366,166 @@
   // ──────────────────────────────────────────────
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+      var scanner = $('#scanner-modal');
       var lightbox = $('#photo-lightbox');
       var dialog = $('#confirm-dialog');
       var inlineBar = $('#inline-confirm-bar');
-      if (lightbox && !lightbox.classList.contains('hidden')) closeLightbox();
+      if (scanner && !scanner.classList.contains('hidden')) closeScanner();
+      else if (lightbox && !lightbox.classList.contains('hidden')) closeLightbox();
       else if (dialog && !dialog.classList.contains('hidden')) closeDialog();
       else if (inlineBar && !inlineBar.classList.contains('hidden')) dismissInlineConfirm();
     }
   });
 
-  // Close lightbox/dialog overlay on backdrop click
+  // Close lightbox/dialog/scanner overlay on backdrop click
   document.addEventListener('click', function (e) {
+    var scanner = $('#scanner-modal');
     var lightbox = $('#photo-lightbox');
     var dialog = $('#confirm-dialog');
+    if (scanner && e.target === scanner) closeScanner();
     if (lightbox && e.target === lightbox) closeLightbox();
     if (dialog && e.target === dialog) closeDialog();
   });
+
+  // ──────────────────────────────────────────────
+  // BARCODE / QR SCANNER
+  // ──────────────────────────────────────────────
+
+  /** Holds the current Html5Qrcode instance */
+  var scannerInstance = null;
+
+  /**
+   * Open the scanner modal and start the camera.
+   * Uses the html5-qrcode library from CDN.
+   */
+  function scanBarcode() {
+    // Make sure the library is loaded
+    if (typeof Html5Qrcode === 'undefined') {
+      showError('QR scanner library is loading. Please try again in a moment.');
+      return;
+    }
+
+    var modal = $('#scanner-modal');
+    var viewport = $('#scanner-viewport');
+    var status = $('#scanner-status');
+    if (!modal || !viewport) return;
+
+    // Show the modal
+    modal.classList.remove('hidden');
+    if (status) status.textContent = App.t('scanner-waiting') || 'Starting camera...';
+
+    // Clean up any previous instance
+    if (scannerInstance) {
+      try { scannerInstance.stop().catch(function(){}); } catch(e) {}
+      scannerInstance = null;
+    }
+
+    // Create a new scanner
+    try {
+      scannerInstance = new Html5Qrcode('scanner-viewport');
+    } catch (e) {
+      showError('Failed to initialize scanner: ' + e.message);
+      closeScanner();
+      return;
+    }
+
+    var config = {
+      fps: 10,
+      qrbox: { width: 250, height: 250 },
+      aspectRatio: 1.0,
+    };
+
+    scannerInstance.start(
+      { facingMode: 'environment' },
+      config,
+      // onSuccess — called when a QR/barcode is decoded
+      function onScanSuccess(decodedText) {
+        // Stop scanning immediately
+        stopScannerInstance();
+
+        var code = decodedText.trim();
+        if (status) status.textContent = App.t('scanner-detected') || 'Detected: ' + code;
+
+        // Close the modal
+        closeScanner();
+
+        // Fill the search input and trigger lookup
+        var input = $('#search-input');
+        var btn = $('#btn-lookup');
+        if (input) {
+          input.value = code;
+          if (btn) btn.disabled = false;
+        }
+        // Small delay so the modal closes smoothly before lookup
+        setTimeout(function () {
+          lookup();
+        }, 350);
+      },
+      // onFailure — keep scanning
+      function onScanFailure() {
+        // Errors are normal (scanning every frame), do nothing
+      }
+    )
+    .then(function () {
+      if (status) status.textContent = App.t('scanner-ready') || 'Camera active — point at a code';
+    })
+    .catch(function (err) {
+      var msg = '';
+      if (err && err.toString().indexOf('NotAllowedError') >= 0) {
+        msg = 'Camera permission denied. Please allow camera access in your browser settings.';
+      } else if (err && err.toString().indexOf('NotFoundError') >= 0) {
+        msg = 'No camera found on this device.';
+      } else if (err && err.toString().indexOf('NotReadableError') >= 0) {
+        msg = 'Camera is in use by another application.';
+      } else {
+        msg = 'Could not start camera: ' + (err && err.message ? err.message : 'unknown error');
+      }
+      if (status) status.textContent = msg;
+      showError(msg);
+      // Close scanner modal after a short delay so user sees the error
+      setTimeout(function () {
+        closeScanner();
+      }, 2000);
+    });
+  }
+
+  /**
+   * Stop the scanner instance without closing the modal.
+   * Used internally by scanBarcode on successful scan.
+   */
+  function stopScannerInstance() {
+    if (scannerInstance) {
+      try {
+        scannerInstance.stop().catch(function(){});
+      } catch (e) {
+        // ignore
+      }
+      scannerInstance = null;
+    }
+  }
+
+  /**
+   * Close the scanner modal and stop the camera.
+   */
+  function closeScanner() {
+    stopScannerInstance();
+
+    var modal = $('#scanner-modal');
+    var viewport = $('#scanner-viewport');
+    if (modal) modal.classList.add('hidden');
+    // Clear viewport content to release camera resources
+    if (viewport) {
+      // Remove any leftover video elements by clearing inner HTML
+      // Html5Qrcode manages its own DOM cleanup, but we help
+      viewport.innerHTML = '';
+    }
+
+    // Re-focus the search input
+    setTimeout(function () {
+      var input = $('#search-input');
+      if (input) input.focus();
+    }, 100);
+  }
 
   // ──────────────────────────────────────────────
   // PUBLIC API
@@ -1411,6 +1555,8 @@
     toggleSelectAll: toggleSelectAll,
     confirmBulkSignOut: confirmBulkSignOut,
     quickSignOut: quickSignOut,
+    scanBarcode: scanBarcode,
+    closeScanner: closeScanner,
     t: window.App.t,
     setLang: window.App.setLang,
     render: window.App.render,
