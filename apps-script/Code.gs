@@ -1966,7 +1966,7 @@ var VISITORLOG_HEADERS = [
 
 var CARDNO_HEADERS = ['CardNo', 'Status', 'AssignedTo', 'AssignedAt'];
 
-var DESTINATION_HEADERS = ['Destination', 'Access Level'];
+var DESTINATION_HEADERS = ['Destination', 'Access Level', 'DoorGroupID'];
 
 var MIGRATION_REGISTRY = [
   {
@@ -2046,6 +2046,33 @@ var MIGRATION_REGISTRY = [
       sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight('bold');
 
       console.log('Migration V2: Headers updated to 14 columns');
+    }
+  },
+  {
+    version: 3,
+    name: 'Add DoorGroupID to Destination',
+    destructive: false,
+    description: 'Adds DoorGroupID column to Destination sheet for ACT integration',
+    fn: function(ss) {
+      console.log('Migration V3: Updating Destination headers');
+      var sheet = ss.getSheetByName('Destination');
+      if (!sheet) {
+        console.log('Migration V3: Destination tab not found — skipping');
+        return;
+      }
+
+      // Only run if current header count is less than 3
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      if (headers.length >= 3) {
+        console.log('Migration V3: DoorGroupID column already exists — skipping');
+        return;
+      }
+
+      var newHeaders = DESTINATION_HEADERS;
+      sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+      sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight('bold');
+
+      console.log('Migration V3: DoorGroupID column added to Destination');
     }
   },
 ];
