@@ -12,4 +12,5 @@ const CONFIG = {
   PHOTO_JPEG_QUALITY: 0.8,
   TIMEOUT_MS: 30000,
   GUARD_PIN: '1234',
+  ACTApiBase: '',  // e.g. 'http://192.168.2.121:8021' — set during deployment
 };

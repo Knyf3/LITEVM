@@ -559,6 +559,14 @@
             cardQRUrl: data.cardQRUrl,
             cardStatus: data.cardStatus
           });
+
+          // Grant ACT door access if card and door group are available
+          if (data.cardNo && data.doorGroupId) {
+            var actApiBase = CONFIG.ACTApiBase;
+            if (actApiBase) {
+              grantActAccess(data.cardNo, data.doorGroupId, actApiBase);
+            }
+          }
         } else if (status === 'Signed Out') {
           showSignedOutState(state.currentVisitor);
         } else {
@@ -1528,6 +1536,48 @@
   }
 
   // ──────────────────────────────────────────────
+  // ACT DOOR ACCESS
+  // ──────────────────────────────────────────────
+  /**
+   * Grant ACT door access for a card. Non-blocking — failures are logged only.
+   * @param {string} cardNo — The card/user number
+   * @param {number} doorGroupId — The ACT door group ID
+   * @param {string} apiBase — The ACTApi server base URL
+   */
+  function grantActAccess(cardNo, doorGroupId, apiBase) {
+    var url = apiBase.replace(/\/+$/, '') + '/api/users/' + encodeURIComponent(cardNo) + '/extra-rights';
+
+    // Build dates: today → +1 year
+    var now = new Date();
+    var validityTo = new Date(now);
+    validityTo.setFullYear(validityTo.getFullYear() + 1);
+
+    var payload = {
+      userNumber: parseInt(cardNo, 10),
+      rights: [{
+        doorGroup: doorGroupId,
+        timezone: 1,
+        validityFrom: now.toISOString().split('T')[0] + 'T00:00:00',
+        validityTo: validityTo.toISOString().split('T')[0] + 'T00:00:00'
+      }]
+    };
+
+    fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow'
+    }).then(function (r) { return r.json(); })
+    .then(function (data) {
+      console.log('ACT door access granted for card ' + cardNo + ': ' + JSON.stringify(data));
+    })
+    .catch(function (err) {
+      console.warn('ACT door access could not be granted: ' + err.message);
+      // Non-blocking — don't show error to guard, just log it
+    });
+  }
+
+  // ──────────────────────────────────────────────
   // PUBLIC API
   // ──────────────────────────────────────────────
   window.App = {
@@ -1557,6 +1607,7 @@
     quickSignOut: quickSignOut,
     scanBarcode: scanBarcode,
     closeScanner: closeScanner,
+    grantActAccess: grantActAccess,
     t: window.App.t,
     setLang: window.App.setLang,
     render: window.App.render,
