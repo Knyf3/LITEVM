@@ -1073,6 +1073,18 @@
           showError(msg || 'No visitors were signed out');
         }
 
+        // Revoke ACT door access for each signed-out visitor with a card
+        if (parsed.results && Array.isArray(parsed.results)) {
+            var actApiBase = CONFIG.ACTApiBase;
+            if (actApiBase !== null && actApiBase !== undefined) {
+                parsed.results.forEach(function(r) {
+                    if (r.cardNo) {
+                        revokeActAccess(r.cardNo, actApiBase);
+                    }
+                });
+            }
+        }
+
         // Clear selections
         state.selectedVisitors = {};
         updateBulkSignOutButton();
@@ -1235,6 +1247,14 @@
         updateBulkSignOutButton();
         // Reload list
         loadTodayVisitors();
+        
+        // Revoke ACT door access if card was assigned
+        if (parsed.cardNo) {
+            var actApiBase = CONFIG.ACTApiBase;
+            if (actApiBase !== null && actApiBase !== undefined) {
+                revokeActAccess(parsed.cardNo, actApiBase);
+            }
+        }
       } else {
         showError(parsed.error || 'Sign out failed');
       }
