@@ -13,4 +13,9 @@ const CONFIG = {
   TIMEOUT_MS: 30000,
   GUARD_PIN: '1234',
   ACTApiBase: null,
+  // Extra Rights defaults applied when granting ACT door access
+  ACTExtraRights: {
+    timezone: 1,
+    validityDays: 1,
+  },
 };

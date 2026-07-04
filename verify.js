@@ -1408,16 +1408,17 @@
   function grantActAccess(cardNo, doorGroupId, apiBase) {
     var url = apiBase.replace(/\/+$/, '') + '/api/users/' + encodeURIComponent(cardNo) + '/extra-rights';
 
-    // Build dates: today → +1 year
+    // Build dates from config (default: today only)
+    var extraRightsCfg = CONFIG.ACTExtraRights || { timezone: 1, validityDays: 1 };
     var now = new Date();
     var validityTo = new Date(now);
-    validityTo.setFullYear(validityTo.getFullYear() + 1);
+    validityTo.setDate(validityTo.getDate() + extraRightsCfg.validityDays);
 
     var payload = {
       userNumber: parseInt(cardNo, 10),
       rights: [{
         doorGroup: doorGroupId,
-        timezone: 1,
+        timezone: extraRightsCfg.timezone,
         validityFrom: now.toISOString().split('T')[0] + 'T00:00:00',
         validityTo: validityTo.toISOString().split('T')[0] + 'T00:00:00'
       }]

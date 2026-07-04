@@ -13,4 +13,9 @@ const CONFIG = {
   TIMEOUT_MS: 30000,
   GUARD_PIN: '1234',
   ACTApiBase: 'http://192.168.2.194:8021',  // Set to null for no ACT integration, or '' when served from ACTApi itself
+  // Extra Rights defaults applied when granting ACT door access
+  ACTExtraRights: {
+    timezone: 1,
+    validityDays: 1,
+  },
 };
