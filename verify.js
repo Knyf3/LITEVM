@@ -569,6 +569,13 @@
           }
         } else if (status === 'Signed Out') {
           showSignedOutState(state.currentVisitor);
+          // Revoke ACT door access if card was assigned
+          if (data.cardNo) {
+            var actApiBase = CONFIG.ACTApiBase;
+            if (actApiBase !== null && actApiBase !== undefined) {
+              revokeActAccess(data.cardNo, actApiBase);
+            }
+          }
         } else {
           showRejectedState(state.currentVisitor);
         }
@@ -1439,6 +1446,28 @@
     });
   }
 
+  /**
+   * Revoke ACT door access for a card. Non-blocking — failures are logged only.
+   * @param {string} cardNo — The card/user number
+   * @param {string} apiBase — The ACTApi server base URL
+   */
+  function revokeActAccess(cardNo, apiBase) {
+    var url = apiBase.replace(/\/+$/, '') + '/api/users/' + encodeURIComponent(cardNo) + '/extra-rights';
+
+    fetch(url, {
+      method: 'DELETE',
+      redirect: 'follow'
+    }).then(function (r) {
+      if (r.ok) {
+        console.log('ACT door access revoked for card ' + cardNo);
+      } else {
+        console.warn('ACT revoke returned ' + r.status + ' for card ' + cardNo);
+      }
+    }).catch(function (err) {
+      console.warn('ACT door access could not be revoked: ' + err.message);
+    });
+  }
+
   // ──────────────────────────────────────────────
   // PUBLIC API
   // ──────────────────────────────────────────────
@@ -1468,6 +1497,7 @@
     confirmBulkSignOut: confirmBulkSignOut,
     quickSignOut: quickSignOut,
     grantActAccess: grantActAccess,
+    revokeActAccess: revokeActAccess,
     t: window.App.t,
     setLang: window.App.setLang,
     render: window.App.render,
