@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Guard Portal — Verify visitor check-in">
+  <title data-i18n="title-verify">LITEVM — Guard Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect x=%2210%22 y=%2218%22 width=%2228%22 height=%2226%22 rx=%222%22 fill=%22%234361ee%22/><path d=%22M6 20L24 6l18 14%22 fill=%22%234361ee%22/></svg>">
+
+</head>
+<body>
+  <!-- ===== OFFLINE BANNER ===== -->
+  <div id="offline-banner" class="offline-banner hidden" role="alert">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M8.5 8.5A11 11 0 001 12"/><path d="M12 8a11 11 0 0111 4"/><path d="M4.5 12.5a7 7 0 015.5-3.5"/><path d="M15.5 12.5a7 7 0 015.5 1.5"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
+    <span data-i18n="offline-message">You are offline. Please check your connection.</span>
+    <button id="offline-dismiss" aria-label="Dismiss offline notice">&times;</button>
+  </div>
+
+  <!-- ===== MAIN VERIFY PAGE ===== -->
+  <div id="verify-page" class="verify-page">
+
+    <!-- ===== GUARD LOGIN OVERLAY ===== -->
+    <div id="guard-login" class="guard-login">
+      <div class="guard-login-card">
+        <div class="guard-login-icon">
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#4361ee" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <h2 class="guard-login-title" data-i18n="guard-portal">Guard Portal</h2>
+        <p class="guard-login-subtitle" data-i18n="enter-pin">Enter PIN to access</p>
+        <div class="guard-login-input-wrapper">
+          <input type="password" id="guard-pin-input" class="form-input"
+                 data-i18n-placeholder="placeholder-pin" placeholder="Enter PIN" maxlength="10" inputmode="numeric" pattern="[0-9]*"
+                 autocomplete="off">
+        </div>
+        <p id="guard-login-error" class="field-error visible" style="display:none" data-i18n="invalid-pin">Invalid PIN</p>
+        <button id="btn-guard-login" class="btn-primary" disabled>
+          <span data-i18n="btn-access-portal">Access Guard Portal</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header class="page-header">
+      <div class="header-logo">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3L3 8v4a9 9 0 0 1 9 9 9 9 0 0 1 9-9V8Z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
+      <h1 class="header-title" data-i18n="header-title-verify">LITEVM — Guard Portal</h1>
+      <p class="header-subtitle" data-i18n="header-subtitle-verify">Verify visitor check-in</p>
+      <button class="lang-toggle" onclick="App.setLang(App._lang === 'en' ? 'id' : 'en')" aria-label="Toggle language">ID</button>
+    </header>
+
+    <!-- Search Card -->
+    <div class="card" id="search-section">
+      <h2 class="card-title" data-i18n="search-visitor">Search Visitor</h2>
+      <p class="card-subtitle" data-i18n="search-subtitle">Enter the visitor number to look up</p>
+
+      <div class="search-input-wrapper">
+        <svg class="input-icon search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="7"/>
+          <path d="M15.5 15.5l6 6"/>
+        </svg>
+        <input type="text" id="search-input" class="form-input search-input" data-i18n-placeholder="placeholder-search" placeholder="Enter visitor number (e.g. V-20250622-001)" aria-label="Search visitor by number" autocomplete="off" autocapitalize="off" maxlength="25" spellcheck="false">
+      </div>
+
+      <button id="btn-lookup" class="btn-primary lookup-btn" onclick="App.lookup()" disabled>
+        <span id="btn-lookup-text" data-i18n="btn-look-up">Look Up</span>
+      </button>
+      <p id="search-hint" class="search-hint" data-i18n="search-hint">Enter a visitor number (e.g. V-20250622-001)</p>
+    </div>
+
+    <!-- Lookup Result Section (data-state: empty | loading | found | notfound | verified | rejected | signedout) -->
+    <div id="lookup-result-section" class="lookup-result-section" data-state="empty">
+
+      <!-- LOADING STATE -->
+      <div id="result-loading" class="result-state">
+        <div class="card lookup-loading-card">
+          <svg class="icon-spinner" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#4361ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="0"/>
+          </svg>
+          <p class="lookup-loading-text" data-i18n="looking-up-visitor">Looking up visitor...</p>
+          <p class="lookup-loading-subtext" id="still-searching-hint" class="hidden" data-i18n="still-searching">Still searching...</p>
+        </div>
+      </div>
+
+      <!-- FOUND STATE -->
+      <div id="result-found" class="result-state">
+        <div class="card result-card">
+          <!-- Status Badge -->
+          <div class="result-status-bar" id="result-status-bar">
+            <span class="status-badge pending" id="status-badge" role="status">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4a7 7 0 1 0 0 14 7 7 0 1 0 0-14 M10 11v-4 M10 11l3.5 2 M18 6h4 M18 11h4 M18 16h4"/></svg>
+              <span id="status-text">Pending Entry</span>
+            </span>
+          </div>
+          <div class="result-visitor-meta">
+            <span class="result-visitor-number" id="result-visitor-number">V-XXXXXXXX-XXX</span>
+            <span class="result-timestamp" id="result-timestamp">—</span>
+          </div>
+          <div class="result-visitor-meta hidden" id="result-sign-in-time-row">
+            <span class="result-meta-label">Sign-In Time</span>
+            <span class="result-timestamp" id="result-sign-in-time">—</span>
+          </div>
+          <div class="result-visitor-meta hidden" id="result-sign-out-time-row">
+            <span class="result-meta-label">Sign-Out Time</span>
+            <span class="result-timestamp" id="result-sign-out-time">—</span>
+          </div>
+
+          <!-- Identity Info -->
+          <div class="review-card identity-card" id="result-details">
+            <div class="review-card-header">
+              <span class="review-card-title" data-i18n="identity-info">Identity Information</span>
+            </div>
+            <div class="review-row">
+              <span class="review-label" data-i18n="label-full-name">Full Name</span>
+              <span class="review-value" id="result-name">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
+              <span class="review-label" data-i18n="label-id-number">ID Number</span>
+              <span class="review-value" id="result-id">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
+              <span class="review-label" data-i18n="label-company">Company</span>
+              <span class="review-value" id="result-company">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
+              <span class="review-label" data-i18n="label-visitation-date">Visitation Date</span>
+              <span class="review-value" id="result-visitation-date">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
+              <span class="review-label" data-i18n="label-phone">Phone</span>
+              <span class="review-value" id="result-phone">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row hidden" id="result-card-no-row">
+              <span class="review-label" data-i18n="label-card-number">Card Number</span>
+              <span class="review-value" id="result-card-no">—</span>
+            </div>
+          </div>
+
+          <!-- Photos -->
+          <h3 class="section-label" data-i18n="photo-verification">Photo Verification</h3>
+          <div class="result-photos" id="result-photos">
+            <div class="result-photo-item">
+              <span class="photo-item-label" data-i18n="label-id-photo">ID Photo</span>
+              <div class="result-photo-thumb" id="result-photo-id" onclick="App.openLightbox('id')" role="button" tabindex="0" aria-label="View ID photo" onkeydown="if(event.key==='Enter')App.openLightbox('id')">
+                <img id="result-photo-id-img" src="" alt="ID Photo" class="result-photo-img">
+              </div>
+            </div>
+            <div class="result-photo-item">
+              <span class="photo-item-label" data-i18n="label-selfie">Selfie</span>
+              <div class="result-photo-thumb" id="result-photo-selfie" onclick="App.openLightbox('selfie')" role="button" tabindex="0" aria-label="View selfie photo" onkeydown="if(event.key==='Enter')App.openLightbox('selfie')">
+                <img id="result-photo-selfie-img" src="" alt="Selfie Photo" class="result-photo-img">
+              </div>
+            </div>
+          </div>
+          <p class="photo-tap-hint" data-i18n="tap-photo-enlarge">Tap photo to enlarge</p>
+
+          <!-- Action Buttons -->
+          <div class="result-actions" id="result-actions">
+            <button class="btn-verify" id="btn-verify" onclick="App.confirmCheckIn()" aria-label="Verify and check-in visitor">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+              <span data-i18n="btn-verify-checkin">Verify &amp; Check-in</span>
+            </button>
+            <button class="btn-signout hidden" id="btn-signout" onclick="App.confirmSignOut()" aria-label="Sign out visitor">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              <span data-i18n="btn-sign-out">Sign Out</span>
+            </button>
+            <button class="btn-reject" id="btn-reject" onclick="App.confirmReject()" aria-label="Reject visitor">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              <span data-i18n="btn-reject">Reject</span>
+            </button>
+          </div>
+
+          <!-- Already Processed Info (for already checked-in/rejected) -->
+          <div id="result-processed-info" class="already-processed hidden">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <span id="processed-info-text" data-i18n="already-processed">This visitor has already been processed.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- NOT FOUND STATE -->
+      <div id="result-notfound" class="result-state">
+        <div class="card not-found-card">
+          <div class="not-found-icon">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#e63946" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="15" y1="9" x2="9" y2="15"/>
+              <line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+          </div>
+          <h3 class="not-found-title" data-i18n="visitor-not-found">Visitor Not Found</h3>
+          <p class="not-found-message" id="not-found-message" data-i18n="not-found-message">No registration found for this number.</p>
+          <p class="not-found-hint" id="not-found-hint" data-i18n="not-found-hint">Please check the number and try again.</p>
+          <button class="btn-secondary" onclick="App.resetSearch()"><span data-i18n="btn-try-again">Try Again</span></button>
+        </div>
+      </div>
+
+      <!-- VERIFIED SUCCESS STATE -->
+      <div id="result-verified" class="result-state">
+        <div class="result-success-card">
+          <div class="checkmark-container">
+            <svg class="checkmark-svg" viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="#16A34A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" fill="#F0FDF4" stroke="#16A34A" stroke-width="2"/>
+              <path class="checkmark-path" d="M7 13l3 3 7-7"/>
+            </svg>
+          </div>
+          <h2 class="success-title" data-i18n="checkin-successful">Check-In Successful!</h2>
+          <p class="success-name" id="success-name">—</p>
+          <p class="success-subtitle" data-i18n="has-been-checked-in">has been checked in.</p>
+          <div class="success-timestamp-card" id="success-timestamp-card">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span><span data-i18n="checked-in-at">Checked in at:</span> <strong id="success-time">—</strong></span>
+          </div>
+          <div class="success-visitor-badge">
+            <span data-i18n="visitor">Visitor:</span> <strong id="success-vn">—</strong>
+          </div>
+
+          <!-- Card Assignment (hidden until card assigned, hidden if depleted) -->
+          <div id="success-card-assignment" class="success-card-assignment hidden">
+            <div class="success-card-divider"></div>
+            <div class="success-card-header">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4361EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="8" x2="10" y2="8"/><line x1="6" y1="12" x2="14" y2="12"/><line x1="6" y1="16" x2="8" y2="16"/></svg>
+              <span data-i18n="access-card">Access Card</span>
+            </div>
+            <div class="success-card-number-label" data-i18n="card-number">Card Number</div>
+            <div class="success-card-number" id="success-card-number">—</div>
+            <div class="success-card-qr-wrapper" id="success-card-qr-wrapper">
+              <img id="success-card-qr" src="" alt="Card QR Code" class="success-card-qr">
+            </div>
+            <p class="success-card-hint" data-i18n="show-qr-at-gate">Show this QR code at the gate reader for entry</p>
+          </div>
+
+          <!-- Depleted warning (hidden unless pool is empty) -->
+          <div id="success-card-depleted" class="success-card-depleted hidden">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#e63946" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span data-i18n="no-card-available">No card available — notify admin to restock card pool.</span>
+          </div>
+
+          <button class="btn-primary btn-check-another" onclick="App.checkInAnother()">
+            <span data-i18n="btn-check-in-another">✅ Check In Another Visitor</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- REJECTED STATE -->
+      <div id="result-rejected" class="result-state">
+        <div class="result-rejected-card">
+          <div class="rejected-icon">
+            <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="#e63946" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" fill="#FEF2F2" stroke="#e63946" stroke-width="2"/>
+              <line x1="15" y1="9" x2="9" y2="15"/>
+              <line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+          </div>
+          <h2 class="rejected-title" data-i18n="registration-rejected">Registration Rejected</h2>
+          <p class="rejected-name" id="rejected-name">—</p>
+          <p class="rejected-subtitle" data-i18n="has-been-rejected">has been marked as rejected.</p>
+          <div class="rejected-timestamp-card" id="rejected-timestamp-card">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span><span data-i18n="rejected-at">Rejected at:</span> <strong id="rejected-time">—</strong></span>
+          </div>
+          <button class="btn-secondary" onclick="App.checkInAnother()"><span data-i18n="btn-back-to-search">↩ Back to Search</span></button>
+        </div>
+      </div>
+
+      <!-- SIGNED OUT SUCCESS STATE -->
+      <div id="result-signedout" class="result-state">
+        <div class="result-signedout-card">
+          <div class="signedout-icon">
+            <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" fill="#FFFBEB" stroke="#F59E0B" stroke-width="2"/>
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </div>
+          <h2 class="signedout-title" data-i18n="visitor-signed-out">Visitor Signed Out</h2>
+          <p class="signedout-name" id="signedout-name">—</p>
+          <p class="signedout-subtitle" data-i18n="has-been-signed-out">has been signed out.</p>
+          <div class="signedout-timestamp-card">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span><span data-i18n="signed-out-at">Signed out at:</span> <strong id="signedout-time">—</strong></span>
+          </div>
+          <button class="btn-secondary" onclick="App.checkInAnother()"><span data-i18n="btn-back-to-search">↩ Back to Search</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Today's Visitors Section -->
+    <div class="card" id="todays-visitors-section">
+      <div class="todays-header">
+        <div class="todays-header-left">
+          <label class="today-checkbox today-header-checkbox" title="Select all checked-in visitors">
+            <input type="checkbox" id="select-all-checkin" onchange="App.toggleSelectAll(this)">
+          </label>
+          <h2 class="card-title" data-i18n="todays-visitors">Today's Visitors</h2>
+        </div>
+        <span class="todays-count-badge" id="todays-count-badge">0</span>
+      </div>
+      <p class="card-subtitle" data-i18n="todays-subtitle">Quick access to today's pre-registrations</p>
+
+      <!-- Filter Tabs -->
+      <div class="todays-filter-tabs" id="todays-filter-tabs">
+        <button class="filter-tab active" data-filter="all" onclick="App.filterToday('all')"><span data-i18n="filter-all">All</span> (<span id="count-all">0</span>)</button>
+        <button class="filter-tab" data-filter="pending" onclick="App.filterToday('pending')"><span data-i18n="filter-pending">Pending</span> (<span id="count-pending">0</span>)</button>
+        <button class="filter-tab" data-filter="checkedin" onclick="App.filterToday('checkedin')"><span data-i18n="filter-checked-in">Checked In</span> (<span id="count-checkedin">0</span>)</button>
+        <button class="filter-tab" data-filter="done" onclick="App.filterToday('done')"><span data-i18n="filter-done">Done</span> (<span id="count-done">0</span>)</button>
+        <button class="filter-tab" data-filter="rejected" onclick="App.filterToday('rejected')"><span data-i18n="filter-rejected">Rej.</span> (<span id="count-rejected">0</span>)</button>
+      </div>
+
+      <!-- Inline Filter -->
+      <div class="todays-inline-filter">
+        <svg class="input-icon filter-input-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="7"/>
+          <path d="M15.5 15.5l6 6"/>
+        </svg>
+        <input type="text" id="todays-filter-input" class="todays-filter-input" data-i18n-placeholder="placeholder-filter" placeholder="Filter by name or number..." oninput="App.filterTodayInput()" aria-label="Filter today's visitors">
+      </div>
+
+      <!-- List -->
+      <div id="todays-list" class="todays-list"></div>
+
+      <!-- Empty State -->
+      <div id="todays-empty" class="todays-empty hidden">
+        <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 11l3 3L22 4"/>
+          <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+        </svg>
+        <p class="todays-empty-text" data-i18n="no-pending-visitors">No pending visitors</p>
+        <p class="todays-empty-subtext" data-i18n="todays-empty-subtext">Visitors who pre-register today will appear here.</p>
+      </div>
+
+      <!-- Loading state for Today -->
+      <div id="todays-loading" class="todays-loading hidden">
+        <svg class="icon-spinner" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#4361ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="0"/>
+        </svg>
+        <span data-i18n="loading-visitors">Loading visitors...</span>
+      </div>
+    </div>
+
+    <!-- ===== BULK SIGN-OUT STICKY BAR ===== -->
+    <div id="bulk-signout-bar" class="bulk-signout-bar hidden">
+      <span id="bulk-signout-label" class="bulk-label" data-i18n="sign-out-selected">Sign Out Selected (0)</span>
+      <button id="btn-bulk-signout" class="btn btn-bulk-signout" onclick="App.confirmBulkSignOut()" disabled>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+        <span data-i18n="btn-sign-out">Sign Out</span>
+      </button>
+    </div>
+
+    <!-- ===== BULK PROGRESS OVERLAY ===== -->
+    <div id="bulk-progress" class="hidden">
+      <div class="bulk-progress-content">
+        <div class="spinner"></div>
+        <span id="bulk-progress-text" data-i18n="signing-out-visitors">Signing out visitors...</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== PHOTO LIGHTBOX ===== -->
+  <div id="photo-lightbox" class="lightbox-overlay hidden" role="dialog" aria-modal="true" aria-label="Photo viewer" onclick="App.closeLightbox()">
+    <div class="lightbox-content" onclick="event.stopPropagation()">
+      <button class="lightbox-close" onclick="App.closeLightbox()" aria-label="Close photo viewer">&times;</button>
+      <div class="lightbox-image-container">
+        <img id="lightbox-img" src="" alt="Photo" class="lightbox-img">
+      </div>
+      <div class="lightbox-caption" id="lightbox-caption">Photo</div>
+      <div class="lightbox-nav">
+        <button class="lightbox-nav-btn" id="lightbox-prev" onclick="App.navigateLightbox(-1)" aria-label="Previous photo">‹</button>
+        <span class="lightbox-counter" id="lightbox-counter">1 / 2</span>
+        <button class="lightbox-nav-btn" id="lightbox-next" onclick="App.navigateLightbox(1)" aria-label="Next photo">›</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== CONFIRM DIALOG ===== -->
+  <div id="confirm-dialog" class="confirm-overlay hidden" role="alertdialog" aria-modal="true">
+    <div class="confirm-dialog-content" onclick="event.stopPropagation()">
+      <div class="confirm-icon" id="confirm-icon">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#16A34A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <h3 class="confirm-title" id="confirm-title">Confirm Check-In</h3>
+      <p class="confirm-message" id="confirm-message">Are you sure you want to check in <strong id="confirm-name">—</strong>?</p>
+      <p class="confirm-vn" id="confirm-vn">Visitor: —</p>
+      <div class="confirm-reason hidden" id="confirm-reason-section">
+        <label for="reject-reason" class="field-label" data-i18n="reason-optional">Reason (optional):</label>
+        <textarea id="reject-reason" class="confirm-textarea" data-i18n-placeholder="placeholder-reason" placeholder="e.g. ID does not match visitor" rows="3"></textarea>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn-confirm-cancel" onclick="App.closeDialog()"><span data-i18n="btn-cancel">Cancel</span></button>
+        <button class="btn-confirm-action" id="btn-confirm-action" onclick="App.executeAction()"><span data-i18n="btn-confirm">Confirm</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== INLINE CONFIRM MINI BAR (for Today's list quick check-in) ===== -->
+  <div id="inline-confirm-bar" class="inline-confirm-bar hidden">
+    <span class="inline-confirm-text" id="inline-confirm-text" data-i18n="check-in-this-visitor">Check in this visitor?</span>
+    <div class="inline-confirm-actions">
+      <button class="btn-inline-cancel" onclick="App.dismissInlineConfirm()"><span data-i18n="btn-cancel">Cancel</span></button>
+      <button class="btn-inline-confirm" onclick="App.executeInlineCheckIn()"><span data-i18n="btn-confirm">Confirm</span></button>
+    </div>
+  </div>
+
+  <!-- ===== LOADING OVERLAY ===== -->
+  <div id="loading-overlay" class="loading-overlay hidden" role="alert">
+    <div class="loading-content">
+      <svg class="icon-spinner" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#4361ee" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="0"/>
+      </svg>
+      <p class="loading-text" data-i18n="processing">Processing...</p>
+      <p class="loading-subtext" data-i18n="wait-update-record">Please wait while we update the record</p>
+    </div>
+  </div>
+
+  <!-- ===== ERROR OVERLAY ===== -->
+  <div id="error-overlay" class="error-overlay hidden" role="alert">
+    <div class="error-content">
+      <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#EF4444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <p id="error-message" class="error-message" data-i18n="an-error-occurred">An error occurred.</p>
+      <button class="btn-primary" onclick="App.dismissError()"><span data-i18n="btn-try-again">OK</span></button>
+    </div>
+  </div>
+
+  <!-- ===== SUCCESS TOAST ===== -->
+  <div id="toast-overlay" class="toast-overlay hidden" role="status">
+    <span id="toast-message"></span>
+  </div>
+
+  <script src="config.local.js?v=1"></script>
+  <script src="lang.js?v=2"></script>
+  <script src="verify.js?v=8"></script>
+</body>
+</html>

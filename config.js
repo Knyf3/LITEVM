@@ -1,6 +1,6 @@
 /**
- * LITEVM — Configuration
- * Update API_BASE with your Google Apps Script Web App URL during deployment.
+ * LITEVM — Configuration (Online/GitHub Pages mode)
+ * ACTApiBase is null — no ACT integration.
  */
 const CONFIG = {
   SHEET_ID: '1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs',
@@ -12,7 +12,7 @@ const CONFIG = {
   PHOTO_JPEG_QUALITY: 0.8,
   TIMEOUT_MS: 30000,
   GUARD_PIN: '1234',
-  ACTApiBase: 'http://192.168.2.194:8021',  // Set to null for no ACT integration, or '' when served from ACTApi itself
+  ACTApiBase: null,  // Online mode — no ACT integration
   // Extra Rights defaults applied when granting ACT door access
   ACTExtraRights: {
     timezone: 1,
