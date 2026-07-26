@@ -370,7 +370,11 @@ function doGet(e) {
           autoSignOutHour: settings.hour,
         }, 200);
       }
-    }
+
+      if (action === 'runAutoSignOut') {
+        autoSignOut();
+        return jsonResponse({ status: 'ok', message: 'autoSignOut triggered manually' }, 200);
+      }
 
     // Default: health check — return version info
     return jsonResponse({
@@ -2105,7 +2109,7 @@ function setupDailyReleaseTrigger() {
 function ensureTriggersInstalled() {
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v3';
+  var SCHEMA_VERSION = 'v4';
 
   // If already installed at current schema, skip
   if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION) return;

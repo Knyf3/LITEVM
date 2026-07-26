@@ -1,0 +1,17 @@
+2026-07-26 19:52:13 [INFO] ============================================================
+2026-07-26 19:52:13 [INFO] LITEVM Auto Sign-Out Started
+2026-07-26 19:52:13 [INFO] ============================================================
+2026-07-26 19:52:13 [INFO] Step 1: Fetching today's visitors from GAS...
+2026-07-26 19:52:17 [INFO]   Total today: 3, Checked in: 1
+2026-07-26 19:52:17 [INFO] Step 2: Revoking ACT door access via http://localhost:8021...
+2026-07-26 19:52:17 [WARNING]   ACTApi unreachable for card 5001: [Errno 111] Connection refused
+2026-07-26 19:52:17 [INFO]   ACT revoke: 0 succeeded, 1 failed/skipped
+2026-07-26 19:52:17 [INFO] Step 3: Signing out visitors in GAS...
+2026-07-26 19:52:17 [INFO]   Sending 1 visitor(s) to bulkSignOut...
+2026-07-26 19:52:21 [INFO]   Batch 1: 1 ok, 0 errors
+2026-07-26 19:52:22 [INFO] ============================================================
+2026-07-26 19:52:22 [INFO] SUMMARY
+2026-07-26 19:52:22 [INFO]   Visitors processed: 1
+2026-07-26 19:52:22 [INFO]   ACT revocations:    0 ok, 1 failed
+2026-07-26 19:52:22 [INFO]   GAS bulk sign-out:  1 ok, 0 errors
+2026-07-26 19:52:22 [INFO] ============================================================
