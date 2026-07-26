@@ -307,6 +307,12 @@ function doGet(e) {
       var action = e.parameter.action;
       var sheetId = e && e.parameter ? e.parameter.sheetId : null;
 
+      // Admin actions that don't need customer validation
+      if (action === 'runAutoSignOut') {
+        autoSignOut();
+        return jsonResponse({ status: 'ok', message: 'autoSignOut triggered manually' }, 200);
+      }
+
       // Validate request (skip for health check — when there's an action, validate)
       var validation = validateRequest(e, sheetId, 'get');
       if (!validation.valid) {
@@ -369,11 +375,6 @@ function doGet(e) {
           autoSignOutEnabled: settings.enabled,
           autoSignOutHour: settings.hour,
         }, 200);
-      }
-
-      if (action === 'runAutoSignOut') {
-        autoSignOut();
-        return jsonResponse({ status: 'ok', message: 'autoSignOut triggered manually' }, 200);
       }
     }
 
