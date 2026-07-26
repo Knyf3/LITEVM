@@ -1868,6 +1868,9 @@ function getSheetSettings_(sheetId) {
  * Each sheet's Settings tab determines whether and when to sign out.
  */
 function autoSignOut() {
+  // Self-heal: ensure triggers are installed (in case they were cleared by redeploy)
+  ensureTriggersInstalled();
+
   var now = new Date();
   var currentHour = now.getHours();
   console.log('autoSignOut: Running at hour ' + currentHour);
@@ -2111,8 +2114,19 @@ function ensureTriggersInstalled() {
   // Schema version — bump this if trigger type/interval changes
   var SCHEMA_VERSION = 'v4';
 
-  // If already installed at current schema, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION) return;
+  // Check if triggers physically exist (handles redeploy clearing them)
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasAutoSignOut = false;
+  var hasDailyRelease = false;
+  for (var ti = 0; ti < triggers.length; ti++) {
+    var fn = triggers[ti].getHandlerFunction();
+    if (fn === 'autoSignOut') hasAutoSignOut = true;
+    if (fn === 'releaseDailyCards') hasDailyRelease = true;
+  }
+  // If schema matches AND all required triggers exist, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut) {
+    return;
+  }
 
   // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers
   var triggers = ScriptApp.getProjectTriggers();
