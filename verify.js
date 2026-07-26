@@ -30,33 +30,31 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
-    // Fetch per-customer config from GAS (guard PIN, auto sign-out settings)
-    fetchSheetConfig();
-
-    // Check if already authenticated this session
-    if (!sessionStorage.getItem('guardAuth')) {
-      showLogin();
-      return;
-    }
-    App.render();
-    checkOnlineStatus();
-    setupSearchInput();
-    loadTodayVisitors();
-    // Auto-refresh today's visitors every 30 seconds
-    window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
-    // Focus search on load
-    setTimeout(function () {
-      var inp = $('#search-input');
-      if (inp) inp.focus();
-    }, 300);
+    // Fetch config first (guard PIN from GAS), then proceed
+    fetchSheetConfig().then(function () {
+      if (!sessionStorage.getItem('guardAuth')) {
+        showLogin();
+        return;
+      }
+      App.render();
+      checkOnlineStatus();
+      setupSearchInput();
+      loadTodayVisitors();
+      // Auto-refresh today's visitors every 30 seconds
+      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
+      // Focus search on load
+      setTimeout(function () {
+        var inp = $('#search-input');
+        if (inp) inp.focus();
+      }, 300);
+    });
   }
 
-  /** Fetch guard PIN and settings from GAS, store in memory. */
+  /** Fetch guard PIN and settings from GAS, store in memory. Returns a promise. */
   var _guardPin = '1234'; // fallback
 
   function fetchSheetConfig() {
-    var url = CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID;
-    fetch(url)
+    return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.status === 'ok' && data.guardPin) {
