@@ -375,6 +375,7 @@ function doGet(e) {
         autoSignOut();
         return jsonResponse({ status: 'ok', message: 'autoSignOut triggered manually' }, 200);
       }
+    }
 
     // Default: health check — return version info
     return jsonResponse({
