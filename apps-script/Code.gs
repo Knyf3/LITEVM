@@ -421,7 +421,7 @@ function doPost(e) {
     // Handle auto sign-out trigger setup
     if (data.mode === 'setupAutoSignOut') {
       setupAutoSignOutTrigger();
-      return jsonResponse({ status: 'ok', message: 'Auto sign-out trigger set for 21:00' }, 200);
+      return jsonResponse({ status: 'ok', message: 'Hourly auto sign-out trigger installed. Each sheet\\'s Settings tab controls when it fires.' }, 200);
     }
 
     // Check if this is a status update
@@ -1764,11 +1764,76 @@ function handleBulkSignOut(data) {
 }
 
 /**
- * Auto sign-out all checked-in visitors across all configured sheets.
- * Reads CUSTOMER_SHEETS from ScriptProperties (comma-separated sheetIds).
- * Intended to be called by a time-driven trigger at 21:00 daily.
+ * Get or create the Settings tab in a customer sheet.
+ * Settings tab is a key-value table:
+ *   | Setting              | Value     |
+ *   |----------------------|-----------|
+ *   | autoSignOutEnabled   | TRUE      |
+ *   | autoSignOutHour      | 21        |
+ *
+ * Defaults are written if the tab doesn't exist.
+ */
+function getOrCreateSettingsTab_(ss) {
+  var tab = ss.getSheetByName('Settings');
+  if (tab) return tab;
+
+  // Create with defaults
+  tab = ss.insertSheet('Settings');
+  tab.getRange(1, 1, 3, 2).setValues([
+    ['Setting', 'Value'],
+    ['autoSignOutEnabled', 'TRUE'],
+    ['autoSignOutHour', '21'],
+  ]);
+  tab.autoResizeColumns(1, 2);
+  console.log('getOrCreateSettingsTab_: Created Settings tab with defaults');
+  return tab;
+}
+
+/**
+ * Read auto sign-out config from a customer sheet's Settings tab.
+ * Returns {enabled: boolean, hour: number}.
+ * Creates the tab with defaults if missing.
+ */
+function getAutoSignOutConfig_(sheetId) {
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var tab = getOrCreateSettingsTab_(ss);
+    var data = tab.getDataRange().getValues();
+
+    var enabled = true;   // default
+    var hour = 21;        // default
+
+    for (var i = 1; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim().toLowerCase();
+      var val = String(data[i][1] || '').trim();
+
+      if (key === 'autosignoutenabled') {
+        enabled = val.toUpperCase() === 'TRUE';
+      } else if (key === 'autosignouthour') {
+        var parsed = parseInt(val, 10);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
+          hour = parsed;
+        }
+      }
+    }
+
+    return { enabled: enabled, hour: hour };
+  } catch (e) {
+    console.warn('getAutoSignOutConfig_: Error reading sheet ' + sheetId + ': ' + e.message);
+    return { enabled: false, hour: -1 }; // skip on error
+  }
+}
+
+/**
+ * Auto sign-out checked-in visitors across all configured sheets.
+ * Called by an hourly time-driven trigger.
+ * Each sheet's Settings tab determines whether and when to sign out.
  */
 function autoSignOut() {
+  var now = new Date();
+  var currentHour = now.getHours();
+  console.log('autoSignOut: Running at hour ' + currentHour);
+
   // Read CUSTOMER_SHEETS from ScriptProperties (comma-separated sheetIds)
   var sheetsProp = PropertiesService.getScriptProperties().getProperty('CUSTOMER_SHEETS');
   if (!sheetsProp) {
@@ -1780,7 +1845,19 @@ function autoSignOut() {
   for (var s = 0; s < sheetIds.length; s++) {
     var sheetId = sheetIds[s].trim();
     if (!sheetId) continue;
+
     try {
+      // Read per-sheet Settings config
+      var config = getAutoSignOutConfig_(sheetId);
+      if (!config.enabled) {
+        console.log('autoSignOut: Sheet ' + sheetId + ' — auto sign-out disabled, skipping');
+        continue;
+      }
+      if (config.hour !== currentHour) {
+        // Not this sheet's hour — skip
+        continue;
+      }
+
       var ss = SpreadsheetApp.openById(sheetId);
       var sheet = ss.getSheetByName('VisitorLog');
       if (!sheet) continue;
@@ -1796,6 +1873,7 @@ function autoSignOut() {
             sheet.getRange(i + 1, 14).setValue(new Date());    // col 14 = Sign-Out Time
             // Release card
             releaseCardForVisitor(visitorNumber, sheetId);
+            console.log('autoSignOut: Signed out ' + visitorNumber + ' from sheet ' + sheetId);
           }
         }
       }
@@ -1807,8 +1885,10 @@ function autoSignOut() {
 }
 
 /**
- * Install or reinstall the 21:00 auto sign-out time-driven trigger.
+ * Install or reinstall the hourly auto sign-out time-driven trigger.
  * Removes any existing autoSignOut triggers first to avoid duplicates.
+ * The trigger fires every hour — each sheet's Settings tab controls
+ * whether sign-out runs at that hour.
  */
 function setupAutoSignOutTrigger() {
   // Remove existing auto sign-out triggers
@@ -1818,13 +1898,12 @@ function setupAutoSignOutTrigger() {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
-  // Install new trigger at 21:00 daily
+  // Install hourly trigger (fires at 00:00, 01:00, ... 23:00)
   ScriptApp.newTrigger('autoSignOut')
     .timeBased()
-    .atHour(21)
-    .everyDays(1)
+    .everyHours(1)
     .create();
-  console.log('setupAutoSignOutTrigger: Auto sign-out trigger installed for 21:00');
+  console.log('setupAutoSignOutTrigger: Hourly auto sign-out trigger installed');
 }
 
 /**
@@ -1908,10 +1987,9 @@ function ensureTriggersInstalled() {
   if (!hasAutoSignOut) {
     ScriptApp.newTrigger('autoSignOut')
       .timeBased()
-      .atHour(21)
-      .everyDays(1)
+      .everyHours(1)
       .create();
-    console.log('ensureTriggersInstalled: Installed autoSignOut trigger at 21:00');
+    console.log('ensureTriggersInstalled: Installed hourly autoSignOut trigger');
   }
 
   if (!hasDailyRelease) {
