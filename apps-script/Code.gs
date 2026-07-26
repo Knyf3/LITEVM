@@ -2073,7 +2073,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = 'VisitorLog!A1000';
-var LATEST_SHEET_VERSION = 2;
+var LATEST_SHEET_VERSION = 4;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -2201,6 +2201,28 @@ var MIGRATION_REGISTRY = [
       sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight('bold');
 
       console.log('Migration V3: DoorGroupID column added to Destination');
+    }
+  },
+  {
+    version: 4,
+    name: 'Create Settings tab with auto sign-out defaults',
+    destructive: false,
+    description: 'Creates Settings tab with autoSignOutEnabled=TRUE and autoSignOutHour=21',
+    fn: function(ss) {
+      console.log('Migration V4: Checking Settings tab');
+      var tab = ss.getSheetByName('Settings');
+      if (!tab) {
+        tab = ss.insertSheet('Settings');
+        tab.getRange(1, 1, 3, 2).setValues([
+          ['Setting', 'Value'],
+          ['autoSignOutEnabled', 'TRUE'],
+          ['autoSignOutHour', '21'],
+        ]);
+        tab.autoResizeColumns(1, 2);
+        console.log('Migration V4: Created Settings tab with defaults');
+      } else {
+        console.log('Migration V4: Settings tab already exists — skipping');
+      }
     }
   },
 ];
