@@ -49,8 +49,8 @@ function _getMasterConfigSheet() {
  * Load all customer rows from the "Customers" tab of the master config sheet.
  * Caches the result in the per-execution global _masterConfig.
  *
- * Customers tab schema (6 columns):
- *   sheetId | allowedOrigins | tier | visitorLimit | status | notes
+ * Customers tab schema (7 columns):
+ *   sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour
  *
  * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes }
  */
@@ -74,6 +74,7 @@ function _loadMasterConfig() {
       status: String(row[4] || 'active').trim().toLowerCase(),
       notes: String(row[5] || '').trim(),
       autoSignOutHour: row[6] !== undefined && row[6] !== null && row[6] !== '' ? parseInt(row[6], 10) : 21,
+      autoSignOutEnabled: row[7] !== undefined && row[7] !== null ? String(row[7]).toUpperCase() === 'TRUE' : true,
     };
   }
   _masterConfig = config;
@@ -1877,12 +1878,12 @@ function autoSignOut() {
   var currentHour = now.getHours();
   console.log('autoSignOut: Running at hour ' + currentHour);
 
-  // Read all active customers from master config, filtered by current hour
+  // Read all active customers from master config, filtered by current hour and enabled
   var masterConfig = _loadMasterConfig();
   var sheetIds = [];
   for (var sid in masterConfig) {
     var c = masterConfig[sid];
-    if (c.status === 'active' && c.autoSignOutHour === currentHour) {
+    if (c.status === 'active' && c.autoSignOutHour === currentHour && c.autoSignOutEnabled !== false) {
       sheetIds.push(sid);
     }
   }
@@ -1970,12 +1971,15 @@ function syncAutoSignOutHours() {
     return;
   }
 
-  // Ensure column 7 (autoSignOutHour) header exists
+  // Ensure column 7 (autoSignOutHour) and column 8 (autoSignOutEnabled) headers exist
   var headers = data[0];
   if (headers.length < 7) {
-    // Add header
     custSheet.getRange(1, 7).setValue('autoSignOutHour');
     headers[6] = 'autoSignOutHour';
+  }
+  if (headers.length < 8) {
+    custSheet.getRange(1, 8).setValue('autoSignOutEnabled');
+    headers[7] = 'autoSignOutEnabled';
   }
 
   var updated = 0;
@@ -1988,16 +1992,13 @@ function syncAutoSignOutHours() {
     if (status !== 'active') continue;
 
     try {
-      // Read Settings tab from customer's sheet — auto-creates if missing
+      // Read Settings tab from customer's sheet — creates tab with defaults if missing
       var ss = SpreadsheetApp.openById(sheetId);
-      var tab = ss.getSheetByName('Settings');
-      if (!tab) {
-        skipped++;
-        continue;
-      }
+      var tab = getOrCreateSettingsTab_(ss);
 
       var settingsData = tab.getDataRange().getValues();
       var hour = 21; // default
+      var enabled = true; // default
 
       for (var r = 1; r < settingsData.length; r++) {
         var key = String(settingsData[r][0] || '').trim().toLowerCase();
@@ -2007,17 +2008,23 @@ function syncAutoSignOutHours() {
           if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
             hour = parsed;
           }
-          break;
+        } else if (key === 'autosignoutenabled') {
+          enabled = val.toUpperCase() === 'TRUE';
         }
       }
 
-      // Write to master config Customers tab, column 7 (G)
-      var currentVal = data[i][6];
-      if (currentVal !== hour) {
+      // Write to master config Customers tab, column 7 (G) and column 8 (H)
+      var hourChanged = data[i][6] !== hour;
+      var enabledChanged = String(data[i][7] || '') !== (enabled ? 'TRUE' : 'FALSE');
+      if (hourChanged) {
         custSheet.getRange(i + 1, 7).setValue(hour);
         data[i][6] = hour;
-        updated++;
       }
+      if (enabledChanged) {
+        custSheet.getRange(i + 1, 8).setValue(enabled ? 'TRUE' : 'FALSE');
+        data[i][7] = enabled ? 'TRUE' : 'FALSE';
+      }
+      if (hourChanged || enabledChanged) updated++;
     } catch (e) {
       console.warn('syncAutoSignOutHours: Error for sheet ' + sheetId + ': ' + e.message);
       skipped++;
@@ -2114,24 +2121,26 @@ function setupDailyReleaseTrigger() {
 function ensureTriggersInstalled() {
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v4';
+  var SCHEMA_VERSION = 'v5';
 
   // Check if triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
   var hasAutoSignOut = false;
   var hasDailyRelease = false;
+  var hasSyncTrigger = false;
   for (var ti = 0; ti < triggers.length; ti++) {
     var fn = triggers[ti].getHandlerFunction();
     if (fn === 'autoSignOut') hasAutoSignOut = true;
     if (fn === 'releaseDailyCards') hasDailyRelease = true;
+    if (fn === 'syncAutoSignOutHours') hasSyncTrigger = true;
   }
-  // If schema matches AND all required triggers exist, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut) {
+  // If schema matches AND all three triggers exist, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasSyncTrigger) {
     return;
   }
 
   // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers
-  var triggers = ScriptApp.getProjectTriggers();
+  triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
     if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'syncAutoSignOutHours') {
