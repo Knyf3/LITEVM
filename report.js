@@ -37,17 +37,36 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
-    // Check PIN gate
-    if (sessionStorage.getItem('guardAuth') !== CONFIG.GUARD_PIN) {
-      $('pin-overlay').classList.remove('hidden');
-      $('pin-input').focus();
-      setupPinHandler();
-      return;
-    }
-    $('pin-overlay').classList.add('hidden');
-    $('main-content').classList.remove('hidden');
-    App.render();
-    setupApp();
+    // Fetch guard PIN from GAS first
+    fetchSheetConfig().then(function () {
+      // Check PIN gate — use boolean flag stored on successful login
+      if (sessionStorage.getItem('guardAuth') !== 'true') {
+        $('pin-overlay').classList.remove('hidden');
+        $('pin-input').focus();
+        setupPinHandler();
+        return;
+      }
+      $('pin-overlay').classList.add('hidden');
+      $('main-content').classList.remove('hidden');
+      App.render();
+      setupApp();
+    });
+  }
+
+  /** Fetch guard PIN from GAS, store in memory. Returns a promise. */
+  var _guardPinReport = CONFIG.GUARD_PIN || '1234';
+
+  function fetchSheetConfig() {
+    return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.status === 'ok' && data.guardPin) {
+          _guardPinReport = data.guardPin;
+        }
+      })
+      .catch(function () {
+        _guardPinReport = CONFIG.GUARD_PIN || '1234';
+      });
   }
 
   function setupPinHandler() {
@@ -58,7 +77,7 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         var pin = input.value.trim();
-        if (pin === CONFIG.GUARD_PIN) {
+        if (pin === _guardPinReport) {
           sessionStorage.setItem('guardAuth', 'true');
           $('pin-overlay').classList.add('hidden');
           $('main-content').classList.remove('hidden');
