@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.5.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.6.0';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
@@ -1938,6 +1938,106 @@ function setupAutoSignOutTrigger() {
 }
 
 /**
+ * Sync autoSignOutHour from each customer's Settings tab back to the
+ * master config Customers tab. Runs daily at 02:00.
+ * This lets customers set their own hour in their sheet, while keeping
+ * the hourly trigger efficient (reads from master config only).
+ */
+function syncAutoSignOutHours() {
+  var masterSheet = _getMasterConfigSheet();
+  if (!masterSheet) {
+    console.log('syncAutoSignOutHours: No master config sheet');
+    return;
+  }
+  var custSheet = masterSheet.getSheetByName('Customers');
+  if (!custSheet) {
+    console.log('syncAutoSignOutHours: No Customers tab');
+    return;
+  }
+
+  var data = custSheet.getDataRange().getValues();
+  if (data.length < 2) {
+    console.log('syncAutoSignOutHours: No customer rows');
+    return;
+  }
+
+  // Ensure column 7 (autoSignOutHour) header exists
+  var headers = data[0];
+  if (headers.length < 7) {
+    // Add header
+    custSheet.getRange(1, 7).setValue('autoSignOutHour');
+    headers[6] = 'autoSignOutHour';
+  }
+
+  var updated = 0;
+  var skipped = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var sheetId = String(data[i][0] || '').trim();
+    if (!sheetId) continue;
+    var status = String(data[i][4] || 'active').trim().toLowerCase();
+    if (status !== 'active') continue;
+
+    try {
+      // Read Settings tab from customer's sheet — auto-creates if missing
+      var ss = SpreadsheetApp.openById(sheetId);
+      var tab = ss.getSheetByName('Settings');
+      if (!tab) {
+        skipped++;
+        continue;
+      }
+
+      var settingsData = tab.getDataRange().getValues();
+      var hour = 21; // default
+
+      for (var r = 1; r < settingsData.length; r++) {
+        var key = String(settingsData[r][0] || '').trim().toLowerCase();
+        var val = String(settingsData[r][1] || '').trim();
+        if (key === 'autosignouthour') {
+          var parsed = parseInt(val, 10);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
+            hour = parsed;
+          }
+          break;
+        }
+      }
+
+      // Write to master config Customers tab, column 7 (G)
+      var currentVal = data[i][6];
+      if (currentVal !== hour) {
+        custSheet.getRange(i + 1, 7).setValue(hour);
+        data[i][6] = hour;
+        updated++;
+      }
+    } catch (e) {
+      console.warn('syncAutoSignOutHours: Error for sheet ' + sheetId + ': ' + e.message);
+      skipped++;
+    }
+  }
+
+  console.log('syncAutoSignOutHours: ' + updated + ' updated, ' + skipped + ' skipped');
+}
+
+/**
+ * Install the daily sync trigger for autoSignOutHours.
+ * Removes any existing sync triggers first.
+ */
+function setupSyncTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'syncAutoSignOutHours') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('syncAutoSignOutHours')
+    .timeBased()
+    .atHour(2)
+    .everyDays(1)
+    .create();
+  console.log('setupSyncTrigger: Daily sync trigger installed at 02:00');
+}
+
+/**
  * Release all Assigned cards back to Available.
  * Called by a daily time-driven trigger at 02:00 (moved from 18:00).
  * Loops through the cardno sheet; for every row where Status = "Assigned",
@@ -2005,16 +2105,16 @@ function setupDailyReleaseTrigger() {
 function ensureTriggersInstalled() {
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v2';
+  var SCHEMA_VERSION = 'v3';
 
   // If already installed at current schema, skip
   if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION) return;
 
-  // Delete ALL existing autoSignOut + releaseDailyCards triggers
+  // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers
   var triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'autoSignOut' || fn === 'releaseDailyCards') {
+    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'syncAutoSignOutHours') {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
@@ -2033,6 +2133,14 @@ function ensureTriggersInstalled() {
     .everyDays(1)
     .create();
   console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
+
+  // Install daily sync of autoSignOutHours from Settings tab → master config
+  ScriptApp.newTrigger('syncAutoSignOutHours')
+    .timeBased()
+    .atHour(2)
+    .everyDays(1)
+    .create();
+  console.log('ensureTriggersInstalled: Installed syncAutoSignOutHours trigger at 02:00');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
