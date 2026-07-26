@@ -298,6 +298,9 @@ function logDeniedRequest(sheetId, origin, reason, endpointType, userAgent) {
  */
 function doGet(e) {
   try {
+    // Auto-install triggers on first request after deploy
+    ensureTriggersInstalled();
+
     // Check for action parameter
     if (e && e.parameter && e.parameter.action) {
       var action = e.parameter.action;
@@ -375,6 +378,9 @@ function doGet(e) {
  */
 function doPost(e) {
   try {
+    // Auto-install triggers on first request after deploy
+    ensureTriggersInstalled();
+
     // Parse incoming JSON
     var data;
     try {
@@ -1878,6 +1884,47 @@ function setupDailyReleaseTrigger() {
     .create();
 
   console.log('setupDailyReleaseTrigger: Daily release trigger installed for 02:00–03:00');
+}
+
+/**
+ * One-shot auto-install: ensures auto sign-out (21:00) and daily card release (02:00)
+ * triggers exist. Uses a ScriptProperties flag so it only runs once.
+ * Called automatically from doGet and doPost on first request after deploy.
+ */
+function ensureTriggersInstalled() {
+  var prop = PropertiesService.getScriptProperties();
+  if (prop.getProperty('TRIGGERS_INITIALIZED') === 'true') return;
+
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasAutoSignOut = false;
+  var hasDailyRelease = false;
+
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'autoSignOut') hasAutoSignOut = true;
+    if (fn === 'releaseDailyCards') hasDailyRelease = true;
+  }
+
+  if (!hasAutoSignOut) {
+    ScriptApp.newTrigger('autoSignOut')
+      .timeBased()
+      .atHour(21)
+      .everyDays(1)
+      .create();
+    console.log('ensureTriggersInstalled: Installed autoSignOut trigger at 21:00');
+  }
+
+  if (!hasDailyRelease) {
+    ScriptApp.newTrigger('releaseDailyCards')
+      .timeBased()
+      .atHour(2)
+      .everyDays(1)
+      .create();
+    console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
+  }
+
+  prop.setProperty('TRIGGERS_INITIALIZED', 'true');
+  console.log('ensureTriggersInstalled: Triggers initialized (flag set)');
 }
 
 // ──────────────────────────────────────────────
