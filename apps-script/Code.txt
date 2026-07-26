@@ -73,6 +73,7 @@ function _loadMasterConfig() {
       visitorLimit: row[3] !== undefined && row[3] !== null && row[3] !== '' ? parseInt(row[3], 10) : 50,
       status: String(row[4] || 'active').trim().toLowerCase(),
       notes: String(row[5] || '').trim(),
+      autoSignOutHour: row[6] !== undefined && row[6] !== null && row[6] !== '' ? parseInt(row[6], 10) : 21,
     };
   }
   _masterConfig = config;
@@ -1867,37 +1868,27 @@ function autoSignOut() {
   var currentHour = now.getHours();
   console.log('autoSignOut: Running at hour ' + currentHour);
 
-  // Read all active customers from master config
+  // Read all active customers from master config, filtered by current hour
   var masterConfig = _loadMasterConfig();
   var sheetIds = [];
   for (var sid in masterConfig) {
-    if (masterConfig[sid].status === 'active') {
+    var c = masterConfig[sid];
+    if (c.status === 'active' && c.autoSignOutHour === currentHour) {
       sheetIds.push(sid);
     }
   }
 
   if (sheetIds.length === 0) {
-    console.log('autoSignOut: No active customers found in master config');
+    console.log('autoSignOut: No customers to process at hour ' + currentHour);
     return;
   }
 
-  console.log('autoSignOut: Found ' + sheetIds.length + ' active customer(s)');
+  console.log('autoSignOut: Processing ' + sheetIds.length + ' customer(s) at hour ' + currentHour);
   for (var s = 0; s < sheetIds.length; s++) {
     var sheetId = sheetIds[s].trim();
     if (!sheetId) continue;
 
     try {
-      // Read per-sheet Settings config
-      var config = getSheetSettings_(sheetId);
-      if (!config.enabled) {
-        console.log('autoSignOut: Sheet ' + sheetId + ' — auto sign-out disabled, skipping');
-        continue;
-      }
-      if (config.hour !== currentHour) {
-        // Not this sheet's hour — skip
-        continue;
-      }
-
       var ss = SpreadsheetApp.openById(sheetId);
       var sheet = ss.getSheetByName('VisitorLog');
       if (!sheet) continue;
