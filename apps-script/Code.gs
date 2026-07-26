@@ -356,6 +356,19 @@ function doGet(e) {
           blocked: !limitCheck.allowed,
         }, 200);
       }
+
+      if (action === 'config') {
+        if (!sheetId) {
+          return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+        }
+        var settings = getSheetSettings_(sheetId);
+        return jsonResponse({
+          status: 'ok',
+          guardPin: settings.guardPin,
+          autoSignOutEnabled: settings.enabled,
+          autoSignOutHour: settings.hour,
+        }, 200);
+      }
     }
 
     // Default: health check — return version info
@@ -1770,38 +1783,56 @@ function handleBulkSignOut(data) {
  *   |----------------------|-----------|
  *   | autoSignOutEnabled   | TRUE      |
  *   | autoSignOutHour      | 21        |
+ *   | guardPin             | 1234      |
  *
- * Defaults are written if the tab doesn't exist.
+ * Creates the tab with defaults if missing.
+ * Auto-adds any missing default rows to existing tabs.
  */
 function getOrCreateSettingsTab_(ss) {
   var tab = ss.getSheetByName('Settings');
-  if (tab) return tab;
+  if (!tab) {
+    tab = ss.insertSheet('Settings');
+    tab.getRange(1, 1, 1, 2).setValues([['Setting', 'Value']]);
+    tab.autoResizeColumns(1, 2);
+    console.log('getOrCreateSettingsTab_: Created Settings tab');
+  }
 
-  // Create with defaults
-  tab = ss.insertSheet('Settings');
-  tab.getRange(1, 1, 3, 2).setValues([
-    ['Setting', 'Value'],
-    ['autoSignOutEnabled', 'TRUE'],
-    ['autoSignOutHour', '21'],
-  ]);
-  tab.autoResizeColumns(1, 2);
-  console.log('getOrCreateSettingsTab_: Created Settings tab with defaults');
+  // Ensure default rows exist (handles both new and existing tabs)
+  ensureSettingRow_(tab, 'autoSignOutEnabled', 'TRUE');
+  ensureSettingRow_(tab, 'autoSignOutHour', '21');
+  ensureSettingRow_(tab, 'guardPin', '1234');
+
   return tab;
 }
 
+/** Append a setting row to the Settings tab if the key doesn't exist. */
+function ensureSettingRow_(tab, key, defaultValue) {
+  var data = tab.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '').trim().toLowerCase() === key.toLowerCase()) {
+      return; // already exists
+    }
+  }
+  var nextRow = data.length + 1;
+  tab.getRange(nextRow, 1, 1, 2).setValues([[key, defaultValue]]);
+  tab.autoResizeColumns(1, 2);
+  console.log('ensureSettingRow_: Added ' + key + ' = ' + defaultValue);
+}
+
 /**
- * Read auto sign-out config from a customer sheet's Settings tab.
- * Returns {enabled: boolean, hour: number}.
+ * Read all settings from a customer sheet's Settings tab.
+ * Returns {enabled: boolean, hour: number, guardPin: string}.
  * Creates the tab with defaults if missing.
  */
-function getAutoSignOutConfig_(sheetId) {
+function getSheetSettings_(sheetId) {
   try {
     var ss = SpreadsheetApp.openById(sheetId);
     var tab = getOrCreateSettingsTab_(ss);
     var data = tab.getDataRange().getValues();
 
-    var enabled = true;   // default
-    var hour = 21;        // default
+    var enabled = true;      // default
+    var hour = 21;           // default
+    var guardPin = '1234';   // default
 
     for (var i = 1; i < data.length; i++) {
       var key = String(data[i][0] || '').trim().toLowerCase();
@@ -1814,13 +1845,15 @@ function getAutoSignOutConfig_(sheetId) {
         if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
           hour = parsed;
         }
+      } else if (key === 'guardpin') {
+        guardPin = val;
       }
     }
 
-    return { enabled: enabled, hour: hour };
+    return { enabled: enabled, hour: hour, guardPin: guardPin };
   } catch (e) {
-    console.warn('getAutoSignOutConfig_: Error reading sheet ' + sheetId + ': ' + e.message);
-    return { enabled: false, hour: -1 }; // skip on error
+    console.warn('getSheetSettings_: Error reading sheet ' + sheetId + ': ' + e.message);
+    return { enabled: false, hour: -1, guardPin: '1234' };
   }
 }
 
@@ -1848,7 +1881,7 @@ function autoSignOut() {
 
     try {
       // Read per-sheet Settings config
-      var config = getAutoSignOutConfig_(sheetId);
+      var config = getSheetSettings_(sheetId);
       if (!config.enabled) {
         console.log('autoSignOut: Sheet ' + sheetId + ' — auto sign-out disabled, skipping');
         continue;

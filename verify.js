@@ -30,6 +30,9 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
+    // Fetch per-customer config from GAS (guard PIN, auto sign-out settings)
+    fetchSheetConfig();
+
     // Check if already authenticated this session
     if (!sessionStorage.getItem('guardAuth')) {
       showLogin();
@@ -46,6 +49,24 @@
       var inp = $('#search-input');
       if (inp) inp.focus();
     }, 300);
+  }
+
+  /** Fetch guard PIN and settings from GAS, store in memory. */
+  var _guardPin = '1234'; // fallback
+
+  function fetchSheetConfig() {
+    var url = CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID;
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.status === 'ok' && data.guardPin) {
+          _guardPin = data.guardPin;
+        }
+      })
+      .catch(function () {
+        // GAS unreachable — fallback to config.js value
+        _guardPin = CONFIG.GUARD_PIN || '1234';
+      });
   }
 
   // ──────────────────────────────────────────────
@@ -101,7 +122,7 @@
     if (!input || !error) return;
 
     var pin = input.value.trim();
-    if (pin === CONFIG.GUARD_PIN) {
+    if (pin === _guardPin) {
       sessionStorage.setItem('guardAuth', 'true');
       hideLogin();
       // Run the normal init now
