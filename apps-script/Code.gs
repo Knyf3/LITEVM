@@ -1966,43 +1966,46 @@ function setupDailyReleaseTrigger() {
 }
 
 /**
- * One-shot auto-install: ensures auto sign-out (21:00) and daily card release (02:00)
- * triggers exist. Uses a ScriptProperties flag so it only runs once.
+ * One-shot auto-install: ensures hourly auto sign-out trigger and daily
+ * card release trigger exist. Uses a versioned ScriptProperties flag so
+ * it automatically reinstalls if the trigger schema changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
 function ensureTriggersInstalled() {
   var prop = PropertiesService.getScriptProperties();
-  if (prop.getProperty('TRIGGERS_INITIALIZED') === 'true') return;
+  // Schema version — bump this if trigger type/interval changes
+  var SCHEMA_VERSION = 'v2';
 
+  // If already installed at current schema, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION) return;
+
+  // Delete ALL existing autoSignOut + releaseDailyCards triggers
   var triggers = ScriptApp.getProjectTriggers();
-  var hasAutoSignOut = false;
-  var hasDailyRelease = false;
-
-  for (var i = 0; i < triggers.length; i++) {
+  for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'autoSignOut') hasAutoSignOut = true;
-    if (fn === 'releaseDailyCards') hasDailyRelease = true;
+    if (fn === 'autoSignOut' || fn === 'releaseDailyCards') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
   }
 
-  if (!hasAutoSignOut) {
-    ScriptApp.newTrigger('autoSignOut')
-      .timeBased()
-      .everyHours(1)
-      .create();
-    console.log('ensureTriggersInstalled: Installed hourly autoSignOut trigger');
-  }
+  // Install hourly autoSignOut (fires at 00:00, 01:00, ... 23:00)
+  ScriptApp.newTrigger('autoSignOut')
+    .timeBased()
+    .everyHours(1)
+    .create();
+  console.log('ensureTriggersInstalled: Installed hourly autoSignOut trigger');
 
-  if (!hasDailyRelease) {
-    ScriptApp.newTrigger('releaseDailyCards')
-      .timeBased()
-      .atHour(2)
-      .everyDays(1)
-      .create();
-    console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
-  }
+  // Install daily card release at 02:00
+  ScriptApp.newTrigger('releaseDailyCards')
+    .timeBased()
+    .atHour(2)
+    .everyDays(1)
+    .create();
+  console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
 
-  prop.setProperty('TRIGGERS_INITIALIZED', 'true');
-  console.log('ensureTriggersInstalled: Triggers initialized (flag set)');
+  // Mark current schema version
+  prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
+  console.log('ensureTriggersInstalled: Triggers installed (schema ' + SCHEMA_VERSION + ')');
 }
 
 // ──────────────────────────────────────────────
