@@ -421,7 +421,7 @@ function doPost(e) {
     // Handle auto sign-out trigger setup
     if (data.mode === 'setupAutoSignOut') {
       setupAutoSignOutTrigger();
-      return jsonResponse({ status: 'ok', message: 'Hourly auto sign-out trigger installed. Each sheet\\'s Settings tab controls when it fires.' }, 200);
+      return jsonResponse({ status: 'ok', message: "Hourly auto sign-out trigger installed. Each sheet's Settings tab controls when it fires." }, 200);
     }
 
     // Check if this is a status update
