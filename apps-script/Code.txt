@@ -1867,14 +1867,21 @@ function autoSignOut() {
   var currentHour = now.getHours();
   console.log('autoSignOut: Running at hour ' + currentHour);
 
-  // Read CUSTOMER_SHEETS from ScriptProperties (comma-separated sheetIds)
-  var sheetsProp = PropertiesService.getScriptProperties().getProperty('CUSTOMER_SHEETS');
-  if (!sheetsProp) {
-    console.log('autoSignOut: No CUSTOMER_SHEETS configured');
+  // Read all active customers from master config
+  var masterConfig = _loadMasterConfig();
+  var sheetIds = [];
+  for (var sid in masterConfig) {
+    if (masterConfig[sid].status === 'active') {
+      sheetIds.push(sid);
+    }
+  }
+
+  if (sheetIds.length === 0) {
+    console.log('autoSignOut: No active customers found in master config');
     return;
   }
-  var sheetIds = sheetsProp.split(',');
 
+  console.log('autoSignOut: Found ' + sheetIds.length + ' active customer(s)');
   for (var s = 0; s < sheetIds.length; s++) {
     var sheetId = sheetIds[s].trim();
     if (!sheetId) continue;
