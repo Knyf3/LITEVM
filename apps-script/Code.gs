@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.9.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.9.1';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
@@ -2473,8 +2473,8 @@ function initialize() {
 // MIGRATION SYSTEM
 // ──────────────────────────────────────────────
 
-var SHEET_VERSION_CELL = 'VisitorLog!A1000';
-var LATEST_SHEET_VERSION = 4;
+var SHEET_VERSION_CELL = '_version!A1';
+var LATEST_SHEET_VERSION = 5;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -2626,27 +2626,85 @@ var MIGRATION_REGISTRY = [
       }
     }
   },
+  {
+    version: 5,
+    name: 'Move version marker to hidden _version sheet',
+    destructive: false,
+    description: 'Moves SHEET_VERSION from VisitorLog!A1000 to _version!A1 and clears the old cell',
+    fn: function(ss) {
+      console.log('Migration V5: Moving version marker to _version sheet');
+      
+      // Read old marker from VisitorLog!A1000
+      var vSheet = ss.getSheetByName('VisitorLog');
+      if (vSheet) {
+        var oldCell = vSheet.getRange('A1000');
+        var oldValue = String(oldCell.getValue());
+        var match = oldValue.match(/SHEET_VERSION=(\d+)/);
+        
+        if (match) {
+          // Write to new _version sheet
+          var newSheet = ss.getSheetByName('_version');
+          if (!newSheet) {
+            newSheet = ss.insertSheet('_version');
+            newSheet.hideSheet();
+          }
+          newSheet.getRange('A1').setValue('SHEET_VERSION=' + match[1]);
+          
+          // Clear old marker
+          oldCell.clear();
+          console.log('Migration V5: Migrated version ' + match[1] + ' from A1000 to _version sheet');
+        } else {
+          console.log('Migration V5: No old marker found at A1000 — initializing _version sheet');
+          var newSheet = ss.getSheetByName('_version');
+          if (!newSheet) {
+            newSheet = ss.insertSheet('_version');
+            newSheet.hideSheet();
+            newSheet.getRange('A1').setValue('SHEET_VERSION=0');
+          }
+        }
+      } else {
+        console.log('Migration V5: VisitorLog not found — creating _version sheet');
+        var newSheet = ss.getSheetByName('_version');
+        if (!newSheet) {
+          newSheet = ss.insertSheet('_version');
+          newSheet.hideSheet();
+          newSheet.getRange('A1').setValue('SHEET_VERSION=0');
+        }
+      }
+      
+      console.log('Migration V5: Complete');
+    }
+  },
 ];
 
 /**
- * Read sheet version from VisitorLog!A1000.
+ * Read sheet version from _version!A1.
+ * Creates the _version sheet if it doesn't exist.
  * Returns 0 if no version marker found.
  */
 function getSheetVersion_(ss) {
-  var sheet = ss.getSheetByName('VisitorLog');
-  if (!sheet) return 0;
-  var cell = sheet.getRange(SHEET_VERSION_CELL.replace('VisitorLog!', '')).getValue();
+  var sheet = ss.getSheetByName('_version');
+  if (!sheet) {
+    sheet = ss.insertSheet('_version');
+    sheet.hideSheet();
+    return 0;
+  }
+  var cell = sheet.getRange('A1').getValue();
   var match = String(cell).match(/SHEET_VERSION=(\d+)/);
   return match ? parseInt(match[1], 10) : 0;
 }
 
 /**
- * Write sheet version to VisitorLog!A1000.
+ * Write sheet version to _version!A1.
+ * Creates the _version sheet if it doesn't exist.
  */
 function setSheetVersion_(ss, version) {
-  var sheet = ss.getSheetByName('VisitorLog');
-  if (!sheet) return;
-  sheet.getRange(SHEET_VERSION_CELL.replace('VisitorLog!', '')).setValue('SHEET_VERSION=' + version);
+  var sheet = ss.getSheetByName('_version');
+  if (!sheet) {
+    sheet = ss.insertSheet('_version');
+    sheet.hideSheet();
+  }
+  sheet.getRange('A1').setValue('SHEET_VERSION=' + version);
 }
 
 /**
