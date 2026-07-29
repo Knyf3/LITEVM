@@ -21,6 +21,8 @@ The frontend is deployed via GitHub Pages at:
 3. Set up the required script properties
 4. Deploy as Web App
 
+> **Full installation guide:** See [`docs/INSTALL.md`](docs/INSTALL.md)
+
 ## Visitor Flow
 1. Scan QR code → Opens registration page
 2. Fill details (Name, ID, Company, Phone)
