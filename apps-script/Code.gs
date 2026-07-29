@@ -119,14 +119,12 @@ function _extractOrigin_(e) {
  *
  * Guards:
  *  - Respects AUTO_REGISTER_ENABLED Script Property (must be "true").
+ *  - Rate-limits: at most 20 auto-registrations per rolling hour (stored
+ *    in Script Properties counter).
  *  - Uses LockService on the master config sheet to prevent duplicate rows
  *    from concurrent requests for the same sheetId.
  *  - Double-checks the customer wasn't registered between the initial miss
  *    and acquiring the lock (race condition guard).
- *  - Verifies the sheetId actually exists via SpreadsheetApp.openById()
- *    before registering (prevents garbage/spam sheetIds).
- *  - Rate-limits: at most 20 auto-registrations per rolling hour (stored
- *    in Script Properties counter).
  *  - Logs every auto-registration to DeniedLog for traceability.
  *
  * @param {string} sheetId - The unknown Google Sheet ID
@@ -149,16 +147,7 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     return null;
   }
 
-  // ── Guard 3: Verify sheetId actually exists ──
-  try {
-    SpreadsheetApp.openById(sheetId);
-  } catch (e) {
-    console.warn('[autoRegister] sheetId ' + sheetId + ' does not exist or is inaccessible — not registering. Error: ' + e.message);
-    logDeniedRequest(sheetId, origin, 'AUTO_REGISTER_INVALID_SHEET', endpointType, null);
-    return null;
-  }
-
-  // ── Guard 4: Lock on master config to prevent duplicate registrations ──
+  // ── Guard 3: Lock on master config to prevent duplicate registrations ──
   var masterSheet = _getMasterConfigSheet();
   if (!masterSheet) {
     console.warn('[autoRegister] Cannot access master config sheet');
