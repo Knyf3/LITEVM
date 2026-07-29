@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.7.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.8.0';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
@@ -49,10 +49,10 @@ function _getMasterConfigSheet() {
  * Load all customer rows from the "Customers" tab of the master config sheet.
  * Caches the result in the per-execution global _masterConfig.
  *
- * Customers tab schema (7 columns):
- *   sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour
+ * Customers tab schema (9 columns):
+ *   sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | registeredAt
  *
- * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes }
+ * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes, registeredAt }
  */
 function _loadMasterConfig() {
   if (_masterConfig !== null) return _masterConfig;
@@ -75,6 +75,7 @@ function _loadMasterConfig() {
       notes: String(row[5] || '').trim(),
       autoSignOutHour: row[6] !== undefined && row[6] !== null && row[6] !== '' ? parseInt(row[6], 10) : 21,
       autoSignOutEnabled: row[7] !== undefined && row[7] !== null ? String(row[7]).toUpperCase() === 'TRUE' : true,
+      registeredAt: row[8] instanceof Date ? row[8] : (row[8] ? String(row[8]) : null),
     };
   }
   _masterConfig = config;
@@ -90,6 +91,194 @@ function _loadMasterConfig() {
 function _getCustomerConfig(sheetId) {
   var config = _loadMasterConfig();
   return config[sheetId] || null;
+}
+
+/**
+ * Extract the origin from a doGet/doPost event object.
+ * Checks POST body first, then query parameters.
+ *
+ * @param {Object} e - The event object
+ * @returns {string} The origin string (may be empty)
+ */
+function _extractOrigin_(e) {
+  var origin = '';
+  try {
+    if (e && e.postData) {
+      var body = JSON.parse(e.postData.contents);
+      origin = body.origin || '';
+    }
+  } catch (er) { /* ignore parse errors */ }
+  if (!origin && e && e.parameter && e.parameter.origin) {
+    origin = e.parameter.origin;
+  }
+  return origin;
+}
+
+/**
+ * Auto-register an unknown sheetId to the Customers tab with pending status.
+ *
+ * Guards:
+ *  - Respects AUTO_REGISTER_ENABLED Script Property (must be "true").
+ *  - Uses LockService on the master config sheet to prevent duplicate rows
+ *    from concurrent requests for the same sheetId.
+ *  - Double-checks the customer wasn't registered between the initial miss
+ *    and acquiring the lock (race condition guard).
+ *  - Verifies the sheetId actually exists via SpreadsheetApp.openById()
+ *    before registering (prevents garbage/spam sheetIds).
+ *  - Rate-limits: at most 20 auto-registrations per rolling hour (stored
+ *    in Script Properties counter).
+ *  - Logs every auto-registration to DeniedLog for traceability.
+ *
+ * @param {string} sheetId - The unknown Google Sheet ID
+ * @param {string} origin - Request origin (for logging)
+ * @param {string} endpointType - Endpoint type (for logging)
+ * @returns {Object|null} Newly created customer config object, or null on failure
+ */
+function _autoRegisterCustomer(sheetId, origin, endpointType) {
+  // ── Guard 1: Feature flag ──
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('AUTO_REGISTER_ENABLED') !== 'true') {
+    console.log('[autoRegister] AUTO_REGISTER_ENABLED is not true — skipping auto-registration for ' + sheetId);
+    return null;
+  }
+
+  // ── Guard 2: Rate limit (max 20 per rolling hour) ──
+  if (!_checkAutoRegisterRateLimit_()) {
+    console.warn('[autoRegister] Rate limit exceeded — skipping auto-registration for ' + sheetId);
+    logDeniedRequest(sheetId, origin, 'AUTO_REGISTER_RATE_LIMIT', endpointType, null);
+    return null;
+  }
+
+  // ── Guard 3: Verify sheetId actually exists ──
+  try {
+    SpreadsheetApp.openById(sheetId);
+  } catch (e) {
+    console.warn('[autoRegister] sheetId ' + sheetId + ' does not exist or is inaccessible — not registering. Error: ' + e.message);
+    logDeniedRequest(sheetId, origin, 'AUTO_REGISTER_INVALID_SHEET', endpointType, null);
+    return null;
+  }
+
+  // ── Guard 4: Lock on master config to prevent duplicate registrations ──
+  var masterSheet = _getMasterConfigSheet();
+  if (!masterSheet) {
+    console.warn('[autoRegister] Cannot access master config sheet');
+    return null;
+  }
+
+  var lock = LockService.getUserLock();
+  try {
+    if (!lock.tryLock(15000)) { // 15s timeout
+      console.warn('[autoRegister] Could not acquire lock for master config');
+      return null;
+    }
+
+    // ── Guard 5: Double-check — another execution may have registered this sheetId ──
+    _masterConfig = null;
+    var existing = _getCustomerConfig(sheetId);
+    if (existing) {
+      console.log('[autoRegister] Customer ' + sheetId + ' was registered by another execution — using existing record');
+      return existing;
+    }
+
+    // ── Build default config ──
+    var defaults = {
+      allowedOrigins: '',
+      tier: 'free',
+      visitorLimit: 50,
+      status: 'pending',
+      notes: 'Auto-registered by LITEVM on ' + new Date().toISOString(),
+      autoSignOutHour: 21,
+      autoSignOutEnabled: true,
+    };
+
+    // Allow override via AUTO_REGISTER_DEFAULTS JSON in Script Properties
+    var customDefaults = props.getProperty('AUTO_REGISTER_DEFAULTS');
+    if (customDefaults) {
+      try {
+        var parsed = JSON.parse(customDefaults);
+        if (parsed.allowedOrigins !== undefined) defaults.allowedOrigins = String(parsed.allowedOrigins);
+        if (parsed.tier !== undefined) defaults.tier = String(parsed.tier).toLowerCase();
+        if (parsed.visitorLimit !== undefined) defaults.visitorLimit = parseInt(parsed.visitorLimit, 10);
+        if (parsed.status !== undefined) defaults.status = String(parsed.status).toLowerCase();
+        if (parsed.notes !== undefined) defaults.notes = String(parsed.notes);
+        if (parsed.autoSignOutHour !== undefined) defaults.autoSignOutHour = parseInt(parsed.autoSignOutHour, 10);
+        if (parsed.autoSignOutEnabled !== undefined) defaults.autoSignOutEnabled = String(parsed.autoSignOutEnabled).toUpperCase() === 'TRUE';
+      } catch (e) {
+        console.warn('[autoRegister] Failed to parse AUTO_REGISTER_DEFAULTS: ' + e.message);
+      }
+    }
+
+    // ── Append row to Customers tab ──
+    var custSheet = masterSheet.getSheetByName('Customers');
+    if (!custSheet) {
+      console.warn('[autoRegister] Customers tab not found in master config');
+      return null;
+    }
+
+    custSheet.appendRow([
+      sheetId,
+      defaults.allowedOrigins,
+      defaults.tier,
+      defaults.visitorLimit,
+      defaults.status,
+      defaults.notes,
+      defaults.autoSignOutHour,
+      defaults.autoSignOutEnabled,
+      new Date(), // registeredAt
+    ]);
+
+    SpreadsheetApp.flush(); // Ensure write is committed
+
+    // ── Invalidate cache so next call sees the new row ──
+    _masterConfig = null;
+
+    // ── Log the auto-registration ──
+    console.log('[autoRegister] Successfully registered sheetId ' + sheetId + ' with status=' + defaults.status + ' tier=' + defaults.tier);
+    logDeniedRequest(sheetId, origin, 'AUTO_REGISTERED', endpointType, null);
+
+    // Return the new customer config
+    return _getCustomerConfig(sheetId);
+
+  } catch (e) {
+    console.error('[autoRegister] Error registering sheetId ' + sheetId + ': ' + e.message);
+    return null;
+  } finally {
+    try { lock.releaseLock(); } catch (e) { /* ignore release errors */ }
+  }
+}
+
+/**
+ * Rate-limiter for auto-registrations.
+ * Stores a JSON array of timestamps in Script Properties under
+ * AUTO_REGISTER_TIMESTAMPS. Allows at most MAX_PER_HOUR entries
+ * in the last 3600 seconds.
+ *
+ * @returns {boolean} true if request is within rate limit
+ */
+function _checkAutoRegisterRateLimit_() {
+  var MAX_PER_HOUR = 20;
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('AUTO_REGISTER_TIMESTAMPS');
+  var timestamps = [];
+  if (raw) {
+    try { timestamps = JSON.parse(raw); } catch (e) { timestamps = []; }
+  }
+
+  var now = Date.now();
+  var oneHourAgo = now - 3600000; // 60 min in ms
+
+  // Filter out timestamps older than 1 hour
+  timestamps = timestamps.filter(function(ts) { return ts > oneHourAgo; });
+
+  if (timestamps.length >= MAX_PER_HOUR) {
+    return false;
+  }
+
+  // Add current timestamp and save
+  timestamps.push(now);
+  props.setProperty('AUTO_REGISTER_TIMESTAMPS', JSON.stringify(timestamps));
+
+  return true;
 }
 
 /**
@@ -165,14 +354,23 @@ function checkVisitorLimit_(sheetId) {
 /**
  * Validate an incoming request against the master config.
  *
- * Validation steps:
- *   1. If sheetId is not in master config → deny with INVALID_CUSTOMER
- *   2. If customer status is not 'active' → deny with ACCOUNT_DISABLED
- *   3. If endpointType is NOT 'register' → skip origin check, allow
- *   4. If origin is reported → check against allowedOrigins whitelist
- *   5. If origin not whitelisted → deny with ORIGIN_BLOCKED
+ * NEW BEHAVIOR for unknown sheetIds:
+ *   If AUTO_REGISTER_ENABLED=true in Script Properties, unknown sheetIds are
+ *   auto-registered to the Customers tab with status="pending" and tier/limit
+ *   defaults. The request is then allowed through for non-register endpoints,
+ *   but blocked for registration (check-in) with ACCOUNT_PENDING.
  *
- * Denied requests are logged to the DeniedLog tab of the master config sheet.
+ * Validation steps:
+ *   1. If sheetId not in master config → try auto-register (if enabled)
+ *      a. If auto-register succeeds:
+ *         - For 'register' epType → deny with ACCOUNT_PENDING
+ *         - For all other epTypes → allow (returns status='pending')
+ *      b. If auto-register fails → deny with INVALID_CUSTOMER
+ *   2. If customer status is 'pending' and epType is 'register' → deny ACCOUNT_PENDING
+ *   3. If customer status is not 'active' and not 'pending' → deny ACCOUNT_DISABLED
+ *   4. If endpointType is NOT 'register' → skip origin check, allow
+ *   5. If origin is reported → check against allowedOrigins whitelist
+ *   6. If origin not whitelisted → deny with ORIGIN_BLOCKED
  *
  * @param {Object} e - The doGet/doPost event object
  * @param {string} sheetId - Customer's Google Sheet ID
@@ -192,14 +390,57 @@ function validateRequest(e, sheetId, endpointType) {
 
   // Look up customer in master config
   var customer = _getCustomerConfig(sheetId);
+
+  // ── NEW: Auto-register unknown customers if enabled ──
   if (!customer) {
-    logDeniedRequest(sheetId, null, 'UNKNOWN_CUSTOMER', endpointType, null);
-    return { valid: false, error: 'INVALID_CUSTOMER', message: 'Invalid customer configuration.' };
+    // Attempt auto-registration
+    var origin = _extractOrigin_(e);
+    customer = _autoRegisterCustomer(sheetId, origin, endpointType);
+
+    if (!customer) {
+      // Auto-registration failed or disabled — deny as before
+      logDeniedRequest(sheetId, null, 'UNKNOWN_CUSTOMER', endpointType, null);
+      return { valid: false, error: 'INVALID_CUSTOMER', message: 'Invalid customer configuration.' };
+    }
+
+    // Auto-registration succeeded
+    // If this is a registration endpoint, block with pending message
+    if (endpointType === 'register') {
+      logDeniedRequest(sheetId, origin, 'ACCOUNT_PENDING', endpointType, null);
+      return {
+        valid: false,
+        error: 'ACCOUNT_PENDING',
+        message: 'Account pending activation. Please contact the administrator.',
+        tier: customer.tier,
+        visitorLimit: customer.visitorLimit,
+        status: customer.status,
+      };
+    }
+
+    // For non-register endpoints on newly registered pending accounts — allow
+    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
   }
 
-  // Check account status
+  // ── NEW: Check for pending status (blocks registration only, allows reads/updates) ──
+  if (customer.status === 'pending') {
+    if (endpointType === 'register') {
+      logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_PENDING', endpointType, null);
+      return {
+        valid: false,
+        error: 'ACCOUNT_PENDING',
+        message: 'Account pending activation. Please contact the administrator.',
+        tier: customer.tier,
+        visitorLimit: customer.visitorLimit,
+        status: customer.status,
+      };
+    }
+    // For non-register endpoints on pending accounts — allow through
+    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+  }
+
+  // Check account status for non-pending, non-active states
   if (customer.status !== 'active') {
-    logDeniedRequest(sheetId, null, 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
+    logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
     return { valid: false, error: 'ACCOUNT_DISABLED', message: 'This service is currently unavailable.' };
   }
 
@@ -209,18 +450,7 @@ function validateRequest(e, sheetId, endpointType) {
   }
 
   // ─── REGISTRATION-SPECIFIC CHECKS ───
-
-  // Get the reported origin from the JSON body or URL parameter
-  var origin = '';
-  try {
-    if (e && e.postData) {
-      var body = JSON.parse(e.postData.contents);
-      origin = body.origin || '';
-    }
-  } catch (er) { /* ignore parse errors */ }
-  if (!origin && e && e.parameter && e.parameter.origin) {
-    origin = e.parameter.origin;
-  }
+  var origin = _extractOrigin_(e);
 
   // Check origin against whitelist
   if (origin) {
