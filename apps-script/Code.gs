@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.8.1';  // Increment this to track deployed versions
+var CODE_VERSION = '1.9.0';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
@@ -126,6 +126,8 @@ function _extractOrigin_(e) {
  *  - Double-checks the customer wasn't registered between the initial miss
  *    and acquiring the lock (race condition guard).
  *  - Logs every auto-registration to DeniedLog for traceability.
+ *  - Auto-runs migration on the customer sheet to create required tabs
+ *    (VisitorLog, cardno, Destination, Settings).
  *
  * @param {string} sheetId - The unknown Google Sheet ID
  * @param {string} origin - Request origin (for logging)
@@ -224,6 +226,18 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     // ── Log the auto-registration ──
     console.log('[autoRegister] Successfully registered sheetId ' + sheetId + ' with status=' + defaults.status + ' tier=' + defaults.tier);
     logDeniedRequest(sheetId, origin, 'AUTO_REGISTERED', endpointType, null);
+
+    // ── Auto-migrate: create required tabs if missing ──
+    try {
+      var migResult = handleMigration(sheetId);
+      if (migResult.status === 'ok') {
+        console.log('[autoRegister] Migration complete for ' + sheetId + ': v' + migResult.fromVersion + ' → v' + migResult.toVersion);
+      } else {
+        console.warn('[autoRegister] Migration warning for ' + sheetId + ': ' + JSON.stringify(migResult));
+      }
+    } catch (migErr) {
+      console.warn('[autoRegister] Migration failed for ' + sheetId + ' (sheet may not be accessible yet): ' + migErr.message);
+    }
 
     // Return the new customer config
     return _getCustomerConfig(sheetId);
