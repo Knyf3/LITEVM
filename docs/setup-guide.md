@@ -198,4 +198,31 @@ Phase 2 will add:
 - **Usage counting** — track registration counts against `visitorLimit`
 - **Hard block on limit exceeded** — return `VISITOR_LIMIT_REACHED` when limit is hit
 - **Tier-based rate limiting** — different request caps per tier
-- **User-Agent logging** — record the actual User-Agent header for denied requests
+| **User-Agent logging** — record the actual User-Agent header for denied requests
+
+---
+
+## Appendix: Customer Sheet Management
+
+### Template Sheet
+
+Create a master template once, then copy for each customer:
+- Template ID: `199JdWHZZjil3O4hkrQtKbAZ6PA1EtRe3HZ_UcmYFaYw`
+- Tabs: VisitorLog (14 cols), cardno, Destination, Settings — all pre-formatted
+
+**New customer workflow:**
+1. Open template → **File → Make a copy**
+2. Share the copy with the GAS deployer's email
+3. Add the copy's Sheet ID to Master Config → Customers tab with `status=active`
+
+### Running Migration on Existing Customer Sheets
+
+When you add new columns or requirements, migrate individual customers:
+
+```bash
+curl -sL --post302 -X POST "https://script.google.com/macros/s/AKfycbyQA6WibRYfpTJYA7syYaskM2n45csIs_sjzn-FfF8sNKaAFWOkIrNcRfYC-nTJc7JK/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "migrate", "sheetId": "CUSTOMER_SHEET_ID_HERE"}'
+```
+
+Replace `CUSTOMER_SHEET_ID_HERE` with the actual sheet ID. No bulk — per-customer only to prevent cascading failures.
