@@ -1258,13 +1258,23 @@ function handleStatusUpdate(data) {
           sheet.getRange(i + 1, 14).setValue(new Date());
 
           // Release card immediately on sign-out
+          var releasedCard = false;
           try {
-            releaseCardForVisitor(visitorNumber, data.sheetId);
+            releasedCard = releaseCardForVisitor(visitorNumber, data.sheetId);
           } catch (cardErr) {
             console.warn('Card release failed for ' + visitorNumber + ': ' + cardErr.message);
           }
 
-          return jsonResponse({ status: 'ok', message: 'Visitor signed out', visitorNumber: visitorNumber }, 200);
+          var responseData = {
+            status: 'ok',
+            message: 'Visitor signed out',
+            visitorNumber: visitorNumber,
+          };
+          if (releasedCard && releasedCard !== '') {
+            responseData.cardNo = releasedCard;
+          }
+
+          return jsonResponse(responseData, 200);
         }
 
         // ── CHECK-IN / REJECT PATH ──
@@ -1872,7 +1882,7 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
  *
  * @param {string} visitorNumber — The visitor number whose card to release
  * @param {string} sheetId — The Google Sheet ID
- * @returns {boolean} true if card was found and released, false otherwise
+ * @returns {(string|boolean)} The released card number, or false if not found
  */
 function releaseCardForVisitor(visitorNumber, sheetId) {
   if (!visitorNumber || !sheetId) return false;
@@ -1885,8 +1895,9 @@ function releaseCardForVisitor(visitorNumber, sheetId) {
     for (var i = 1; i < data.length; i++) {
       var assignedTo = String(data[i][2] || '').trim();
       if (assignedTo === visitorNumber.trim()) {
+        var cardNumber = String(data[i][0] || '').trim();
         cardSheet.getRange(i + 1, 2, 1, 3).setValues([['Available', '', '']]);
-        return true;
+        return cardNumber;
       }
     }
     return false; // Card not found for this visitor
