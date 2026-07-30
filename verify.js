@@ -589,10 +589,11 @@
         } else if (status === 'Signed Out') {
           showSignedOutState(state.currentVisitor);
           // Revoke ACT door access if card was assigned
-          if (data.cardNo) {
+          var cardNo = data.cardNo || (state.currentVisitor && state.currentVisitor.cardNo);
+          if (cardNo) {
             var actApiBase = CONFIG.ACTApiBase;
             if (actApiBase !== null && actApiBase !== undefined) {
-              revokeActAccess(data.cardNo, actApiBase);
+              revokeActAccess(cardNo, actApiBase);
             }
           }
         } else {
@@ -1268,10 +1269,10 @@
         loadTodayVisitors();
         
         // Revoke ACT door access if card was assigned
-        if (parsed.cardNo) {
+        if (parsed.cardNo || (state.currentVisitor && state.currentVisitor.cardNo)) {
             var actApiBase = CONFIG.ACTApiBase;
             if (actApiBase !== null && actApiBase !== undefined) {
-                revokeActAccess(parsed.cardNo, actApiBase);
+                revokeActAccess(parsed.cardNo || state.currentVisitor.cardNo, actApiBase);
             }
         }
       } else {
