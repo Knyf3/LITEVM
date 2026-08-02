@@ -26,6 +26,31 @@
 var CODE_VERSION = '1.9.2';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
+// LICENSE ENFORCEMENT — HMAC SECRET CACHE
+// ──────────────────────────────────────────────
+var _hmacSecret = undefined; // cached per-execution
+
+/**
+ * Get the LITEVM_HMAC_SECRET ScriptProperty for signing ACTApi license tokens.
+ * Returns null if not set — license issuance is disabled until configured.
+ *
+ * @returns {string|null} The hex-encoded 64-char master secret, or null
+ */
+function _getHmacSecret() {
+  if (_hmacSecret === undefined) {
+    _hmacSecret = PropertiesService.getScriptProperties().getProperty('LITEVM_HMAC_SECRET');
+    if (!_hmacSecret) {
+      console.warn('LITEVM_HMAC_SECRET ScriptProperty is not set — ACTApi license issuance disabled');
+      _hmacSecret = null;
+    } else if (_hmacSecret.length !== 64) {
+      console.error('LITEVM_HMAC_SECRET is ' + _hmacSecret.length + ' chars (expected 64 hex chars) — treating as unset');
+      _hmacSecret = null;
+    }
+  }
+  return _hmacSecret;
+}
+
+// ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
 // ──────────────────────────────────────────────
 var _masterConfig = null;
@@ -603,11 +628,17 @@ function doGet(e) {
           return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
         }
         var settings = getSheetSettings_(sheetId);
+        var customer = _getCustomerConfig(sheetId);
+        var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+        var actEnabled = customer !== null &&
+          customer.status === 'active' &&
+          entitledTiers.indexOf(customer.tier) !== -1;
         return jsonResponse({
           status: 'ok',
           guardPin: settings.guardPin,
           autoSignOutEnabled: settings.enabled,
           autoSignOutHour: settings.hour,
+          actEnabled: actEnabled,
         }, 200);
       }
     }
@@ -678,6 +709,11 @@ function doPost(e) {
       return jsonResponse({ status: 'ok', message: "Hourly auto sign-out trigger installed. Each sheet's Settings tab controls when it fires." }, 200);
     }
 
+    // Handle ACTApi license issuance
+    if (data.mode === 'issueLicense') {
+      return handleIssueLicense(data);
+    }
+
     // Check if this is a status update
     if (data.mode === 'updateStatus') {
       return handleStatusUpdate(data);
@@ -741,6 +777,183 @@ function handleMigrationResponse(data) {
 }
 
 
+
+// ──────────────────────────────────────────────
+// HANDLER: Issue ACTApi License Token
+// ──────────────────────────────────────────────
+
+/**
+ * Handle ACTApi license token issuance requests.
+ * Accepts mode=issueLicense with sheetId, machineId, optional validityDays.
+ * Validates the customer's tier and status from master config,
+ * constructs and signs a license token using HMAC-SHA256.
+ *
+ * Token format: base64url(payload_json).base64url(hmac_signature)
+ * Cryptographic scheme matches ACTApi Security/LicenseValidator.cs
+ * and tools/issue_license.py exactly.
+ *
+ * @param {Object} data - Request body: { mode:'issueLicense', sheetId, machineId, validityDays? }
+ * @returns {TextOutput} JSON response with token or error
+ */
+function handleIssueLicense(data) {
+  try {
+    // ── Validate inputs ──
+    if (!data.sheetId) {
+      return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+    }
+    if (!data.machineId || data.machineId.length !== 64) {
+      return jsonResponse({ status: 'error', error: 'machineId must be a 64-char hex string' }, 400);
+    }
+
+    // ── Get HMAC secret ──
+    var secret = _getHmacSecret();
+    if (!secret) {
+      return jsonResponse({
+        status: 'error',
+        error: 'License signing is not configured. Set LITEVM_HMAC_SECRET ScriptProperty.'
+      }, 500);
+    }
+
+    // ── Check customer entitlement ──
+    var customer = _getCustomerConfig(data.sheetId);
+    if (!customer) {
+      return jsonResponse({ status: 'error', error: 'Customer not found' }, 404);
+    }
+    if (customer.status !== 'active') {
+      return jsonResponse({
+        status: 'error',
+        error: 'Customer status is ' + customer.status + ' — must be active'
+      }, 403);
+    }
+    var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+    if (entitledTiers.indexOf(customer.tier) === -1) {
+      return jsonResponse({
+        status: 'error',
+        error: 'Tier "' + customer.tier + '" is not entitled to ACTApi. Requires pro, multi-site, or enterprise.'
+      }, 403);
+    }
+
+    // ── Build payload ──
+    var validityDays = parseInt(data.validityDays, 10) || 30;
+    if (validityDays < 1) validityDays = 1;
+    if (validityDays > 90) validityDays = 90;
+
+    var now = Math.floor(Date.now() / 1000);
+    var exp = now + validityDays * 86400;
+    var jti = _randomHex(16);
+
+    var payload = {
+      sub: data.machineId,
+      tier: customer.tier,
+      iat: now,
+      exp: exp,
+      jti: jti,
+      ver: 1
+    };
+
+    // ── Sign ──
+    var payloadJson = JSON.stringify(payload);
+    // Per-machine key: HMAC-SHA256(UTF8(secret_hex), UTF8(machineId_hex))
+    var perMachineKeyRaw = Utilities.computeHmacSha256Signature(data.machineId, secret);
+    // Convert per-machine key to hex string for the payload HMAC key
+    var perMachineKeyHex = _bytesToHex(perMachineKeyRaw);
+    // Sign payload: HMAC-SHA256(UTF8(perMachineKeyHex), UTF8(payloadJson))
+    var sig = Utilities.computeHmacSha256Signature(payloadJson, perMachineKeyHex);
+    // Token = base64url(payloadJson) + "." + base64url(sig)
+    var token = Utilities.base64EncodeWebSafe(Utilities.newBlob(payloadJson).getBytes())
+      .replace(/=+$/, '') + '.' +
+      Utilities.base64EncodeWebSafe(sig).replace(/=+$/, '');
+
+    // ── Log issuance to Licenses tab ──
+    _logLicenseIssuance(data.machineId, jti, customer.tier, now, exp);
+
+    console.log('License issued: sheetId=' + data.sheetId + ', tier=' + customer.tier +
+      ', machineId=' + data.machineId.substring(0, 8) + '..., jti=' + jti);
+
+    return jsonResponse({
+      status: 'ok',
+      token: token,
+      machineId: data.machineId,
+      tier: customer.tier,
+      expiresAt: new Date(exp * 1000).toISOString(),
+      validDays: validityDays
+    }, 200);
+
+  } catch (e) {
+    console.error('handleIssueLicense error: ' + e.message + '\n' + e.stack);
+    return jsonResponse({ status: 'error', error: e.message }, 500);
+  }
+}
+
+/**
+ * Generate a random hex string of the given length.
+ * Uses Math.random for GAS compatibility (not cryptographically strong,
+ * but jti is for uniqueness, not secrecy).
+ *
+ * @param {number} len - Length in hex characters
+ * @returns {string} Random hex string
+ */
+function _randomHex(len) {
+  var chars = '0123456789abcdef';
+  var result = '';
+  for (var i = 0; i < len; i++) {
+    result += chars.charAt(Math.floor(Math.random() * 16));
+  }
+  return result;
+}
+
+/**
+ * Convert a byte array (from computeHmacSignature) to lowercase hex string.
+ * GAS HMAC functions return Byte[]; we need hex for the second HMAC key.
+ *
+ * @param {Byte[]} bytes - Byte array from Utilities.computeHmacSha256Signature
+ * @returns {string} Lowercase hex string
+ */
+function _bytesToHex(bytes) {
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var b = bytes[i];
+    if (b < 0) b += 256; // GAS bytes can be signed
+    hex += ('0' + b.toString(16)).slice(-2);
+  }
+  return hex;
+}
+
+/**
+ * Log license issuance to the Licenses tab of the master config sheet.
+ * Creates the tab with headers if it does not already exist.
+ * Schema: machineId | jti | tier | issuedAt | expiresAt | status
+ *
+ * @param {string} machineId - The hex-encoded machine fingerprint
+ * @param {string} jti - The JWT ID for this issuance
+ * @param {string} tier - The customer tier
+ * @param {number} issuedAtEpoch - Issued-at timestamp (epoch seconds)
+ * @param {number} expiresAtEpoch - Expiration timestamp (epoch seconds)
+ */
+function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch) {
+  try {
+    var masterSheet = _getMasterConfigSheet();
+    if (!masterSheet) return;
+
+    var tab = masterSheet.getSheetByName('Licenses');
+    if (!tab) {
+      tab = masterSheet.insertSheet('Licenses');
+      tab.appendRow(['machineId', 'jti', 'tier', 'issuedAt', 'expiresAt', 'status']);
+    }
+
+    tab.appendRow([
+      machineId,
+      jti,
+      tier,
+      new Date(issuedAtEpoch * 1000),
+      new Date(expiresAtEpoch * 1000),
+      'active'
+    ]);
+  } catch (e) {
+    console.warn('_logLicenseIssuance: Failed to write to Licenses tab: ' + e.message);
+    // Non-blocking — licensing still succeeds
+  }
+}
 
 // ──────────────────────────────────────────────
 // HANDLER: Registration

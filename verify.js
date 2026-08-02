@@ -52,6 +52,7 @@
 
   /** Fetch guard PIN and settings from GAS, store in memory. Returns a promise. */
   var _guardPin = '1234'; // fallback
+  var _actEnabled = false; // ACTApi door access entitlement
 
   function fetchSheetConfig() {
     return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
@@ -60,10 +61,15 @@
         if (data && data.status === 'ok' && data.guardPin) {
           _guardPin = data.guardPin;
         }
+        // Store ACTApi entitlement flag from server
+        if (data && typeof data.actEnabled === 'boolean') {
+          _actEnabled = data.actEnabled;
+        }
       })
       .catch(function () {
         // GAS unreachable — fallback to config.js value
         _guardPin = CONFIG.GUARD_PIN || '1234';
+        _actEnabled = false;
       });
   }
 
@@ -1453,6 +1459,10 @@
    * @param {string} apiBase — The ACTApi server base URL
    */
   function grantActAccess(cardNo, doorGroupId, apiBase) {
+    if (!_actEnabled) {
+      console.log('ACT door access skipped: tier not entitled (requires Pro plan or higher)');
+      return;
+    }
     var url = apiBase.replace(/\/+$/, '') + '/api/users/' + encodeURIComponent(cardNo) + '/extra-rights';
 
     // Build dates from config (default: today only)
@@ -1492,6 +1502,10 @@
    * @param {string} apiBase — The ACTApi server base URL
    */
   function revokeActAccess(cardNo, apiBase) {
+    if (!_actEnabled) {
+      console.log('ACT door access revoke skipped: tier not entitled (requires Pro plan or higher)');
+      return;
+    }
     var url = apiBase.replace(/\/+$/, '') + '/api/users/' + encodeURIComponent(cardNo) + '/extra-rights';
 
     fetch(url, {
