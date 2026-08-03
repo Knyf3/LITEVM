@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>LITEVM — One Page Flyer</title>
+<style>
+  :root {
+    --navy: #1E2761;
+    --blue: #4361EE;
+    --ice: #CADCFC;
+    --light: #F8FAFC;
+    --ink: #1E293B;
+    --muted: #64748B;
+    --green: #16A34A;
+    --border: #E2E8F0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  @page { size: A4 portrait; margin: 0; }
+  body {
+    font-family: "Inter", -apple-system, "Segoe UI", Arial, sans-serif;
+    color: var(--ink);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 210mm;
+    height: 297mm;
+    background: var(--light);
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: var(--navy);
+    padding: 11mm 14mm 10mm;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::after {
+    content: "";
+    position: absolute;
+    right: -30mm; top: -30mm;
+    width: 90mm; height: 90mm;
+    border-radius: 50%;
+    background: var(--blue);
+    opacity: 0.18;
+  }
+  .logo {
+    width: 42px; height: 42px; border-radius: 12px;
+    background: var(--blue); display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 13px; color: #fff; letter-spacing: 0.5px;
+  }
+  .header h1 {
+    color: #fff; font-size: 30pt; font-weight: 800; margin-top: 6mm;
+    line-height: 1.05; letter-spacing: -0.5px;
+  }
+  .header .tag {
+    color: var(--ice); font-size: 12pt; font-weight: 500; margin-top: 3mm;
+  }
+  .header .pitch {
+    color: #B8C6E8; font-size: 9pt; margin-top: 3.5mm; line-height: 1.5;
+    max-width: 130mm;
+  }
+
+  /* ── Hero strip: screenshot + quick stats ── */
+  .hero {
+    display: grid;
+    grid-template-columns: 62mm 1fr;
+    gap: 8mm;
+    padding: 7mm 14mm;
+    align-items: center;
+  }
+  .hero .phone {
+    height: 72mm; border-radius: 14px;
+    box-shadow: 0 12px 30px rgba(30, 39, 97, 0.25);
+    justify-self: center;
+  }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 3.5mm; }
+  .stat {
+    background: #fff; border: 1px solid var(--border); border-radius: 12px;
+    padding: 4mm 4.5mm;
+  }
+  .stat .big { font-size: 15pt; font-weight: 800; color: var(--blue); }
+  .stat .lbl { font-size: 7.5pt; color: var(--muted); margin-top: 1mm; line-height: 1.35; }
+
+  /* ── Features ── */
+  .features {
+    padding: 2mm 14mm 4mm;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 3.5mm;
+  }
+  .feat {
+    background: #fff; border: 1px solid var(--border); border-radius: 12px;
+    padding: 4mm;
+  }
+  .feat .ic { font-size: 14pt; }
+  .feat h3 { font-size: 8.5pt; font-weight: 700; margin-top: 1.5mm; color: var(--ink); }
+  .feat p { font-size: 7pt; color: var(--muted); margin-top: 1mm; line-height: 1.4; }
+
+  /* ── Pricing strip ── */
+  .pricing {
+    padding: 3mm 14mm 4mm;
+  }
+  .pricing h2 {
+    font-size: 13pt; font-weight: 800; color: var(--navy); margin-bottom: 3mm;
+  }
+  .tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3.5mm; }
+  .tier {
+    background: #fff; border: 1.5px solid var(--border); border-radius: 11px;
+    padding: 3.5mm 3mm; text-align: center;
+  }
+  .tier.hot { border-color: var(--blue); background: #EEF2FF; }
+  .tier .name { font-size: 8pt; font-weight: 800; color: var(--navy); }
+  .tier .price { font-size: 12.5pt; font-weight: 800; color: var(--blue); margin-top: 1.5mm; }
+  .tier .desc { font-size: 6.8pt; color: var(--muted); margin-top: 1.5mm; line-height: 1.35; }
+  .compare {
+    margin-top: 3mm; font-size: 7.5pt; color: var(--muted); text-align: center;
+  }
+  .compare b { color: var(--ink); }
+
+  /* ── CTA + footer ── */
+  .cta {
+    margin: 2mm 14mm 0;
+    background: var(--navy); border-radius: 16px;
+    padding: 6mm 8mm;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6mm;
+    align-items: center;
+    margin-top: auto;
+  }
+  .cta .left h2 { color: #fff; font-size: 14pt; font-weight: 800; }
+  .cta .left p { color: var(--ice); font-size: 8.5pt; margin-top: 1.5mm; }
+  .cta .btn {
+    background: var(--blue); color: #fff; text-decoration: none;
+    font-weight: 700; font-size: 10pt;
+    padding: 4.5mm 8mm; border-radius: 11px;
+    white-space: nowrap;
+  }
+  .foot {
+    margin: 3mm 14mm 5mm;
+    display: flex; justify-content: space-between;
+    font-size: 6.8pt; color: var(--muted);
+  }
+  .foot b { color: var(--navy); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="header">
+    <span class="logo">LITEVM</span>
+    <h1>Visitor Management<br>Reimagined</h1>
+    <div class="tag">Mobile pre-registration · QR check-in · Photo verification · Real-time reporting</div>
+    <div class="pitch">Built for apartments, SME offices, co-working spaces and schools across Southeast Asia — from <b style="color:#fff">Rp 50K/month</b>, 3–36× cheaper than global competitors.</div>
+  </div>
+
+  <!-- HERO: screenshot + stats -->
+  <div class="hero">
+    <img class="phone" src="screenshots/04-registration-result.png">
+    <div class="stats">
+      <div class="stat"><div class="big">Email</div><div class="lbl">Visitor numbers &amp; confirmations delivered straight to the inbox — zero training</div></div>
+      <div class="stat"><div class="big">&lt; 1 min</div><div class="lbl">From visitor arrival to verified check-in — no app install required</div></div>
+      <div class="stat"><div class="big">3–36×</div><div class="lbl">Cheaper than Envoy, Sine &amp; SwipedOn per location per month</div></div>
+      <div class="stat"><div class="big">UU PDP</div><div class="lbl">Compliant digital visitor log — paper logbooks now a legal liability</div></div>
+    </div>
+  </div>
+
+  <!-- FEATURES -->
+  <div class="features">
+    <div class="feat"><div class="ic">📱</div><h3>Pre-register</h3><p>Visitors fill details + capture ID &amp; selfie from any phone, before arrival.</p></div>
+    <div class="feat"><div class="ic">🎫</div><h3>QR check-in</h3><p>Show the QR at the gate; guard looks up and verifies in seconds.</p></div>
+    <div class="feat"><div class="ic">📸</div><h3>Photo verify</h3><p>ID card and selfie compared at entry — real identity proof.</p></div>
+    <div class="feat"><div class="ic">📊</div><h3>Auto reports</h3><p>Every visit logged; CSV / PDF export. Full audit trail.</p></div>
+    <div class="feat"><div class="ic">📧</div><h3>Email confirmations</h3><p>Visitor numbers &amp; confirmations via email — zero training for guards.</p></div>
+    <div class="feat"><div class="ic">🔑</div><h3>ACT Pro</h3><p>Door rights auto-granted on check-in, revoked on sign-out.</p></div>
+  </div>
+
+  <!-- PRICING -->
+  <div class="pricing">
+    <h2>Pricing</h2>
+    <div class="tiers">
+      <div class="tier"><div class="name">Free</div><div class="price">Rp 0</div><div class="desc">1 location · 50 visitors/mo</div></div>
+      <div class="tier"><div class="name">Starter</div><div class="price">Rp 50K/mo</div><div class="desc">1 location · 500 visitors</div></div>
+      <div class="tier hot"><div class="name">Pro</div><div class="price">Rp 150K/mo</div><div class="desc">1 location · unlimited</div></div>
+      <div class="tier"><div class="name">Multi-Site</div><div class="price">Rp 100K/site/mo</div><div class="desc">3+ locations</div></div>
+    </div>
+    <div class="compare">vs <b>Envoy USD 362</b> · <b>Sine USD 69–199</b> · <b>SwipedOn USD 29–99</b> per location/month</div>
+  </div>
+
+  <!-- CTA -->
+  <div class="cta">
+    <div class="left">
+      <h2>Try LITEVM today</h2>
+      <p>Free plan available — live demo at knyf3.github.io/LITEVM</p>
+    </div>
+    <a class="btn" href="https://knyf3.github.io/LITEVM">Open live demo →</a>
+  </div>
+  <div class="foot">
+    <span><b>LITEVM</b> · Fenky Tjhang</span>
+    <span>ft@structureresearch.io</span>
+    <span>knyf3.github.io/LITEVM</span>
+  </div>
+
+</div>
+</body>
+</html>

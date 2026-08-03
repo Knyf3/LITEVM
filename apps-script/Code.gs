@@ -784,7 +784,8 @@ function handleMigrationResponse(data) {
 
 /**
  * Handle ACTApi license token issuance requests.
- * Accepts mode=issueLicense with sheetId, machineId, optional validityDays.
+ * Accepts mode=issueLicense with sheetId, machineId, optional validityDays,
+ * optional permanent (boolean). validityDays=0 is also treated as permanent.
  * Validates the customer's tier and status from master config,
  * constructs and signs a license token using HMAC-SHA256.
  *
@@ -792,7 +793,10 @@ function handleMigrationResponse(data) {
  * Cryptographic scheme matches ACTApi Security/LicenseValidator.cs
  * and tools/issue_license.py exactly.
  *
- * @param {Object} data - Request body: { mode:'issueLicense', sheetId, machineId, validityDays? }
+ * Token schema: ver=2 tokens; exp=0 means PERMANENT (never expires),
+ * exp>0 is a timed token. (The .NET validator also still accepts ver=1.)
+ *
+ * @param {Object} data - Request body: { mode:'issueLicense', sheetId, machineId, validityDays?, permanent? }
  * @returns {TextOutput} JSON response with token or error
  */
 function handleIssueLicense(data) {
@@ -834,12 +838,21 @@ function handleIssueLicense(data) {
     }
 
     // ── Build payload ──
+    // permanent can be a JSON boolean (true/false) or the string 'true';
+    // validityDays=0 is also treated as permanent for convenience.
+    var permanent = data.permanent === true || data.permanent === 'true' ||
+                    parseInt(data.validityDays, 10) === 0;
     var validityDays = parseInt(data.validityDays, 10) || 30;
-    if (validityDays < 1) validityDays = 1;
-    if (validityDays > 90) validityDays = 90;
+    if (permanent) {
+      validityDays = 0; // permanent tokens have no validity window
+    } else {
+      if (validityDays < 1) validityDays = 1;
+      if (validityDays > 90) validityDays = 90;
+    }
 
     var now = Math.floor(Date.now() / 1000);
-    var exp = now + validityDays * 86400;
+    // ver=2: exp=0 means PERMANENT (never expires); exp>0 is a timed token.
+    var exp = permanent ? 0 : now + validityDays * 86400;
     var jti = _randomHex(16);
 
     var payload = {
@@ -848,7 +861,7 @@ function handleIssueLicense(data) {
       iat: now,
       exp: exp,
       jti: jti,
-      ver: 1
+      ver: 2
     };
 
     // ── Sign ──
@@ -875,7 +888,8 @@ function handleIssueLicense(data) {
       token: token,
       machineId: data.machineId,
       tier: customer.tier,
-      expiresAt: new Date(exp * 1000).toISOString(),
+      permanent: permanent,
+      expiresAt: permanent ? null : new Date(exp * 1000).toISOString(),
       validDays: validityDays
     }, 200);
 
@@ -928,7 +942,8 @@ function _bytesToHex(bytes) {
  * @param {string} jti - The JWT ID for this issuance
  * @param {string} tier - The customer tier
  * @param {number} issuedAtEpoch - Issued-at timestamp (epoch seconds)
- * @param {number} expiresAtEpoch - Expiration timestamp (epoch seconds)
+ * @param {number} expiresAtEpoch - Expiration timestamp (epoch seconds);
+ *        0 denotes a PERMANENT token and is logged as 'permanent'
  */
 function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch) {
   try {
@@ -946,7 +961,7 @@ function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch
       jti,
       tier,
       new Date(issuedAtEpoch * 1000),
-      new Date(expiresAtEpoch * 1000),
+      expiresAtEpoch === 0 ? 'permanent' : new Date(expiresAtEpoch * 1000),
       'active'
     ]);
   } catch (e) {
