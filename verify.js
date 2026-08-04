@@ -1387,9 +1387,10 @@
     if (!driveUrl) return '';
     var match = driveUrl.match(/\/file\/d\/([^\/]+)/);
     if (match && match[1]) {
-      // Local mode (served from ACTApi): use photo proxy to avoid referrer blocking
-      if (CONFIG.ACTApiBase === '') {
-        return '/api/photo-proxy?id=' + match[1];
+      // Local kiosk mode: use ACTApi photo proxy to avoid referrer blocking.
+      // ACTApiBase is the full ACTApi URL (kiosk is served separately by LITEVM).
+      if (CONFIG.ACTApiBase) {
+        return CONFIG.ACTApiBase.replace(/\/+$/, '') + '/api/photo-proxy?id=' + match[1];
       }
       // Online mode: use direct Google Drive thumbnail (HTTPS)
       return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w400';

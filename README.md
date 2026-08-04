@@ -21,6 +21,17 @@ The frontend is deployed via GitHub Pages at:
 3. Set up the required script properties
 4. Deploy as Web App
 
+### Local Kiosk (Windows, LAN deployment)
+The local verify kiosk is served by LITEVM itself — **not** by ACTApi (ACTApi is API-only since 2026-08-04).
+
+1. Copy `config/config.local.js` → `config.local.js` (same folder as `verifylocal.html`) and fill in values
+2. Set `ACTApiBase` to the full ACTApi URL (e.g. `http://192.168.2.194:8021`)
+3. On the ACTApi side, set `CorsOrigins` in `Settings/Settings.json` to allow the kiosk origin (e.g. `http://localhost:8123`)
+4. Run `serve_local.bat` (double-click, or from cmd) — serves this folder at `http://localhost:8123/`
+5. Open `http://localhost:8123/verifylocal.html`
+
+Zero dependencies — uses PowerShell's built-in `HttpListener`, no Python/Node needed.
+
 > **Full installation guide:** See [`docs/INSTALL.md`](docs/INSTALL.md)
 
 ## Visitor Flow
