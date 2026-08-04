@@ -27,10 +27,10 @@ The local verify kiosk is served by LITEVM itself — **not** by ACTApi (ACTApi 
 1. Copy `config/config.local.js` → `config.local.js` (same folder as `verifylocal.html`) and fill in values
 2. Set `ACTApiBase` to the full ACTApi URL (e.g. `http://192.168.2.194:8021`)
 3. On the ACTApi side, set `CorsOrigins` in `Settings/Settings.json` to allow the kiosk origin (e.g. `http://localhost:8123`)
-4. Run `serve_local.bat` (double-click, or from cmd) — serves this folder at `http://localhost:8123/`
+4. Run `start_kiosk.bat` (double-click, or from cmd) — serves this folder at `http://localhost:8123/`
 5. Open `http://localhost:8123/verifylocal.html`
 
-Zero dependencies — uses PowerShell's built-in `HttpListener`, no Python/Node needed.
+Zero dependencies — `start_kiosk.bat` → `serve_local.ps1` (PowerShell's built-in `HttpListener`), no Python/Node needed.
 
 > **Full installation guide:** See [`docs/INSTALL.md`](docs/INSTALL.md)
 
