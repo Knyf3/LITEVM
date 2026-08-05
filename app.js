@@ -24,6 +24,11 @@
     destinationsError: null,
     destinationsAbort: null,
     fetchRetries: 0,
+    // Visitor Types
+    visitorTypes: [],
+    visitorTypesLoading: false,
+    visitorTypesError: null,
+    visitorTypesAbort: null,
   };
 
   // ──────────────────────────────────────────────
@@ -40,6 +45,7 @@
     setupFormValidation();
     updateContinueButton();
     fetchDestinations();
+    fetchVisitorTypes();
     showStep(1);
     App.render();
   }
@@ -248,6 +254,7 @@
     var idEl = document.getElementById('idNumber');
     var compEl = document.getElementById('company');
     var destEl = document.getElementById('destination');
+    var visitTypeEl = document.getElementById('visitorType');
     var visitDateEl = document.getElementById('visitationDate');
     var phoneEl = document.getElementById('phone');
     var emailEl = document.getElementById('email');
@@ -256,6 +263,7 @@
       idNumber: idEl ? idEl.value : '',
       company: compEl ? compEl.value : '',
       destination: destEl ? destEl.value : '',
+      visitorType: visitTypeEl ? visitTypeEl.value : '',
       visitationDate: visitDateEl ? visitDateEl.value : '',
       phone: phoneEl ? phoneEl.value : '',
       email: emailEl ? emailEl.value : '',
@@ -746,6 +754,100 @@
   }
 
   // ──────────────────────────────────────────────
+  // VISITOR TYPES FETCH
+  // ──────────────────────────────────────────────
+
+  function fetchVisitorTypes() {
+    var select = document.getElementById('visitorType');
+    if (!select) return;
+
+    // Abort previous request if any
+    if (state.visitorTypesAbort) {
+      state.visitorTypesAbort.abort();
+    }
+
+    state.visitorTypesLoading = true;
+    state.visitorTypesError = null;
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>' + App.t('placeholder-visitor-type-loading') + '</option>';
+
+    var controller = new AbortController();
+    state.visitorTypesAbort = controller;
+
+    var timeoutId = setTimeout(function () {
+      controller.abort();
+    }, 8000);
+
+    var fetchRetriesLocal = 0;
+
+    function doFetch() {
+      fetch(CONFIG.API_BASE + '?action=visitorTypes&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID), {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+      })
+      .then(function (response) {
+        clearTimeout(timeoutId);
+        if (!response.ok) throw new Error('Server responded with status ' + response.status);
+        return response.text();
+      })
+      .then(function (text) {
+        state.visitorTypesLoading = false;
+        state.visitorTypesAbort = null;
+
+        var parsed;
+        try { parsed = JSON.parse(text); } catch (e) { throw new Error('Invalid JSON response'); }
+
+        if (parsed.status !== 'ok') throw new Error(parsed.message || 'Failed to load visitor types');
+
+        var types = parsed.types || [];
+
+        state.visitorTypes = types;
+
+        if (types.length === 0) {
+          state.visitorTypesError = 'No visitor types configured';
+          select.disabled = true;
+          select.innerHTML = '<option value="" disabled selected>' + App.t('no-visitor-types') + '</option>';
+          return;
+        }
+
+        // Populate select — first value is default (selected)
+        select.disabled = false;
+        var html = '';
+        for (var j = 0; j < types.length; j++) {
+          var escaped = types[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          var selected = j === 0 ? ' selected' : '';
+          html += '<option value="' + escaped + '"' + selected + '>' + escaped + '</option>';
+        }
+        select.innerHTML = html;
+
+        updateContinueButton();
+      })
+      .catch(function (err) {
+        clearTimeout(timeoutId);
+        state.visitorTypesLoading = false;
+        state.visitorTypesAbort = null;
+
+        if (err.name === 'AbortError') return;
+
+        fetchRetriesLocal++;
+        state.visitorTypesError = err.message || 'Failed to load visitor types';
+
+        if (fetchRetriesLocal < 3) {
+          select.innerHTML = '<option value="" disabled selected>' + App.t('retrying-destinations') + ' (' + fetchRetriesLocal + '/3)</option>';
+          setTimeout(doFetch, 1500);
+        } else {
+          select.disabled = true;
+          select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
+          updateContinueButton();
+        }
+      });
+    }
+
+    doFetch();
+  }
+
+  // ──────────────────────────────────────────────
   // STEP 2 CONTINUE BUTTON
   // ──────────────────────────────────────────────
   function updateStep2Continue() {
@@ -776,6 +878,7 @@
     document.getElementById('review-id').textContent = data.idNumber || '—';
     document.getElementById('review-company').textContent = data.company || '—';
     document.getElementById('review-destination').textContent = data.destination || '—';
+    document.getElementById('review-visitor-type').textContent = data.visitorType || '—';
     document.getElementById('review-visitation-date').textContent = data.visitationDate || '—';
     document.getElementById('review-phone').textContent = data.phone || '—';
     document.getElementById('review-email').textContent = data.email || '—';
@@ -840,6 +943,7 @@
       idNumber: data.idNumber.trim(),
       company: data.company.trim(),
       destination: data.destination.trim(),
+      visitorType: data.visitorType.trim(),
       visitationDate: data.visitationDate.trim(),
       phone: data.phone.trim(),
       email: data.email.trim(),

@@ -354,6 +354,8 @@
     $('#result-id').textContent = v.idNumber || '—';
     $('#result-company').textContent = v.company || '—';
     $('#result-visitation-date').textContent = v.visitationDate || '—';
+    $('#result-destination').textContent = v.destination || '—';
+    $('#result-visitor-type').textContent = v.visitorType || '—';
     $('#result-phone').textContent = v.phone || '—';
 
     // Card number for checked-in visitors
@@ -885,6 +887,7 @@
         html += '      </div>';
         html += '      <span class="today-name">' + escHtml(v.fullName || '') + '</span>';
         html += '      <span class="today-company">' + escHtml(v.company || '') + '</span>';
+        html += '      <span class="today-company">' + escHtml(v.destination || '') + ' · ' + escHtml(v.visitorType || '') + '</span>';
         html += '    </div>';
 
         html += '  </div>'; // close today-card-row

@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.9.2';  // Increment this to track deployed versions
+var CODE_VERSION = '1.10.0';  // Increment this to track deployed versions
 
 // ──────────────────────────────────────────────
 // LICENSE ENFORCEMENT — HMAC SECRET CACHE
@@ -331,7 +331,7 @@ function getDailyVisitorCount_(sheetId) {
 
     var count = 0;
     for (var i = 1; i < data.length; i++) {
-      var cell = data[i][5]; // Col F = Visitation Date (index 5)
+      var cell = data[i][6]; // Col G = Visitation Date (index 6, after Visitor Type insert)
       var dateStr = '';
       if (cell instanceof Date && !isNaN(cell.getTime())) {
         dateStr = Utilities.formatDate(cell, timeZone, 'yyyy-MM-dd');
@@ -592,6 +592,10 @@ function doGet(e) {
 
       if (action === 'destinations') {
         return handleDestinations(sheetId);
+      }
+
+      if (action === 'visitorTypes') {
+        return handleVisitorTypes(sheetId);
       }
 
       if (action === 'cardpool') {
@@ -976,7 +980,7 @@ function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch
 
 function handleRegistration(data, visitorLimit) {
   // Validate required fields
-  var required = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
+  var required = ['fullName', 'idNumber', 'company', 'destination', 'visitorType', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
       return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
@@ -988,6 +992,7 @@ function handleRegistration(data, visitorLimit) {
   var idNumber = sanitizeText(data.idNumber);
   var company = sanitizeText(data.company);
   var destination = sanitizeText(data.destination);
+  var visitorType = sanitizeText(data.visitorType);
   var visitationDate = sanitizeText(data.visitationDate);
   var phone = sanitizePhone(data.phone);
   var email = sanitizeText(data.email);
@@ -1010,20 +1015,21 @@ function handleRegistration(data, visitorLimit) {
     idNumber,              // 2 ID / Passport Number
     company,               // 3 Company Name
     destination,           // 4 Destination
-    visitationDate,        // 5 Visitation Date (NEW)
-    phone,                 // 6 Hand Phone (was 5)
-    email,                 // 7 Email (was 6)
-    idPhotoUrl,            // 8 ID Photo (was 7)
-    selfieUrl,             // 9 Selfie (was 8)
-    visitorNumber,         // 10 Visitor # (was 9)
-    'Pending Entry',       // 11 Status (was 10)
-    '',                    // 12 Sign-In Time (NEW, empty)
-    '',                    // 13 Sign-Out Time (NEW, empty)
+    visitorType,           // 5 Visitor Type (NEW)
+    visitationDate,        // 6 Visitation Date
+    phone,                 // 7 Hand Phone
+    email,                 // 8 Email
+    idPhotoUrl,            // 9 ID Photo
+    selfieUrl,             // 10 Selfie
+    visitorNumber,         // 11 Visitor #
+    'Pending Entry',       // 12 Status
+    '',                    // 13 Sign-In Time
+    '',                    // 14 Sign-Out Time
   ]);
 
   // Send email confirmation (non-blocking — catch errors)
   try {
-    sendEmailConfirmation(email, visitorNumber, fullName);
+    sendEmailConfirmation(email, visitorNumber, fullName, visitorType);
   } catch (emailErr) {
     console.warn('Email notification failed: ' + emailErr.message);
   }
@@ -1123,13 +1129,13 @@ function handleLookup(visitorNumber, sheetId) {
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
   // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
-  //          4=Destination, 5=Visitation Date, 6=Phone, 7=Email,
-  //          8=ID Photo URL, 9=Selfie URL, 10=Visitor Number,
-  //          11=Status, 12=Sign-In Time, 13=Sign-Out Time
+  //          4=Destination, 5=Visitor Type, 6=Visitation Date, 7=Phone, 8=Email,
+  //          9=ID Photo URL, 10=Selfie URL, 11=Visitor Number,
+  //          12=Status, 13=Sign-In Time, 14=Sign-Out Time
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[10] || '').trim();
+    var vn = String(row[11] || '').trim();
 
     if (vn === visitorNumber.trim()) {
       var ts = row[0];
@@ -1140,7 +1146,7 @@ function handleLookup(visitorNumber, sheetId) {
         registrationTime = String(ts);
       }
 
-      var status = String(row[11] || 'Pending Entry');
+      var status = String(row[12] || 'Pending Entry');
 
       var visitor = {
         visitorNumber: vn,
@@ -1148,15 +1154,16 @@ function handleLookup(visitorNumber, sheetId) {
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: getDateString_(row[5]),
-        phone: String(row[6] || ''),
-        email: String(row[7] || ''),
-        idPhotoUrl: String(row[8] || ''),
-        selfieUrl: String(row[9] || ''),
+        visitorType: String(row[5] || ''),
+        visitationDate: getDateString_(row[6]),
+        phone: String(row[7] || ''),
+        email: String(row[8] || ''),
+        idPhotoUrl: String(row[9] || ''),
+        selfieUrl: String(row[10] || ''),
         status: status,
         registrationTime: registrationTime,
-        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
       };
 
       if (status === 'Checked In') {
@@ -1192,28 +1199,29 @@ function handleTodayVisitors(sheetId) {
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var visitDateStr = getDateString_(row[5]);
+    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date (shifted by Visitor Type)
 
-    // Filter by Visitation Date (col 5) matching today
+    // Filter by Visitation Date matching today
     if (visitDateStr === todayStr) {
       var ts = row[0];
-      var status = String(row[11] || 'Pending Entry');
-      var vn = String(row[10] || '');
+      var status = String(row[12] || 'Pending Entry');
+      var vn = String(row[11] || '');
       var visitor = {
         visitorNumber: vn,
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: getDateString_(row[5]),
-        phone: String(row[6] || ''),
-        email: String(row[7] || ''),
-        idPhotoUrl: String(row[8] || ''),
-        selfieUrl: String(row[9] || ''),
+        visitorType: String(row[5] || ''),
+        visitationDate: visitDateStr,
+        phone: String(row[7] || ''),
+        email: String(row[8] || ''),
+        idPhotoUrl: String(row[9] || ''),
+        selfieUrl: String(row[10] || ''),
         status: status,
         registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
       };
       if (status === 'Checked In') {
         visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
@@ -1243,18 +1251,19 @@ function handleReport(data, sheetId) {
   var pendingCount = 0;
   var checkedInCount = 0;
   var signedOutCount = 0;
+  var typeSummary = {}; // { 'Guest': 5, '—': 3 }
 
   for (var i = 1; i < allData.length; i++) {
     var row = allData[i];
-    var visitDateStr = getDateString_(row[5]);
+    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date
 
     // Apply date range filter
     if (fromDate && visitDateStr < fromDate) continue;
     if (toDate && visitDateStr > toDate) continue;
 
     var ts = row[0];
-    var status = String(row[11] || 'Pending Entry');
-    var vn = String(row[10] || '');
+    var status = String(row[12] || 'Pending Entry');
+    var vn = String(row[11] || '');
 
     var visitor = {
       visitorNumber: vn,
@@ -1262,13 +1271,14 @@ function handleReport(data, sheetId) {
       idNumber: String(row[2] || ''),
       company: String(row[3] || ''),
       destination: String(row[4] || ''),
+      visitorType: String(row[5] || ''),
       visitationDate: visitDateStr,
-      phone: String(row[6] || ''),
-      email: String(row[7] || ''),
+      phone: String(row[7] || ''),
+      email: String(row[8] || ''),
       status: status,
       registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-      signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-      signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+      signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+      signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
     };
 
     if (status === 'Pending Entry' || status === 'Pending') {
@@ -1278,6 +1288,10 @@ function handleReport(data, sheetId) {
     } else if (status === 'Signed Out') {
       signedOutCount++;
     }
+
+    // Per-type summary
+    var typeKey = visitor.visitorType || '—';
+    typeSummary[typeKey] = (typeSummary[typeKey] || 0) + 1;
 
     visitors.push(visitor);
   }
@@ -1291,6 +1305,7 @@ function handleReport(data, sheetId) {
       pending: pendingCount,
       checkedIn: checkedInCount,
       signedOut: signedOutCount,
+      byType: typeSummary,
     },
   }, 200);
 }
@@ -1338,6 +1353,52 @@ function handleDestinations(sheetId) {
     headers: headers,
     destinations: destinations,
     count: destinations.length,
+  }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Visitor Types (from VisitorType tab)
+// ──────────────────────────────────────────────
+
+function handleVisitorTypes(sheetId) {
+  if (!sheetId) {
+    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  }
+  if (!sheetId) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('VisitorType');
+
+  if (!sheet) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 1) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  // Detect if first row is a header: if A1 matches /visitor\s*type/i, skip it
+  var startRow = 0;
+  var firstCell = String(data[0][0] || '').trim();
+  if (data.length >= 1 && /^visitor\s*type$/i.test(firstCell)) {
+    startRow = 1;
+  }
+
+  var types = [];
+  for (var i = startRow; i < data.length; i++) {
+    var val = String(data[i][0] || '').trim();
+    if (val.length > 0) {
+      types.push(val);
+    }
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    types: types,
+    count: types.length,
   }, 200);
 }
 
@@ -1467,10 +1528,10 @@ function handleStatusUpdate(data) {
 
   try {
     for (var i = 1; i < values.length; i++) {
-      var vn = String(values[i][10] || '').trim();
+      var vn = String(values[i][11] || '').trim();
 
       if (vn === visitorNumber.trim()) {
-        var currentStatus = String(values[i][11] || '').trim();
+        var currentStatus = String(values[i][12] || '').trim();
 
         // ── SIGNED OUT PATH ──
         if (newStatus === 'Signed Out') {
@@ -1481,9 +1542,9 @@ function handleStatusUpdate(data) {
             return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
           }
 
-          // Write Sign-Out: Status to col 12, Sign-Out Time to col 14
-          sheet.getRange(i + 1, 12).setValue('Signed Out');
-          sheet.getRange(i + 1, 14).setValue(new Date());
+          // Write Sign-Out: Status to col 13, Sign-Out Time to col 15
+          sheet.getRange(i + 1, 13).setValue('Signed Out');
+          sheet.getRange(i + 1, 15).setValue(new Date());
 
           // Release card immediately on sign-out
           var releasedCard = false;
@@ -1511,12 +1572,12 @@ function handleStatusUpdate(data) {
           return jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
         }
 
-        // Update Status column (col 12 = index 11)
-        sheet.getRange(i + 1, 12).setValue(newStatus);
-        // Update Sign-In Time column (col 13 = index 12)
-        sheet.getRange(i + 1, 13).setValue(new Date());
-        // Clear any old Sign-Out Time on check-in re-entry (col 14 = index 13)
-        sheet.getRange(i + 1, 14).setValue('');
+        // Update Status column (col 13 = index 12)
+        sheet.getRange(i + 1, 13).setValue(newStatus);
+        // Update Sign-In Time column (col 14 = index 13)
+        sheet.getRange(i + 1, 14).setValue(new Date());
+        // Clear any old Sign-Out Time on check-in re-entry (col 15 = index 14)
+        sheet.getRange(i + 1, 15).setValue('');
 
         var result = {
           status: 'ok',
@@ -1528,7 +1589,7 @@ function handleStatusUpdate(data) {
         if (newStatus === 'Checked In') {
           var fullName = String(values[i][1] || '').trim();
           var destination = String(values[i][4] || '').trim();
-          var email = String(values[i][7] || '').trim();
+          var email = String(values[i][8] || '').trim(); // EMAIL FIX: was [7], now [8] (shifted by Visitor Type)
 
           try {
             var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
@@ -1632,22 +1693,7 @@ function setupSheet(sheet) {
   // Only set up headers if the sheet is empty
   if (sheet.getLastRow() > 0) return;
 
-  var headers = [
-    'Timestamp',
-    'Full Name',
-    'ID / Passport Number',
-    'Company Name',
-    'Destination',
-    'Visitation Date',
-    'Hand Phone',
-    'Email',
-    'ID Photo (Drive URL)',
-    'Selfie (Drive URL)',
-    'Visitor Number',
-    'Status',
-    'Sign-In Time',
-    'Sign-Out Time'
-  ];
+  var headers = VISITORLOG_HEADERS;
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
@@ -1772,7 +1818,7 @@ function generateVisitorNumber() {
  * Send email confirmation via MailApp.sendEmail().
  * MailApp is a built-in Apps Script service — no setup, no tokens needed.
  */
-function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
+function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType) {
   var subject = 'LITEVM — Visitor Registration Confirmation';
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(visitorNumber);
 
@@ -1801,6 +1847,7 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
     // Details
     + '<div style="margin-top:24px;padding:16px;background:#F8FAFC;border-radius:10px;text-align:left;">'
     + '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Name:</strong> ' + escapeHtml(fullName) + '</p>'
+    + (visitorType ? '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Visitor Type:</strong> ' + escapeHtml(visitorType) + '</p>' : '')
     + '<p style="font-size:14px;color:#1E293B;margin:0;">Please show this QR code at the guard house for entry.</p>'
     + '</div>'
 
@@ -2191,11 +2238,11 @@ function handleBulkSignOut(data) {
         var found = false;
 
         for (var i = 1; i < values.length; i++) {
-          var rowVn = String(values[i][10] || '').trim();
+          var rowVn = String(values[i][11] || '').trim();
           if (rowVn !== vn) continue;
 
           found = true;
-          var currentStatus = String(values[i][11] || '').trim();
+          var currentStatus = String(values[i][12] || '').trim();
 
           // Stale checkbox protection
           if (currentStatus === 'Signed Out') {
@@ -2210,8 +2257,8 @@ function handleBulkSignOut(data) {
           }
 
           // Write Signed Out status + timestamp
-          sheet.getRange(i + 1, 12).setValue('Signed Out');
-          sheet.getRange(i + 1, 14).setValue(new Date());
+          sheet.getRange(i + 1, 13).setValue('Signed Out');
+          sheet.getRange(i + 1, 15).setValue(new Date());
 
           // Release card
           var cardReleased = releaseCardForVisitor(vn, sheetId);
@@ -2377,13 +2424,13 @@ function autoSignOut() {
 
       var data = sheet.getDataRange().getValues();
       for (var i = 1; i < data.length; i++) {
-        var status = String(data[i][11] || '').trim(); // col 11 = Status
+        var status = String(data[i][12] || '').trim(); // col 12 = Status
         if (status === 'Checked In') {
-          var visitorNumber = String(data[i][10] || '').trim(); // col 10 = Visitor#
+          var visitorNumber = String(data[i][11] || '').trim(); // col 11 = Visitor#
           if (visitorNumber) {
             // Write Signed Out status + timestamp
-            sheet.getRange(i + 1, 12).setValue('Signed Out');  // col 12 = Status (1-indexed)
-            sheet.getRange(i + 1, 14).setValue(new Date());    // col 14 = Sign-Out Time
+            sheet.getRange(i + 1, 13).setValue('Signed Out');  // col 13 = Status (1-indexed)
+            sheet.getRange(i + 1, 15).setValue(new Date());    // col 15 = Sign-Out Time
             // Release card
             releaseCardForVisitor(visitorNumber, sheetId);
             console.log('autoSignOut: Signed out ' + visitorNumber + ' from sheet ' + sheetId);
@@ -2713,7 +2760,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = '_version!A1';
-var LATEST_SHEET_VERSION = 5;
+var LATEST_SHEET_VERSION = 6;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -2914,6 +2961,55 @@ var MIGRATION_REGISTRY = [
       console.log('Migration V5: Complete');
     }
   },
+  {
+    version: 6,
+    name: 'Add Visitor Type column + VisitorType tab',
+    destructive: false,
+    description: 'Inserts Visitor Type column after Destination in VisitorLog, creates VisitorType tab',
+    fn: function(ss) {
+      console.log('Migration V6: Adding Visitor Type column and VisitorType tab');
+
+      var sheet = ss.getSheetByName('VisitorLog');
+      if (!sheet) {
+        console.log('Migration V6: VisitorLog not found — skipping column insert');
+      } else {
+        // Idempotency guard: read headers
+        var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        var hasVisitorType = false;
+        for (var h = 0; h < headers.length; h++) {
+          if (/visitor\s*type/i.test(String(headers[h] || ''))) {
+            hasVisitorType = true;
+            break;
+          }
+        }
+        if (hasVisitorType || headers.length >= 15) {
+          console.log('Migration V6: Visitor Type column already present — skipping');
+        } else {
+          // Insert column after Destination (col 5 = index 4, 1-indexed col 5)
+          sheet.insertColumnAfter(4);
+          sheet.getRange(1, 5).setValue('Visitor Type');
+          sheet.getRange(1, 5).setFontWeight('bold');
+          sheet.autoResizeColumn(5);
+          console.log('Migration V6: Inserted Visitor Type column at col 5');
+        }
+      }
+
+      // Create VisitorType tab if missing
+      var vtSheet = ss.getSheetByName('VisitorType');
+      if (!vtSheet) {
+        vtSheet = ss.insertSheet('VisitorType');
+        vtSheet.getRange(1, 1).setValue('Visitor Type');
+        vtSheet.getRange(1, 1).setFontWeight('bold');
+        vtSheet.setFrozenRows(1);
+        vtSheet.autoResizeColumn(1);
+        console.log('Migration V6: Created VisitorType tab');
+      } else {
+        console.log('Migration V6: VisitorType tab already exists — skipping');
+      }
+
+      console.log('Migration V6: Complete');
+    }
+  },
 ];
 
 /**
@@ -2955,35 +3051,44 @@ function setSheetVersion_(ss, version) {
  * @returns {Object} { status, fromVersion, toVersion, migrationsRun, error? }
  */
 function handleMigration(sheetId) {
-  var ss = SpreadsheetApp.openById(sheetId);
-  var fromVersion = getSheetVersion_(ss);
-  var migrationsRun = [];
-
-  for (var i = 0; i < MIGRATION_REGISTRY.length; i++) {
-    var mig = MIGRATION_REGISTRY[i];
-    if (mig.version > fromVersion) {
-      try {
-        mig.fn(ss);
-        setSheetVersion_(ss, mig.version);
-        migrationsRun.push(mig.name + ' (v' + mig.version + ')');
-        console.log('Migration v' + mig.version + ' (' + mig.name + ') completed successfully');
-      } catch (e) {
-        console.error('Migration v' + mig.version + ' failed: ' + e.message);
-        return {
-          status: 'error',
-          error: 'Migration v' + mig.version + ' (' + mig.name + ') failed: ' + e.message,
-          fromVersion: fromVersion,
-          toVersion: mig.version - 1,
-          migrationsRun: migrationsRun
-        };
-      }
-    }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return { status: 'error', error: 'Could not acquire migration lock — another migration may be in progress' };
   }
 
-  return {
-    status: 'ok',
-    fromVersion: fromVersion,
-    toVersion: LATEST_SHEET_VERSION,
-    migrationsRun: migrationsRun
-  };
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var fromVersion = getSheetVersion_(ss);
+    var migrationsRun = [];
+
+    for (var i = 0; i < MIGRATION_REGISTRY.length; i++) {
+      var mig = MIGRATION_REGISTRY[i];
+      if (mig.version > fromVersion) {
+        try {
+          mig.fn(ss);
+          setSheetVersion_(ss, mig.version);
+          migrationsRun.push(mig.name + ' (v' + mig.version + ')');
+          console.log('Migration v' + mig.version + ' (' + mig.name + ') completed successfully');
+        } catch (e) {
+          console.error('Migration v' + mig.version + ' failed: ' + e.message);
+          return {
+            status: 'error',
+            error: 'Migration v' + mig.version + ' (' + mig.name + ') failed: ' + e.message,
+            fromVersion: fromVersion,
+            toVersion: mig.version - 1,
+            migrationsRun: migrationsRun
+          };
+        }
+      }
+    }
+
+    return {
+      status: 'ok',
+      fromVersion: fromVersion,
+      toVersion: LATEST_SHEET_VERSION,
+      migrationsRun: migrationsRun
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }

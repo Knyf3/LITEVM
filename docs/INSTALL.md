@@ -1,6 +1,6 @@
 # LITEVM — Complete Installation Guide
 
-**Version:** 1.9.1
+**Version:** 1.10.0
 
 A lightweight, mobile-first visitor pre-registration system with guard verification portal, card assignment, and auto sign-out. Built on Google Sheets, Google Apps Script, and GitHub Pages.
 
@@ -72,7 +72,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 1. Click **Deploy** → **New deployment**
 2. Select **Web app** as deployment type
-3. **Description**: `LITEVM v1.9.1`
+3. **Description**: `LITEVM v1.10.0`
 4. **Execute as**: `Me`
 5. **Who has access**: `Anyone`
 6. Click **Deploy**
@@ -84,7 +84,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 ```bash
 curl -sL "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?mode=health"
-# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.9.1"}
+# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.10.0"}
 ```
 
 ### 1E. Install Auto Sign-Out Trigger (one-time)
@@ -193,11 +193,12 @@ The template will have these tabs after migration:
 
 | Tab | Purpose | Headers |
 |-----|---------|---------|
-| **VisitorLog** | Registration data (14 columns) | Timestamp, Full Name, ID/Passport, Company, Destination, Hand Phone, Email, ID Photo (Drive URL), Selfie (Drive URL), Visitor Number, Status, Action Time, Visitation Date, Sign-Out Time |
-| **cardno** | Physical card pool | CardNo, Status, AssignedTo, AssignedAt |
-| **Destination** | Destination/access mapping | Destination, Access Level, DoorGroupID |
-| **Settings** | Per-sheet configuration | Setting, Value (autoSignOutEnabled=TRUE, autoSignOutHour=21, guardPin=1234) |
-| **\_version** | Hidden — migration version tracking | A1: SHEET_VERSION=5 |
+|| **VisitorLog** | Registration data (15 columns) | Timestamp, Full Name, ID/Passport, Company, Destination, Visitor Type, Visitation Date, Hand Phone, Email, ID Photo (Drive URL), Selfie (Drive URL), Visitor Number, Status, Sign-In Time, Sign-Out Time |
+|| **cardno** | Physical card pool | CardNo, Status, AssignedTo, AssignedAt |
+|| **Destination** | Destination/access mapping | Destination, Access Level, DoorGroupID |
+|| **VisitorType** | Visitor type options | Visitor Type (single column) |
+|| **Settings** | Per-sheet configuration | Setting, Value (autoSignOutEnabled=TRUE, autoSignOutHour=21, guardPin=1234) |
+|| **\\_version** | Hidden — migration version tracking | A1: SHEET_VERSION=6 |
 
 ### 3C. Populate Destinations (per customer)
 
@@ -405,6 +406,7 @@ curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec
 | v3 | DoorGroupID | Adds DoorGroupID column to Destination tab |
 | v4 | Settings tab | Creates Settings tab with auto sign-out defaults |
 | v5 | Hidden version sheet | Moves SHEET_VERSION marker from VisitorLog!A1000 to hidden _version sheet |
+| v6 | Visitor Type column + tab | Adds Visitor Type column after Destination in VisitorLog, creates VisitorType tab |
 
 > **Important:** Always run migration per-customer. No bulk migration to prevent cascading failures.
 

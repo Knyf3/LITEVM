@@ -200,6 +200,11 @@
       filterResults();
     });
 
+    // Type filter
+    $('type-filter').addEventListener('change', function () {
+      filterResults();
+    });
+
     // Pagination
     $('prev-page').addEventListener('click', function () {
       if (state.currentPage > 1) {
@@ -264,9 +269,27 @@
     state.filteredData = state.allData;
     state.currentPage = 1;
     updateSummary(data.summary);
+    populateTypeFilter();
     renderTable();
     $('csv-btn').disabled = state.allData.length === 0;
     $('print-btn').disabled = state.allData.length === 0;
+  }
+
+  function populateTypeFilter() {
+    var typeFilter = $('type-filter');
+    if (!typeFilter) return;
+    var types = {};
+    state.allData.forEach(function (v) {
+      var vt = v.visitorType || '—';
+      types[vt] = (types[vt] || 0) + 1;
+    });
+    var html = '<option value="">All Types</option>';
+    var keys = Object.keys(types).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      html += '<option value="' + escHtml(k) + '">' + escHtml(k) + ' (' + types[k] + ')</option>';
+    }
+    typeFilter.innerHTML = html;
   }
 
   function updateSummary(summary) {
@@ -293,6 +316,18 @@
       summary.pending + ' Pending · ' +
       summary.signedOut + ' Signed Out · ' +
       dateRange;
+
+    // Add per-type breakdown
+    if (summary.byType) {
+      var typeKeys = Object.keys(summary.byType).sort();
+      var typeParts = [];
+      for (var t = 0; t < typeKeys.length; t++) {
+        typeParts.push(typeKeys[t] + ': ' + summary.byType[typeKeys[t]]);
+      }
+      if (typeParts.length > 0) {
+        text += ' · ' + typeParts.join(', ');
+      }
+    }
 
     $('summary-text').textContent = text;
     $('summary-bar').classList.remove('hidden');
@@ -348,6 +383,7 @@
         '<td>' + escHtml(v.fullName) + '</td>' +
         '<td>' + escHtml(v.company) + '</td>' +
         '<td>' + escHtml(v.destination) + '</td>' +
+        '<td>' + escHtml(v.visitorType || '—') + '</td>' +
         '<td>' + escHtml(v.visitationDate) + '</td>' +
         '<td><span class="' + badgeClass + '">' + escHtml(v.status) + '</span></td>' +
         '<td>' + escHtml(v.signInTime || '—') + '</td>' +
@@ -361,6 +397,7 @@
         '<div class="rc-row"><span class="rc-label">Name</span><span class="rc-value">' + escHtml(v.fullName) + '</span></div>' +
         '<div class="rc-row"><span class="rc-label">Company</span><span class="rc-value">' + escHtml(v.company) + '</span></div>' +
         '<div class="rc-row"><span class="rc-label">Destination</span><span class="rc-value">' + escHtml(v.destination) + '</span></div>' +
+        '<div class="rc-row"><span class="rc-label">Visitor Type</span><span class="rc-value">' + escHtml(v.visitorType || '—') + '</span></div>' +
         '<div class="rc-row"><span class="rc-label">Date</span><span class="rc-value">' + escHtml(v.visitationDate) + '</span></div>' +
         '<div class="rc-row"><span class="rc-label">Status</span><span class="rc-value" style="color:' + statusBadgeColor + ';font-weight:600">' + escHtml(v.status) + '</span></div>' +
         '<div class="rc-row"><span class="rc-label">Sign-In</span><span class="rc-value">' + escHtml(v.signInTime || '—') + '</span></div>' +
@@ -385,11 +422,16 @@
   function filterResults() {
     var query = $('report-search').value.trim().toLowerCase();
     var statusFilter = $('status-filter').value;
+    var typeFilter = $('type-filter').value;
 
     state.filteredData = state.allData.filter(function (v) {
       if (statusFilter && v.status !== statusFilter) return false;
+      if (typeFilter) {
+        var vt = v.visitorType || '—';
+        if (vt !== typeFilter) return false;
+      }
       if (query) {
-        var text = (v.fullName + ' ' + v.company + ' ' + v.visitorNumber + ' ' + v.destination).toLowerCase();
+        var text = (v.fullName + ' ' + v.company + ' ' + v.visitorNumber + ' ' + v.destination + ' ' + (v.visitorType || '')).toLowerCase();
         return text.indexOf(query) >= 0;
       }
       return true;
@@ -406,12 +448,12 @@
     var data = state.filteredData;
     if (data.length === 0) return;
 
-    var headers = ['Visitor #', 'Full Name', 'ID Number', 'Company', 'Destination', 'Visitation Date', 'Phone', 'Email', 'Status', 'Sign-In', 'Sign-Out'];
+    var headers = ['Visitor #', 'Full Name', 'ID Number', 'Company', 'Destination', 'Visitor Type', 'Visitation Date', 'Phone', 'Email', 'Status', 'Sign-In', 'Sign-Out'];
 
     var rows = data.map(function (v) {
       return [
         v.visitorNumber, v.fullName, v.idNumber, v.company, v.destination,
-        v.visitationDate, v.phone, v.email, v.status, v.signInTime || '', v.signOutTime || '',
+        v.visitorType || '', v.visitationDate, v.phone, v.email, v.status, v.signInTime || '', v.signOutTime || '',
       ].map(csvCell).join(',');
     });
 
