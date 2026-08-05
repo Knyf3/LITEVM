@@ -55,6 +55,24 @@ function _getHmacSecret() {
 // ──────────────────────────────────────────────
 var _masterConfig = null;
 
+// ──────────────────────────────────────────────
+// Per-request spreadsheet cache — guarantees at most ONE
+// SpreadsheetApp.openById per sheetId per request.  Lookup path
+// (handleLookup → getOrCreateSheet → getCardNumberForVisitor)
+// previously opened the same sheet 2-3×, each costing 2-10s on a
+// cold container.  Now every helper reuses the same Spreadsheet
+// object via _openSheetCached.
+// ──────────────────────────────────────────────
+var _ssCache = {};
+
+function _openSheetCached(sheetId) {
+  if (!sheetId) throw new Error('Missing sheetId');
+  if (!_ssCache[sheetId]) {
+    _ssCache[sheetId] = SpreadsheetApp.openById(sheetId);
+  }
+  return _ssCache[sheetId];
+}
+
 /**
  * Open the master config Google Sheet by its ID stored in Script Properties.
  * The MASTER_CONFIG_ID property is set once and never exposed to the frontend.
@@ -1054,7 +1072,7 @@ function handleRegistration(data, visitorLimit) {
 function getCardNumberForVisitor(visitorNumber, sheetId) {
   if (!visitorNumber || !sheetId) return '';
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    var ss = _openSheetCached(sheetId);
     var cardSheet = ss.getSheetByName('cardno');
     if (!cardSheet) return '';
     var data = cardSheet.getDataRange().getValues();
@@ -1080,7 +1098,7 @@ function handleLookupByCard(cardNo, sheetId) {
   }
   
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    var ss = _openSheetCached(sheetId);
     
     // Step 1: Find visitor number from cardno sheet
     var cardSheet = ss.getSheetByName('cardno');
@@ -1658,7 +1676,7 @@ function getOrCreateSheet(sheetId) {
 
   var ss;
   try {
-    ss = SpreadsheetApp.openById(sheetId);
+    ss = _openSheetCached(sheetId);
   } catch (e) {
     throw new Error('Cannot open sheet: ' + sheetId + '. Verify the sheet exists and is shared with the Web App owner. Error: ' + e.message);
   }

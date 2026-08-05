@@ -78,7 +78,7 @@
       <p id="search-hint" class="search-hint" data-i18n="search-hint">Enter a visitor number (e.g. V-20250622-001)</p>
     </div>
 
-    <!-- Lookup Result Section (data-state: empty | loading | found | notfound | verified | rejected | signedout) -->
+    <!-- Lookup Result Section (data-state: empty | loading | found | notfound | timeout | verified | rejected | signedout) -->
     <div id="lookup-result-section" class="lookup-result-section" data-state="empty">
 
       <!-- LOADING STATE -->
@@ -211,6 +211,22 @@
           <p class="not-found-message" id="not-found-message" data-i18n="not-found-message">No registration found for this number.</p>
           <p class="not-found-hint" id="not-found-hint" data-i18n="not-found-hint">Please check the number and try again.</p>
           <button class="btn-secondary" onclick="App.resetSearch()"><span data-i18n="btn-try-again">Try Again</span></button>
+        </div>
+      </div>
+
+      <!-- TIMEOUT STATE -->
+      <div id="result-timeout" class="result-state">
+        <div class="card not-found-card">
+          <div class="not-found-icon">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#e63946" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </div>
+          <h3 class="not-found-title" data-i18n="search-timed-out">Search timed out</h3>
+          <p class="not-found-message" id="timeout-message" data-i18n="search-timed-out-message">Taking longer than usual. The visitor may still be loading — try again.</p>
+          <p class="not-found-hint" id="timeout-hint" data-i18n="search-timed-out-hint">The system may be waking up from idle. Please try the search again.</p>
+          <button class="btn-secondary" onclick="App.lookup()"><span data-i18n="btn-retry-search">Retry</span></button>
         </div>
       </div>
 

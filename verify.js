@@ -212,10 +212,8 @@
     var timeoutId = setTimeout(function () {
       controller.abort();
       state.actionInProgress = false;
-      setResultState('notfound');
-      $('#not-found-message').textContent = App.t('request-timed-out');
-      $('#not-found-hint').textContent = App.t('make-sure-connection');
-    }, CONFIG.TIMEOUT_MS || 10000);
+      setResultState('timeout');
+    }, 60000);
 
     fetch(url, {
       method: 'GET',
@@ -269,7 +267,7 @@
     fetch(url, {
       method: 'GET',
       redirect: 'follow',
-      signal: AbortSignal.timeout(CONFIG.TIMEOUT_MS || 10000),
+      signal: AbortSignal.timeout(60000),
     })
     .then(function (res) { return res.text(); })
     .then(function (text) {
@@ -291,7 +289,10 @@
     })
     .catch(function (err) {
       state.actionInProgress = false;
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError') {
+        setResultState('timeout');
+        return;
+      }
       setResultState('notfound');
       $('#not-found-message').textContent = App.t('network-error');
       $('#not-found-hint').textContent = App.t('tap-try-again-retry');
@@ -448,6 +449,7 @@
       loading: 'result-loading',
       found: 'result-found',
       notfound: 'result-notfound',
+      timeout: 'result-timeout',
       verified: 'result-verified',
       rejected: 'result-rejected',
       signedout: 'result-signedout',

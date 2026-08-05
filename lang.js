@@ -188,6 +188,11 @@
       'unexpected-server-response': 'Unexpected server response. Please try again.',
       'network-error': 'Network error. Please check your connection.',
       'tap-try-again-retry': 'Tap "Try Again" to retry.',
+      // Search timeout
+      'search-timed-out': 'Search timed out',
+      'search-timed-out-message': 'Taking longer than usual. The visitor may still be loading — try again.',
+      'search-timed-out-hint': 'The system may be waking up from idle. Please try the search again.',
+      'btn-retry-search': 'Retry',
       // Success states
       'checkin-successful': 'Check-In Successful!',
       'has-been-checked-in': 'has been checked in.',
@@ -527,6 +532,11 @@
       'unexpected-server-response': 'Respons server tidak terduga. Silakan coba lagi.',
       'network-error': 'Kesalahan jaringan. Harap periksa koneksi Anda.',
       'tap-try-again-retry': 'Ketuk "Coba Lagi" untuk mencoba ulang.',
+      // Search timeout
+      'search-timed-out': 'Pencarian habis waktu',
+      'search-timed-out-message': 'Lebih lama dari biasanya. Pengunjung mungkin masih dimuat — coba lagi.',
+      'search-timed-out-hint': 'Sistem mungkin sedang bangun dari mode idle. Silakan coba pencarian lagi.',
+      'btn-retry-search': 'Coba Lagi',
       // Success states
       'checkin-successful': 'Check-In Berhasil!',
       'has-been-checked-in': 'telah check-in.',
