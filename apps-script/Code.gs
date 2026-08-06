@@ -736,6 +736,11 @@ function doPost(e) {
       return handleIssueLicense(data);
     }
 
+    // Handle test-email diagnostic (admin-gated — surfaces OAuth/scope errors)
+    if (data.mode === 'testEmail') {
+      return handleTestEmail(data);
+    }
+
     // Check if this is a status update
     if (data.mode === 'updateStatus') {
       return handleStatusUpdate(data);
@@ -1049,7 +1054,7 @@ function handleRegistration(data, visitorLimit) {
   try {
     sendEmailConfirmation(email, visitorNumber, fullName, visitorType);
   } catch (emailErr) {
-    console.warn('Email notification failed: ' + emailErr.message);
+    console.warn('Email notification failed for ' + email + ': ' + emailErr.message + ' | ' + emailErr.stack);
   }
 
   // Get updated count for response
@@ -1831,6 +1836,35 @@ function generateVisitorNumber() {
 // ──────────────────────────────────────────────
 // EMAIL CONFIRMATION
 // ──────────────────────────────────────────────
+
+/**
+ * Diagnostic endpoint: sends a test email to verify MailApp is authorized.
+ * Surfaces the raw error message (OAuth scope, provisioning, quota, etc.)
+ * so the operator can diagnose deployment issues without checking Executions.
+ * Admin-gated: requires a valid admin token via validateRequest.
+ */
+function handleTestEmail(data) {
+  if (!data.to) {
+    return jsonResponse({ status: 'error', error: 'Missing to' }, 400);
+  }
+
+  console.log('handleTestEmail: attempting to send test email to ' + data.to);
+
+  try {
+    MailApp.sendEmail({
+      to: data.to,
+      subject: 'LITEVM test email',
+      body: 'Test from LITEVM — if you can read this, MailApp works.',
+      htmlBody: '<p>Test from LITEVM — if you can read this, <b>MailApp works</b>.</p>',
+    });
+
+    console.log('handleTestEmail: test email sent successfully to ' + data.to);
+    return jsonResponse({ status: 'ok', sent: true, to: data.to }, 200);
+  } catch (e) {
+    console.error('handleTestEmail: FAILED to send to ' + data.to + ' — ' + e.message + ' | ' + e.stack);
+    return jsonResponse({ status: 'error', sent: false, error: e.message }, 200);
+  }
+}
 
 /**
  * Send email confirmation via MailApp.sendEmail().
