@@ -119,6 +119,7 @@
       'retrying-destinations': 'Retrying...',
       'failed-to-load': 'Failed to load',
       'failed-load-destinations': 'Failed to load destinations. ',
+      'failed-load-visitor-types': 'Failed to load visitor types. ',
       'tap-to-retry': 'Tap to retry',
       // Offline
       'offline-message': 'You are offline. Please check your connection.',
@@ -463,6 +464,7 @@
       'retrying-destinations': 'Mencoba lagi...',
       'failed-to-load': 'Gagal memuat',
       'failed-load-destinations': 'Gagal memuat tujuan. ',
+      'failed-load-visitor-types': 'Gagal memuat tipe pengunjung. ',
       'tap-to-retry': 'Ketuk untuk mencoba lagi',
       // Offline
       'offline-message': 'Anda offline. Harap periksa koneksi Anda.',

@@ -29,6 +29,7 @@
     visitorTypesLoading: false,
     visitorTypesError: null,
     visitorTypesAbort: null,
+    visitorTypesRetries: 0,
   };
 
   // ──────────────────────────────────────────────
@@ -621,9 +622,11 @@
     var controller = new AbortController();
     state.destinationsAbort = controller;
 
+    var timedOut = false;
     var timeoutId = setTimeout(function () {
+      timedOut = true;
       controller.abort();
-    }, 8000);
+    }, CONFIG.TIMEOUT_MS || 30000);
 
     fetch(CONFIG.API_BASE + '?action=destinations&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID), {
       method: 'GET',
@@ -712,7 +715,13 @@
       state.destinationsLoading = false;
       state.destinationsAbort = null;
 
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError') {
+        // Timeout-driven abort is a real failure the user must see; a later
+        // superseded abort (a fresh request replaced this one) stays silent.
+        if (!timedOut) return;
+        renderDestinationsFailed();
+        return;
+      }
 
       state.fetchRetries++;
       state.destinationsError = err.message || 'Failed to load destinations';
@@ -722,30 +731,34 @@
         select.innerHTML = '<option value="" disabled selected>' + App.t('retrying-destinations') + ' (' + state.fetchRetries + '/3)</option>';
         setTimeout(fetchDestinations, 1500);
       } else {
-        select.disabled = true;
-        select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
-        var errorEl = document.getElementById('destination-error');
-        if (errorEl) {
-          errorEl.textContent = App.t('failed-load-destinations');
-          var retryLink = document.createElement('a');
-          retryLink.href = '#';
-          retryLink.textContent = App.t('tap-to-retry');
-          retryLink.style.color = '#4361ee';
-          retryLink.style.textDecoration = 'underline';
-          retryLink.style.cursor = 'pointer';
-          retryLink.onclick = function (e) {
-            e.preventDefault();
-            state.fetchRetries = 0;
-            fetchDestinations();
-          };
-          errorEl.innerHTML = '';
-          errorEl.appendChild(document.createTextNode(App.t('failed-load-destinations')));
-          errorEl.appendChild(retryLink);
-          errorEl.classList.add('visible');
-        }
-        updateContinueButton();
+        renderDestinationsFailed();
       }
     });
+  }
+
+  function renderDestinationsFailed() {
+    var select = document.getElementById('destination');
+    var errorEl = document.getElementById('destination-error');
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
+    if (errorEl) {
+      var retryLink = document.createElement('a');
+      retryLink.href = '#';
+      retryLink.textContent = App.t('tap-to-retry');
+      retryLink.style.color = '#4361ee';
+      retryLink.style.textDecoration = 'underline';
+      retryLink.style.cursor = 'pointer';
+      retryLink.onclick = function (e) {
+        e.preventDefault();
+        state.fetchRetries = 0;
+        fetchDestinations();
+      };
+      errorEl.innerHTML = '';
+      errorEl.appendChild(document.createTextNode(App.t('failed-load-destinations')));
+      errorEl.appendChild(retryLink);
+      errorEl.classList.add('visible');
+    }
+    updateContinueButton();
   }
 
   function retryFetchDestinations() {
@@ -774,77 +787,103 @@
     var controller = new AbortController();
     state.visitorTypesAbort = controller;
 
+    var timedOut = false;
     var timeoutId = setTimeout(function () {
+      timedOut = true;
       controller.abort();
-    }, 8000);
+    }, CONFIG.TIMEOUT_MS || 30000);
 
-    var fetchRetriesLocal = 0;
+    fetch(CONFIG.API_BASE + '?action=visitorTypes&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID), {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+    })
+    .then(function (response) {
+      clearTimeout(timeoutId);
+      if (!response.ok) throw new Error('Server responded with status ' + response.status);
+      return response.text();
+    })
+    .then(function (text) {
+      state.visitorTypesLoading = false;
+      state.visitorTypesAbort = null;
 
-    function doFetch() {
-      fetch(CONFIG.API_BASE + '?action=visitorTypes&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID), {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-      })
-      .then(function (response) {
-        clearTimeout(timeoutId);
-        if (!response.ok) throw new Error('Server responded with status ' + response.status);
-        return response.text();
-      })
-      .then(function (text) {
-        state.visitorTypesLoading = false;
-        state.visitorTypesAbort = null;
+      var parsed;
+      try { parsed = JSON.parse(text); } catch (e) { throw new Error('Invalid JSON response'); }
 
-        var parsed;
-        try { parsed = JSON.parse(text); } catch (e) { throw new Error('Invalid JSON response'); }
+      if (parsed.status !== 'ok') throw new Error(parsed.message || 'Failed to load visitor types');
 
-        if (parsed.status !== 'ok') throw new Error(parsed.message || 'Failed to load visitor types');
+      var types = parsed.types || [];
 
-        var types = parsed.types || [];
+      state.visitorTypes = types;
+      state.visitorTypesRetries = 0;
 
-        state.visitorTypes = types;
+      if (types.length === 0) {
+        state.visitorTypesError = 'No visitor types configured';
+        select.disabled = true;
+        select.innerHTML = '<option value="" disabled selected>' + App.t('no-visitor-types') + '</option>';
+        return;
+      }
 
-        if (types.length === 0) {
-          state.visitorTypesError = 'No visitor types configured';
-          select.disabled = true;
-          select.innerHTML = '<option value="" disabled selected>' + App.t('no-visitor-types') + '</option>';
-          return;
-        }
+      // Populate select — first value is default (selected)
+      select.disabled = false;
+      var html = '';
+      for (var j = 0; j < types.length; j++) {
+        var escaped = types[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        var selected = j === 0 ? ' selected' : '';
+        html += '<option value="' + escaped + '"' + selected + '>' + escaped + '</option>';
+      }
+      select.innerHTML = html;
 
-        // Populate select — first value is default (selected)
-        select.disabled = false;
-        var html = '';
-        for (var j = 0; j < types.length; j++) {
-          var escaped = types[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-          var selected = j === 0 ? ' selected' : '';
-          html += '<option value="' + escaped + '"' + selected + '>' + escaped + '</option>';
-        }
-        select.innerHTML = html;
+      updateContinueButton();
+    })
+    .catch(function (err) {
+      clearTimeout(timeoutId);
+      state.visitorTypesLoading = false;
+      state.visitorTypesAbort = null;
 
-        updateContinueButton();
-      })
-      .catch(function (err) {
-        clearTimeout(timeoutId);
-        state.visitorTypesLoading = false;
-        state.visitorTypesAbort = null;
+      if (err.name === 'AbortError') {
+        // Timeout-driven abort is a real failure the user must see; a later
+        // superseded abort (a fresh request replaced this one) stays silent.
+        if (!timedOut) return;
+        renderVisitorTypesFailed();
+        return;
+      }
 
-        if (err.name === 'AbortError') return;
+      state.visitorTypesRetries++;
+      state.visitorTypesError = err.message || 'Failed to load visitor types';
 
-        fetchRetriesLocal++;
-        state.visitorTypesError = err.message || 'Failed to load visitor types';
+      if (state.visitorTypesRetries < 3) {
+        select.innerHTML = '<option value="" disabled selected>' + App.t('retrying-destinations') + ' (' + state.visitorTypesRetries + '/3)</option>';
+        setTimeout(fetchVisitorTypes, 1500);
+      } else {
+        renderVisitorTypesFailed();
+      }
+    });
+  }
 
-        if (fetchRetriesLocal < 3) {
-          select.innerHTML = '<option value="" disabled selected>' + App.t('retrying-destinations') + ' (' + fetchRetriesLocal + '/3)</option>';
-          setTimeout(doFetch, 1500);
-        } else {
-          select.disabled = true;
-          select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
-          updateContinueButton();
-        }
-      });
+  function renderVisitorTypesFailed() {
+    var select = document.getElementById('visitorType');
+    var errorEl = document.getElementById('visitorType-error');
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>' + App.t('failed-to-load') + '</option>';
+    if (errorEl) {
+      var retryLink = document.createElement('a');
+      retryLink.href = '#';
+      retryLink.textContent = App.t('tap-to-retry');
+      retryLink.style.color = '#4361ee';
+      retryLink.style.textDecoration = 'underline';
+      retryLink.style.cursor = 'pointer';
+      retryLink.onclick = function (e) {
+        e.preventDefault();
+        state.visitorTypesRetries = 0;
+        fetchVisitorTypes();
+      };
+      errorEl.innerHTML = '';
+      errorEl.appendChild(document.createTextNode(App.t('failed-load-visitor-types')));
+      errorEl.appendChild(retryLink);
+      errorEl.classList.add('visible');
     }
-
-    doFetch();
+    updateContinueButton();
   }
 
   // ──────────────────────────────────────────────
