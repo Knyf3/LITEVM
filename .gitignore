@@ -25,4 +25,4 @@ config.local.js
 
 # Apps Script (Google)
 .clasp.json
-.clasprc
+.clasprcmarketing/video/
