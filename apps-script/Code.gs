@@ -23,12 +23,13 @@
  *
  */
 
-var CODE_VERSION = '1.11.4';  // Increment this to track deployed versions
+var CODE_VERSION = '1.11.6';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
-// established sender identity (gmail.com) instead of the Workspace default (MailApp),
-// bypassing the new-account scripted-send drop. Flip back to '' once the domain matures.
-var EMAIL_BRIDGE_FROM = 'mainan.modern@gmail.com';
+// sender identity instead of MailApp. MailApp scripted sends are silently dropped at
+// Google's outbound edge for this account; GmailApp (composer infra) delivers with
+// full branding. Native account address = valid sender, no alias setup needed.
+var EMAIL_BRIDGE_FROM = 'litevm@itt.web.id';
 
 // ──────────────────────────────────────────────
 // LICENSE ENFORCEMENT — HMAC SECRET CACHE
@@ -1861,7 +1862,8 @@ function handleTestEmail(data) {
     var opts = {
       to: data.to,
       subject: (data.plain === true) ? 'LITEVM test email (plain text)'
-              : (EMAIL_BRIDGE_FROM ? 'LITEVM test email (bridge)' : 'LITEVM test email'),
+              : (data.from ? 'LITEVM test email (' + data.from + ')'
+                 : (EMAIL_BRIDGE_FROM ? 'LITEVM test email (bridge)' : 'LITEVM test email')),
     };
     if (data.plain === true) {
       opts.body = 'Test from LITEVM — plain text only, no htmlBody, no multipart.';
@@ -1869,6 +1871,7 @@ function handleTestEmail(data) {
       opts.body = 'Test from LITEVM — if you can read this, MailApp works.';
       opts.htmlBody = '<p>Test from LITEVM — if you can read this, <b>MailApp works</b>.</p>';
     }
+    if (data.from) { opts.from = data.from; }
     sendEmailThroughBridge(opts);
 
     console.log('handleTestEmail: test email sent successfully to ' + data.to);
@@ -1885,7 +1888,8 @@ function handleTestEmail(data) {
  * otherwise falls back to MailApp (Workspace default sender).
  */
 function sendEmailThroughBridge(opts) {
-  if (EMAIL_BRIDGE_FROM) {
+  var from = opts.from || EMAIL_BRIDGE_FROM;
+  if (from) {
     // Positional overload — unambiguous, documented:
     // GmailApp.sendEmail(recipient, subject, body, options)
     GmailApp.sendEmail(
@@ -1894,8 +1898,8 @@ function sendEmailThroughBridge(opts) {
       opts.body || '',
       {
         htmlBody: opts.htmlBody,
-        from: EMAIL_BRIDGE_FROM,
-        name: 'LITEVM Visitor Management',
+        from: from,
+        name: opts.name || 'LITEVM Visitor Management',
       }
     );
   } else {
