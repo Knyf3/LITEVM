@@ -23,7 +23,12 @@
  *
  */
 
-var CODE_VERSION = '1.11.1';  // Increment this to track deployed versions
+var CODE_VERSION = '1.11.4';  // Increment this to track deployed versions
+
+// EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
+// established sender identity (gmail.com) instead of the Workspace default (MailApp),
+// bypassing the new-account scripted-send drop. Flip back to '' once the domain matures.
+var EMAIL_BRIDGE_FROM = 'mainan.modern@gmail.com';
 
 // ──────────────────────────────────────────────
 // LICENSE ENFORCEMENT — HMAC SECRET CACHE
@@ -1855,7 +1860,8 @@ function handleTestEmail(data) {
     // isolates whether the multipart/alternative MIME shape matters to delivery.
     var opts = {
       to: data.to,
-      subject: (data.plain === true) ? 'LITEVM test email (plain text)' : 'LITEVM test email',
+      subject: (data.plain === true) ? 'LITEVM test email (plain text)'
+              : (EMAIL_BRIDGE_FROM ? 'LITEVM test email (bridge)' : 'LITEVM test email'),
     };
     if (data.plain === true) {
       opts.body = 'Test from LITEVM — plain text only, no htmlBody, no multipart.';
@@ -1863,13 +1869,37 @@ function handleTestEmail(data) {
       opts.body = 'Test from LITEVM — if you can read this, MailApp works.';
       opts.htmlBody = '<p>Test from LITEVM — if you can read this, <b>MailApp works</b>.</p>';
     }
-    MailApp.sendEmail(opts);
+    sendEmailThroughBridge(opts);
 
     console.log('handleTestEmail: test email sent successfully to ' + data.to);
     return jsonResponse({ status: 'ok', sent: true, to: data.to }, 200);
   } catch (e) {
     console.error('handleTestEmail: FAILED to send to ' + data.to + ' — ' + e.message + ' | ' + e.stack);
     return jsonResponse({ status: 'error', sent: false, error: e.message }, 200);
+  }
+}
+
+/**
+ * Send email through the configured bridge. When EMAIL_BRIDGE_FROM is set,
+ * routes via GmailApp with the established sender identity (gmail.com);
+ * otherwise falls back to MailApp (Workspace default sender).
+ */
+function sendEmailThroughBridge(opts) {
+  if (EMAIL_BRIDGE_FROM) {
+    // Positional overload — unambiguous, documented:
+    // GmailApp.sendEmail(recipient, subject, body, options)
+    GmailApp.sendEmail(
+      opts.to,
+      opts.subject,
+      opts.body || '',
+      {
+        htmlBody: opts.htmlBody,
+        from: EMAIL_BRIDGE_FROM,
+        name: 'LITEVM Visitor Management',
+      }
+    );
+  } else {
+    MailApp.sendEmail(opts);
   }
 }
 
@@ -1919,7 +1949,7 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  MailApp.sendEmail({
+  sendEmailThroughBridge({
     to: toEmail,
     subject: subject,
     htmlBody: htmlBody,
@@ -2197,7 +2227,7 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  MailApp.sendEmail({
+  sendEmailThroughBridge({
     to: toEmail,
     subject: subject,
     htmlBody: htmlBody,
