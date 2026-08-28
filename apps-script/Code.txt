@@ -23,12 +23,61 @@
  *
  */
 
-var CODE_VERSION = '1.6.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.11.6';  // Increment this to track deployed versions
+
+// EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
+// sender identity instead of MailApp. MailApp scripted sends are silently dropped at
+// Google's outbound edge for this account; GmailApp (composer infra) delivers with
+// full branding. Native account address = valid sender, no alias setup needed.
+var EMAIL_BRIDGE_FROM = 'litevm@itt.web.id';
+
+// ──────────────────────────────────────────────
+// LICENSE ENFORCEMENT — HMAC SECRET CACHE
+// ──────────────────────────────────────────────
+var _hmacSecret = undefined; // cached per-execution
+
+/**
+ * Get the LITEVM_HMAC_SECRET ScriptProperty for signing ACTApi license tokens.
+ * Returns null if not set — license issuance is disabled until configured.
+ *
+ * @returns {string|null} The hex-encoded 64-char master secret, or null
+ */
+function _getHmacSecret() {
+  if (_hmacSecret === undefined) {
+    _hmacSecret = PropertiesService.getScriptProperties().getProperty('LITEVM_HMAC_SECRET');
+    if (!_hmacSecret) {
+      console.warn('LITEVM_HMAC_SECRET ScriptProperty is not set — ACTApi license issuance disabled');
+      _hmacSecret = null;
+    } else if (_hmacSecret.length !== 64) {
+      console.error('LITEVM_HMAC_SECRET is ' + _hmacSecret.length + ' chars (expected 64 hex chars) — treating as unset');
+      _hmacSecret = null;
+    }
+  }
+  return _hmacSecret;
+}
 
 // ──────────────────────────────────────────────
 // MASTER CONFIG CACHE (per-execution)
 // ──────────────────────────────────────────────
 var _masterConfig = null;
+
+// ──────────────────────────────────────────────
+// Per-request spreadsheet cache — guarantees at most ONE
+// SpreadsheetApp.openById per sheetId per request.  Lookup path
+// (handleLookup → getOrCreateSheet → getCardNumberForVisitor)
+// previously opened the same sheet 2-3×, each costing 2-10s on a
+// cold container.  Now every helper reuses the same Spreadsheet
+// object via _openSheetCached.
+// ──────────────────────────────────────────────
+var _ssCache = {};
+
+function _openSheetCached(sheetId) {
+  if (!sheetId) throw new Error('Missing sheetId');
+  if (!_ssCache[sheetId]) {
+    _ssCache[sheetId] = SpreadsheetApp.openById(sheetId);
+  }
+  return _ssCache[sheetId];
+}
 
 /**
  * Open the master config Google Sheet by its ID stored in Script Properties.
@@ -49,10 +98,10 @@ function _getMasterConfigSheet() {
  * Load all customer rows from the "Customers" tab of the master config sheet.
  * Caches the result in the per-execution global _masterConfig.
  *
- * Customers tab schema (6 columns):
- *   sheetId | allowedOrigins | tier | visitorLimit | status | notes
+ * Customers tab schema (9 columns):
+ *   sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | registeredAt
  *
- * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes }
+ * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes, registeredAt }
  */
 function _loadMasterConfig() {
   if (_masterConfig !== null) return _masterConfig;
@@ -74,6 +123,8 @@ function _loadMasterConfig() {
       status: String(row[4] || 'active').trim().toLowerCase(),
       notes: String(row[5] || '').trim(),
       autoSignOutHour: row[6] !== undefined && row[6] !== null && row[6] !== '' ? parseInt(row[6], 10) : 21,
+      autoSignOutEnabled: row[7] !== undefined && row[7] !== null ? String(row[7]).toUpperCase() === 'TRUE' : true,
+      registeredAt: row[8] instanceof Date ? row[8] : (row[8] ? String(row[8]) : null),
     };
   }
   _masterConfig = config;
@@ -89,6 +140,197 @@ function _loadMasterConfig() {
 function _getCustomerConfig(sheetId) {
   var config = _loadMasterConfig();
   return config[sheetId] || null;
+}
+
+/**
+ * Extract the origin from a doGet/doPost event object.
+ * Checks POST body first, then query parameters.
+ *
+ * @param {Object} e - The event object
+ * @returns {string} The origin string (may be empty)
+ */
+function _extractOrigin_(e) {
+  var origin = '';
+  try {
+    if (e && e.postData) {
+      var body = JSON.parse(e.postData.contents);
+      origin = body.origin || '';
+    }
+  } catch (er) { /* ignore parse errors */ }
+  if (!origin && e && e.parameter && e.parameter.origin) {
+    origin = e.parameter.origin;
+  }
+  return origin;
+}
+
+/**
+ * Auto-register an unknown sheetId to the Customers tab with pending status.
+ *
+ * Guards:
+ *  - Respects AUTO_REGISTER_ENABLED Script Property (must be "true").
+ *  - Rate-limits: at most 20 auto-registrations per rolling hour (stored
+ *    in Script Properties counter).
+ *  - Uses LockService on the master config sheet to prevent duplicate rows
+ *    from concurrent requests for the same sheetId.
+ *  - Double-checks the customer wasn't registered between the initial miss
+ *    and acquiring the lock (race condition guard).
+ *  - Logs every auto-registration to DeniedLog for traceability.
+ *  - Auto-runs migration on the customer sheet to create required tabs
+ *    (VisitorLog, cardno, Destination, Settings).
+ *
+ * @param {string} sheetId - The unknown Google Sheet ID
+ * @param {string} origin - Request origin (for logging)
+ * @param {string} endpointType - Endpoint type (for logging)
+ * @returns {Object|null} Newly created customer config object, or null on failure
+ */
+function _autoRegisterCustomer(sheetId, origin, endpointType) {
+  // ── Guard 1: Feature flag ──
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('AUTO_REGISTER_ENABLED') !== 'true') {
+    console.log('[autoRegister] AUTO_REGISTER_ENABLED is not true — skipping auto-registration for ' + sheetId);
+    return null;
+  }
+
+  // ── Guard 2: Rate limit (max 20 per rolling hour) ──
+  if (!_checkAutoRegisterRateLimit_()) {
+    console.warn('[autoRegister] Rate limit exceeded — skipping auto-registration for ' + sheetId);
+    logDeniedRequest(sheetId, origin, 'AUTO_REGISTER_RATE_LIMIT', endpointType, null);
+    return null;
+  }
+
+  // ── Guard 3: Lock on master config to prevent duplicate registrations ──
+  var masterSheet = _getMasterConfigSheet();
+  if (!masterSheet) {
+    console.warn('[autoRegister] Cannot access master config sheet');
+    return null;
+  }
+
+  var lock = LockService.getUserLock();
+  try {
+    if (!lock.tryLock(15000)) { // 15s timeout
+      console.warn('[autoRegister] Could not acquire lock for master config');
+      return null;
+    }
+
+    // ── Guard 5: Double-check — another execution may have registered this sheetId ──
+    _masterConfig = null;
+    var existing = _getCustomerConfig(sheetId);
+    if (existing) {
+      console.log('[autoRegister] Customer ' + sheetId + ' was registered by another execution — using existing record');
+      return existing;
+    }
+
+    // ── Build default config ──
+    var defaults = {
+      allowedOrigins: '',
+      tier: 'free',
+      visitorLimit: 50,
+      status: 'pending',
+      notes: 'Auto-registered by LITEVM on ' + new Date().toISOString(),
+      autoSignOutHour: 21,
+      autoSignOutEnabled: true,
+    };
+
+    // Allow override via AUTO_REGISTER_DEFAULTS JSON in Script Properties
+    var customDefaults = props.getProperty('AUTO_REGISTER_DEFAULTS');
+    if (customDefaults) {
+      try {
+        var parsed = JSON.parse(customDefaults);
+        if (parsed.allowedOrigins !== undefined) defaults.allowedOrigins = String(parsed.allowedOrigins);
+        if (parsed.tier !== undefined) defaults.tier = String(parsed.tier).toLowerCase();
+        if (parsed.visitorLimit !== undefined) defaults.visitorLimit = parseInt(parsed.visitorLimit, 10);
+        if (parsed.status !== undefined) defaults.status = String(parsed.status).toLowerCase();
+        if (parsed.notes !== undefined) defaults.notes = String(parsed.notes);
+        if (parsed.autoSignOutHour !== undefined) defaults.autoSignOutHour = parseInt(parsed.autoSignOutHour, 10);
+        if (parsed.autoSignOutEnabled !== undefined) defaults.autoSignOutEnabled = String(parsed.autoSignOutEnabled).toUpperCase() === 'TRUE';
+      } catch (e) {
+        console.warn('[autoRegister] Failed to parse AUTO_REGISTER_DEFAULTS: ' + e.message);
+      }
+    }
+
+    // ── Append row to Customers tab ──
+    var custSheet = masterSheet.getSheetByName('Customers');
+    if (!custSheet) {
+      console.warn('[autoRegister] Customers tab not found in master config');
+      return null;
+    }
+
+    custSheet.appendRow([
+      sheetId,
+      defaults.allowedOrigins,
+      defaults.tier,
+      defaults.visitorLimit,
+      defaults.status,
+      defaults.notes,
+      defaults.autoSignOutHour,
+      defaults.autoSignOutEnabled,
+      new Date(), // registeredAt
+    ]);
+
+    SpreadsheetApp.flush(); // Ensure write is committed
+
+    // ── Invalidate cache so next call sees the new row ──
+    _masterConfig = null;
+
+    // ── Log the auto-registration ──
+    console.log('[autoRegister] Successfully registered sheetId ' + sheetId + ' with status=' + defaults.status + ' tier=' + defaults.tier);
+    logDeniedRequest(sheetId, origin, 'AUTO_REGISTERED', endpointType, null);
+
+    // ── Auto-migrate: create required tabs if missing ──
+    try {
+      var migResult = handleMigration(sheetId);
+      if (migResult.status === 'ok') {
+        console.log('[autoRegister] Migration complete for ' + sheetId + ': v' + migResult.fromVersion + ' → v' + migResult.toVersion);
+      } else {
+        console.warn('[autoRegister] Migration warning for ' + sheetId + ': ' + JSON.stringify(migResult));
+      }
+    } catch (migErr) {
+      console.warn('[autoRegister] Migration failed for ' + sheetId + ' (sheet may not be accessible yet): ' + migErr.message);
+    }
+
+    // Return the new customer config
+    return _getCustomerConfig(sheetId);
+
+  } catch (e) {
+    console.error('[autoRegister] Error registering sheetId ' + sheetId + ': ' + e.message);
+    return null;
+  } finally {
+    try { lock.releaseLock(); } catch (e) { /* ignore release errors */ }
+  }
+}
+
+/**
+ * Rate-limiter for auto-registrations.
+ * Stores a JSON array of timestamps in Script Properties under
+ * AUTO_REGISTER_TIMESTAMPS. Allows at most MAX_PER_HOUR entries
+ * in the last 3600 seconds.
+ *
+ * @returns {boolean} true if request is within rate limit
+ */
+function _checkAutoRegisterRateLimit_() {
+  var MAX_PER_HOUR = 20;
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('AUTO_REGISTER_TIMESTAMPS');
+  var timestamps = [];
+  if (raw) {
+    try { timestamps = JSON.parse(raw); } catch (e) { timestamps = []; }
+  }
+
+  var now = Date.now();
+  var oneHourAgo = now - 3600000; // 60 min in ms
+
+  // Filter out timestamps older than 1 hour
+  timestamps = timestamps.filter(function(ts) { return ts > oneHourAgo; });
+
+  if (timestamps.length >= MAX_PER_HOUR) {
+    return false;
+  }
+
+  // Add current timestamp and save
+  timestamps.push(now);
+  props.setProperty('AUTO_REGISTER_TIMESTAMPS', JSON.stringify(timestamps));
+
+  return true;
 }
 
 /**
@@ -113,7 +355,7 @@ function getDailyVisitorCount_(sheetId) {
 
     var count = 0;
     for (var i = 1; i < data.length; i++) {
-      var cell = data[i][5]; // Col F = Visitation Date (index 5)
+      var cell = data[i][6]; // Col G = Visitation Date (index 6, after Visitor Type insert)
       var dateStr = '';
       if (cell instanceof Date && !isNaN(cell.getTime())) {
         dateStr = Utilities.formatDate(cell, timeZone, 'yyyy-MM-dd');
@@ -164,14 +406,23 @@ function checkVisitorLimit_(sheetId) {
 /**
  * Validate an incoming request against the master config.
  *
- * Validation steps:
- *   1. If sheetId is not in master config → deny with INVALID_CUSTOMER
- *   2. If customer status is not 'active' → deny with ACCOUNT_DISABLED
- *   3. If endpointType is NOT 'register' → skip origin check, allow
- *   4. If origin is reported → check against allowedOrigins whitelist
- *   5. If origin not whitelisted → deny with ORIGIN_BLOCKED
+ * NEW BEHAVIOR for unknown sheetIds:
+ *   If AUTO_REGISTER_ENABLED=true in Script Properties, unknown sheetIds are
+ *   auto-registered to the Customers tab with status="pending" and tier/limit
+ *   defaults. The request is then allowed through for non-register endpoints,
+ *   but blocked for registration (check-in) with ACCOUNT_PENDING.
  *
- * Denied requests are logged to the DeniedLog tab of the master config sheet.
+ * Validation steps:
+ *   1. If sheetId not in master config → try auto-register (if enabled)
+ *      a. If auto-register succeeds:
+ *         - For 'register' epType → deny with ACCOUNT_PENDING
+ *         - For all other epTypes → allow (returns status='pending')
+ *      b. If auto-register fails → deny with INVALID_CUSTOMER
+ *   2. If customer status is 'pending' and epType is 'register' → deny ACCOUNT_PENDING
+ *   3. If customer status is not 'active' and not 'pending' → deny ACCOUNT_DISABLED
+ *   4. If endpointType is NOT 'register' → skip origin check, allow
+ *   5. If origin is reported → check against allowedOrigins whitelist
+ *   6. If origin not whitelisted → deny with ORIGIN_BLOCKED
  *
  * @param {Object} e - The doGet/doPost event object
  * @param {string} sheetId - Customer's Google Sheet ID
@@ -191,14 +442,57 @@ function validateRequest(e, sheetId, endpointType) {
 
   // Look up customer in master config
   var customer = _getCustomerConfig(sheetId);
+
+  // ── NEW: Auto-register unknown customers if enabled ──
   if (!customer) {
-    logDeniedRequest(sheetId, null, 'UNKNOWN_CUSTOMER', endpointType, null);
-    return { valid: false, error: 'INVALID_CUSTOMER', message: 'Invalid customer configuration.' };
+    // Attempt auto-registration
+    var origin = _extractOrigin_(e);
+    customer = _autoRegisterCustomer(sheetId, origin, endpointType);
+
+    if (!customer) {
+      // Auto-registration failed or disabled — deny as before
+      logDeniedRequest(sheetId, null, 'UNKNOWN_CUSTOMER', endpointType, null);
+      return { valid: false, error: 'INVALID_CUSTOMER', message: 'Invalid customer configuration.' };
+    }
+
+    // Auto-registration succeeded
+    // If this is a registration endpoint, block with pending message
+    if (endpointType === 'register') {
+      logDeniedRequest(sheetId, origin, 'ACCOUNT_PENDING', endpointType, null);
+      return {
+        valid: false,
+        error: 'ACCOUNT_PENDING',
+        message: 'Account pending activation. Please contact the administrator.',
+        tier: customer.tier,
+        visitorLimit: customer.visitorLimit,
+        status: customer.status,
+      };
+    }
+
+    // For non-register endpoints on newly registered pending accounts — allow
+    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
   }
 
-  // Check account status
+  // ── NEW: Check for pending status (blocks registration only, allows reads/updates) ──
+  if (customer.status === 'pending') {
+    if (endpointType === 'register') {
+      logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_PENDING', endpointType, null);
+      return {
+        valid: false,
+        error: 'ACCOUNT_PENDING',
+        message: 'Account pending activation. Please contact the administrator.',
+        tier: customer.tier,
+        visitorLimit: customer.visitorLimit,
+        status: customer.status,
+      };
+    }
+    // For non-register endpoints on pending accounts — allow through
+    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+  }
+
+  // Check account status for non-pending, non-active states
   if (customer.status !== 'active') {
-    logDeniedRequest(sheetId, null, 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
+    logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
     return { valid: false, error: 'ACCOUNT_DISABLED', message: 'This service is currently unavailable.' };
   }
 
@@ -208,18 +502,7 @@ function validateRequest(e, sheetId, endpointType) {
   }
 
   // ─── REGISTRATION-SPECIFIC CHECKS ───
-
-  // Get the reported origin from the JSON body or URL parameter
-  var origin = '';
-  try {
-    if (e && e.postData) {
-      var body = JSON.parse(e.postData.contents);
-      origin = body.origin || '';
-    }
-  } catch (er) { /* ignore parse errors */ }
-  if (!origin && e && e.parameter && e.parameter.origin) {
-    origin = e.parameter.origin;
-  }
+  var origin = _extractOrigin_(e);
 
   // Check origin against whitelist
   if (origin) {
@@ -307,6 +590,12 @@ function doGet(e) {
       var action = e.parameter.action;
       var sheetId = e && e.parameter ? e.parameter.sheetId : null;
 
+      // Admin actions that don't need customer validation
+      if (action === 'runAutoSignOut') {
+        autoSignOut();
+        return jsonResponse({ status: 'ok', message: 'autoSignOut triggered manually' }, 200);
+      }
+
       // Validate request (skip for health check — when there's an action, validate)
       var validation = validateRequest(e, sheetId, 'get');
       if (!validation.valid) {
@@ -327,6 +616,10 @@ function doGet(e) {
 
       if (action === 'destinations') {
         return handleDestinations(sheetId);
+      }
+
+      if (action === 'visitorTypes') {
+        return handleVisitorTypes(sheetId);
       }
 
       if (action === 'cardpool') {
@@ -363,11 +656,17 @@ function doGet(e) {
           return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
         }
         var settings = getSheetSettings_(sheetId);
+        var customer = _getCustomerConfig(sheetId);
+        var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+        var actEnabled = customer !== null &&
+          customer.status === 'active' &&
+          entitledTiers.indexOf(customer.tier) !== -1;
         return jsonResponse({
           status: 'ok',
           guardPin: settings.guardPin,
           autoSignOutEnabled: settings.enabled,
           autoSignOutHour: settings.hour,
+          actEnabled: actEnabled,
         }, 200);
       }
     }
@@ -435,7 +734,17 @@ function doPost(e) {
     // Handle auto sign-out trigger setup
     if (data.mode === 'setupAutoSignOut') {
       setupAutoSignOutTrigger();
-      return jsonResponse({ status: 'ok', message: "Hourly auto sign-out trigger installed. Each sheet's Settings tab controls when it fires." }, 200);
+      return jsonResponse({ status: 'ok', message: "Daily auto sign-out trigger installed (fires 19:00–20:00 WIB)." }, 200);
+    }
+
+    // Handle ACTApi license issuance
+    if (data.mode === 'issueLicense') {
+      return handleIssueLicense(data);
+    }
+
+    // Handle test-email diagnostic (admin-gated — surfaces OAuth/scope errors)
+    if (data.mode === 'testEmail') {
+      return handleTestEmail(data);
     }
 
     // Check if this is a status update
@@ -503,12 +812,204 @@ function handleMigrationResponse(data) {
 
 
 // ──────────────────────────────────────────────
+// HANDLER: Issue ACTApi License Token
+// ──────────────────────────────────────────────
+
+/**
+ * Handle ACTApi license token issuance requests.
+ * Accepts mode=issueLicense with sheetId, machineId, optional validityDays,
+ * optional permanent (boolean). validityDays=0 is also treated as permanent.
+ * Validates the customer's tier and status from master config,
+ * constructs and signs a license token using HMAC-SHA256.
+ *
+ * Token format: base64url(payload_json).base64url(hmac_signature)
+ * Cryptographic scheme matches ACTApi Security/LicenseValidator.cs
+ * and tools/issue_license.py exactly.
+ *
+ * Token schema: ver=2 tokens; exp=0 means PERMANENT (never expires),
+ * exp>0 is a timed token. (The .NET validator also still accepts ver=1.)
+ *
+ * @param {Object} data - Request body: { mode:'issueLicense', sheetId, machineId, validityDays?, permanent? }
+ * @returns {TextOutput} JSON response with token or error
+ */
+function handleIssueLicense(data) {
+  try {
+    // ── Validate inputs ──
+    if (!data.sheetId) {
+      return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+    }
+    if (!data.machineId || data.machineId.length !== 64) {
+      return jsonResponse({ status: 'error', error: 'machineId must be a 64-char hex string' }, 400);
+    }
+
+    // ── Get HMAC secret ──
+    var secret = _getHmacSecret();
+    if (!secret) {
+      return jsonResponse({
+        status: 'error',
+        error: 'License signing is not configured. Set LITEVM_HMAC_SECRET ScriptProperty.'
+      }, 500);
+    }
+
+    // ── Check customer entitlement ──
+    var customer = _getCustomerConfig(data.sheetId);
+    if (!customer) {
+      return jsonResponse({ status: 'error', error: 'Customer not found' }, 404);
+    }
+    if (customer.status !== 'active') {
+      return jsonResponse({
+        status: 'error',
+        error: 'Customer status is ' + customer.status + ' — must be active'
+      }, 403);
+    }
+    var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+    if (entitledTiers.indexOf(customer.tier) === -1) {
+      return jsonResponse({
+        status: 'error',
+        error: 'Tier "' + customer.tier + '" is not entitled to ACTApi. Requires pro, multi-site, or enterprise.'
+      }, 403);
+    }
+
+    // ── Build payload ──
+    // permanent can be a JSON boolean (true/false) or the string 'true';
+    // validityDays=0 is also treated as permanent for convenience.
+    var permanent = data.permanent === true || data.permanent === 'true' ||
+                    parseInt(data.validityDays, 10) === 0;
+    var validityDays = parseInt(data.validityDays, 10) || 30;
+    if (permanent) {
+      validityDays = 0; // permanent tokens have no validity window
+    } else {
+      if (validityDays < 1) validityDays = 1;
+      if (validityDays > 90) validityDays = 90;
+    }
+
+    var now = Math.floor(Date.now() / 1000);
+    // ver=2: exp=0 means PERMANENT (never expires); exp>0 is a timed token.
+    var exp = permanent ? 0 : now + validityDays * 86400;
+    var jti = _randomHex(16);
+
+    var payload = {
+      sub: data.machineId,
+      tier: customer.tier,
+      iat: now,
+      exp: exp,
+      jti: jti,
+      ver: 2
+    };
+
+    // ── Sign ──
+    var payloadJson = JSON.stringify(payload);
+    // Per-machine key: HMAC-SHA256(UTF8(secret_hex), UTF8(machineId_hex))
+    var perMachineKeyRaw = Utilities.computeHmacSha256Signature(data.machineId, secret);
+    // Convert per-machine key to hex string for the payload HMAC key
+    var perMachineKeyHex = _bytesToHex(perMachineKeyRaw);
+    // Sign payload: HMAC-SHA256(UTF8(perMachineKeyHex), UTF8(payloadJson))
+    var sig = Utilities.computeHmacSha256Signature(payloadJson, perMachineKeyHex);
+    // Token = base64url(payloadJson) + "." + base64url(sig)
+    var token = Utilities.base64EncodeWebSafe(Utilities.newBlob(payloadJson).getBytes())
+      .replace(/=+$/, '') + '.' +
+      Utilities.base64EncodeWebSafe(sig).replace(/=+$/, '');
+
+    // ── Log issuance to Licenses tab ──
+    _logLicenseIssuance(data.machineId, jti, customer.tier, now, exp);
+
+    console.log('License issued: sheetId=' + data.sheetId + ', tier=' + customer.tier +
+      ', machineId=' + data.machineId.substring(0, 8) + '..., jti=' + jti);
+
+    return jsonResponse({
+      status: 'ok',
+      token: token,
+      machineId: data.machineId,
+      tier: customer.tier,
+      permanent: permanent,
+      expiresAt: permanent ? null : new Date(exp * 1000).toISOString(),
+      validDays: validityDays
+    }, 200);
+
+  } catch (e) {
+    console.error('handleIssueLicense error: ' + e.message + '\n' + e.stack);
+    return jsonResponse({ status: 'error', error: e.message }, 500);
+  }
+}
+
+/**
+ * Generate a random hex string of the given length.
+ * Uses Math.random for GAS compatibility (not cryptographically strong,
+ * but jti is for uniqueness, not secrecy).
+ *
+ * @param {number} len - Length in hex characters
+ * @returns {string} Random hex string
+ */
+function _randomHex(len) {
+  var chars = '0123456789abcdef';
+  var result = '';
+  for (var i = 0; i < len; i++) {
+    result += chars.charAt(Math.floor(Math.random() * 16));
+  }
+  return result;
+}
+
+/**
+ * Convert a byte array (from computeHmacSignature) to lowercase hex string.
+ * GAS HMAC functions return Byte[]; we need hex for the second HMAC key.
+ *
+ * @param {Byte[]} bytes - Byte array from Utilities.computeHmacSha256Signature
+ * @returns {string} Lowercase hex string
+ */
+function _bytesToHex(bytes) {
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var b = bytes[i];
+    if (b < 0) b += 256; // GAS bytes can be signed
+    hex += ('0' + b.toString(16)).slice(-2);
+  }
+  return hex;
+}
+
+/**
+ * Log license issuance to the Licenses tab of the master config sheet.
+ * Creates the tab with headers if it does not already exist.
+ * Schema: machineId | jti | tier | issuedAt | expiresAt | status
+ *
+ * @param {string} machineId - The hex-encoded machine fingerprint
+ * @param {string} jti - The JWT ID for this issuance
+ * @param {string} tier - The customer tier
+ * @param {number} issuedAtEpoch - Issued-at timestamp (epoch seconds)
+ * @param {number} expiresAtEpoch - Expiration timestamp (epoch seconds);
+ *        0 denotes a PERMANENT token and is logged as 'permanent'
+ */
+function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch) {
+  try {
+    var masterSheet = _getMasterConfigSheet();
+    if (!masterSheet) return;
+
+    var tab = masterSheet.getSheetByName('Licenses');
+    if (!tab) {
+      tab = masterSheet.insertSheet('Licenses');
+      tab.appendRow(['machineId', 'jti', 'tier', 'issuedAt', 'expiresAt', 'status']);
+    }
+
+    tab.appendRow([
+      machineId,
+      jti,
+      tier,
+      new Date(issuedAtEpoch * 1000),
+      expiresAtEpoch === 0 ? 'permanent' : new Date(expiresAtEpoch * 1000),
+      'active'
+    ]);
+  } catch (e) {
+    console.warn('_logLicenseIssuance: Failed to write to Licenses tab: ' + e.message);
+    // Non-blocking — licensing still succeeds
+  }
+}
+
+// ──────────────────────────────────────────────
 // HANDLER: Registration
 // ──────────────────────────────────────────────
 
 function handleRegistration(data, visitorLimit) {
   // Validate required fields
-  var required = ['fullName', 'idNumber', 'company', 'destination', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
+  var required = ['fullName', 'idNumber', 'company', 'destination', 'visitorType', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
       return jsonResponse({ status: 'error', error: 'Missing required field: ' + required[i] }, 400);
@@ -520,6 +1021,7 @@ function handleRegistration(data, visitorLimit) {
   var idNumber = sanitizeText(data.idNumber);
   var company = sanitizeText(data.company);
   var destination = sanitizeText(data.destination);
+  var visitorType = sanitizeText(data.visitorType);
   var visitationDate = sanitizeText(data.visitationDate);
   var phone = sanitizePhone(data.phone);
   var email = sanitizeText(data.email);
@@ -542,22 +1044,23 @@ function handleRegistration(data, visitorLimit) {
     idNumber,              // 2 ID / Passport Number
     company,               // 3 Company Name
     destination,           // 4 Destination
-    visitationDate,        // 5 Visitation Date (NEW)
-    phone,                 // 6 Hand Phone (was 5)
-    email,                 // 7 Email (was 6)
-    idPhotoUrl,            // 8 ID Photo (was 7)
-    selfieUrl,             // 9 Selfie (was 8)
-    visitorNumber,         // 10 Visitor # (was 9)
-    'Pending Entry',       // 11 Status (was 10)
-    '',                    // 12 Sign-In Time (NEW, empty)
-    '',                    // 13 Sign-Out Time (NEW, empty)
+    visitorType,           // 5 Visitor Type (NEW)
+    visitationDate,        // 6 Visitation Date
+    phone,                 // 7 Hand Phone
+    email,                 // 8 Email
+    idPhotoUrl,            // 9 ID Photo
+    selfieUrl,             // 10 Selfie
+    visitorNumber,         // 11 Visitor #
+    'Pending Entry',       // 12 Status
+    '',                    // 13 Sign-In Time
+    '',                    // 14 Sign-Out Time
   ]);
 
   // Send email confirmation (non-blocking — catch errors)
   try {
-    sendEmailConfirmation(email, visitorNumber, fullName);
+    sendEmailConfirmation(email, visitorNumber, fullName, visitorType);
   } catch (emailErr) {
-    console.warn('Email notification failed: ' + emailErr.message);
+    console.warn('Email notification failed for ' + email + ': ' + emailErr.message + ' | ' + emailErr.stack);
   }
 
   // Get updated count for response
@@ -580,7 +1083,7 @@ function handleRegistration(data, visitorLimit) {
 function getCardNumberForVisitor(visitorNumber, sheetId) {
   if (!visitorNumber || !sheetId) return '';
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    var ss = _openSheetCached(sheetId);
     var cardSheet = ss.getSheetByName('cardno');
     if (!cardSheet) return '';
     var data = cardSheet.getDataRange().getValues();
@@ -606,7 +1109,7 @@ function handleLookupByCard(cardNo, sheetId) {
   }
   
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    var ss = _openSheetCached(sheetId);
     
     // Step 1: Find visitor number from cardno sheet
     var cardSheet = ss.getSheetByName('cardno');
@@ -655,13 +1158,13 @@ function handleLookup(visitorNumber, sheetId) {
 
   // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
   // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
-  //          4=Destination, 5=Visitation Date, 6=Phone, 7=Email,
-  //          8=ID Photo URL, 9=Selfie URL, 10=Visitor Number,
-  //          11=Status, 12=Sign-In Time, 13=Sign-Out Time
+  //          4=Destination, 5=Visitor Type, 6=Visitation Date, 7=Phone, 8=Email,
+  //          9=ID Photo URL, 10=Selfie URL, 11=Visitor Number,
+  //          12=Status, 13=Sign-In Time, 14=Sign-Out Time
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[10] || '').trim();
+    var vn = String(row[11] || '').trim();
 
     if (vn === visitorNumber.trim()) {
       var ts = row[0];
@@ -672,7 +1175,7 @@ function handleLookup(visitorNumber, sheetId) {
         registrationTime = String(ts);
       }
 
-      var status = String(row[11] || 'Pending Entry');
+      var status = String(row[12] || 'Pending Entry');
 
       var visitor = {
         visitorNumber: vn,
@@ -680,15 +1183,16 @@ function handleLookup(visitorNumber, sheetId) {
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: getDateString_(row[5]),
-        phone: String(row[6] || ''),
-        email: String(row[7] || ''),
-        idPhotoUrl: String(row[8] || ''),
-        selfieUrl: String(row[9] || ''),
+        visitorType: String(row[5] || ''),
+        visitationDate: getDateString_(row[6]),
+        phone: String(row[7] || ''),
+        email: String(row[8] || ''),
+        idPhotoUrl: String(row[9] || ''),
+        selfieUrl: String(row[10] || ''),
         status: status,
         registrationTime: registrationTime,
-        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
       };
 
       if (status === 'Checked In') {
@@ -724,28 +1228,29 @@ function handleTodayVisitors(sheetId) {
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var visitDateStr = getDateString_(row[5]);
+    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date (shifted by Visitor Type)
 
-    // Filter by Visitation Date (col 5) matching today
+    // Filter by Visitation Date matching today
     if (visitDateStr === todayStr) {
       var ts = row[0];
-      var status = String(row[11] || 'Pending Entry');
-      var vn = String(row[10] || '');
+      var status = String(row[12] || 'Pending Entry');
+      var vn = String(row[11] || '');
       var visitor = {
         visitorNumber: vn,
         fullName: String(row[1] || ''),
         idNumber: String(row[2] || ''),
         company: String(row[3] || ''),
         destination: String(row[4] || ''),
-        visitationDate: getDateString_(row[5]),
-        phone: String(row[6] || ''),
-        email: String(row[7] || ''),
-        idPhotoUrl: String(row[8] || ''),
-        selfieUrl: String(row[9] || ''),
+        visitorType: String(row[5] || ''),
+        visitationDate: visitDateStr,
+        phone: String(row[7] || ''),
+        email: String(row[8] || ''),
+        idPhotoUrl: String(row[9] || ''),
+        selfieUrl: String(row[10] || ''),
         status: status,
         registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-        signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-        signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
       };
       if (status === 'Checked In') {
         visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
@@ -775,18 +1280,19 @@ function handleReport(data, sheetId) {
   var pendingCount = 0;
   var checkedInCount = 0;
   var signedOutCount = 0;
+  var typeSummary = {}; // { 'Guest': 5, '—': 3 }
 
   for (var i = 1; i < allData.length; i++) {
     var row = allData[i];
-    var visitDateStr = getDateString_(row[5]);
+    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date
 
     // Apply date range filter
     if (fromDate && visitDateStr < fromDate) continue;
     if (toDate && visitDateStr > toDate) continue;
 
     var ts = row[0];
-    var status = String(row[11] || 'Pending Entry');
-    var vn = String(row[10] || '');
+    var status = String(row[12] || 'Pending Entry');
+    var vn = String(row[11] || '');
 
     var visitor = {
       visitorNumber: vn,
@@ -794,13 +1300,14 @@ function handleReport(data, sheetId) {
       idNumber: String(row[2] || ''),
       company: String(row[3] || ''),
       destination: String(row[4] || ''),
+      visitorType: String(row[5] || ''),
       visitationDate: visitDateStr,
-      phone: String(row[6] || ''),
-      email: String(row[7] || ''),
+      phone: String(row[7] || ''),
+      email: String(row[8] || ''),
       status: status,
       registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-      signInTime: row[12] ? (row[12] instanceof Date ? formatDateForDisplay(row[12]) : String(row[12])) : '',
-      signOutTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+      signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
+      signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
     };
 
     if (status === 'Pending Entry' || status === 'Pending') {
@@ -810,6 +1317,10 @@ function handleReport(data, sheetId) {
     } else if (status === 'Signed Out') {
       signedOutCount++;
     }
+
+    // Per-type summary
+    var typeKey = visitor.visitorType || '—';
+    typeSummary[typeKey] = (typeSummary[typeKey] || 0) + 1;
 
     visitors.push(visitor);
   }
@@ -823,6 +1334,7 @@ function handleReport(data, sheetId) {
       pending: pendingCount,
       checkedIn: checkedInCount,
       signedOut: signedOutCount,
+      byType: typeSummary,
     },
   }, 200);
 }
@@ -870,6 +1382,52 @@ function handleDestinations(sheetId) {
     headers: headers,
     destinations: destinations,
     count: destinations.length,
+  }, 200);
+}
+
+// ──────────────────────────────────────────────
+// HANDLER: Visitor Types (from VisitorType tab)
+// ──────────────────────────────────────────────
+
+function handleVisitorTypes(sheetId) {
+  if (!sheetId) {
+    sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  }
+  if (!sheetId) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  var ss = SpreadsheetApp.openById(sheetId);
+  var sheet = ss.getSheetByName('VisitorType');
+
+  if (!sheet) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 1) {
+    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+  }
+
+  // Detect if first row is a header: if A1 matches /visitor\s*type/i, skip it
+  var startRow = 0;
+  var firstCell = String(data[0][0] || '').trim();
+  if (data.length >= 1 && /^visitor\s*type$/i.test(firstCell)) {
+    startRow = 1;
+  }
+
+  var types = [];
+  for (var i = startRow; i < data.length; i++) {
+    var val = String(data[i][0] || '').trim();
+    if (val.length > 0) {
+      types.push(val);
+    }
+  }
+
+  return jsonResponse({
+    status: 'ok',
+    types: types,
+    count: types.length,
   }, 200);
 }
 
@@ -999,10 +1557,10 @@ function handleStatusUpdate(data) {
 
   try {
     for (var i = 1; i < values.length; i++) {
-      var vn = String(values[i][10] || '').trim();
+      var vn = String(values[i][11] || '').trim();
 
       if (vn === visitorNumber.trim()) {
-        var currentStatus = String(values[i][11] || '').trim();
+        var currentStatus = String(values[i][12] || '').trim();
 
         // ── SIGNED OUT PATH ──
         if (newStatus === 'Signed Out') {
@@ -1013,18 +1571,28 @@ function handleStatusUpdate(data) {
             return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
           }
 
-          // Write Sign-Out: Status to col 12, Sign-Out Time to col 14
-          sheet.getRange(i + 1, 12).setValue('Signed Out');
-          sheet.getRange(i + 1, 14).setValue(new Date());
+          // Write Sign-Out: Status to col 13, Sign-Out Time to col 15
+          sheet.getRange(i + 1, 13).setValue('Signed Out');
+          sheet.getRange(i + 1, 15).setValue(new Date());
 
           // Release card immediately on sign-out
+          var releasedCard = false;
           try {
-            releaseCardForVisitor(visitorNumber, data.sheetId);
+            releasedCard = releaseCardForVisitor(visitorNumber, data.sheetId);
           } catch (cardErr) {
             console.warn('Card release failed for ' + visitorNumber + ': ' + cardErr.message);
           }
 
-          return jsonResponse({ status: 'ok', message: 'Visitor signed out', visitorNumber: visitorNumber }, 200);
+          var responseData = {
+            status: 'ok',
+            message: 'Visitor signed out',
+            visitorNumber: visitorNumber,
+          };
+          if (releasedCard && releasedCard !== '') {
+            responseData.cardNo = releasedCard;
+          }
+
+          return jsonResponse(responseData, 200);
         }
 
         // ── CHECK-IN / REJECT PATH ──
@@ -1033,12 +1601,12 @@ function handleStatusUpdate(data) {
           return jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
         }
 
-        // Update Status column (col 12 = index 11)
-        sheet.getRange(i + 1, 12).setValue(newStatus);
-        // Update Sign-In Time column (col 13 = index 12)
-        sheet.getRange(i + 1, 13).setValue(new Date());
-        // Clear any old Sign-Out Time on check-in re-entry (col 14 = index 13)
-        sheet.getRange(i + 1, 14).setValue('');
+        // Update Status column (col 13 = index 12)
+        sheet.getRange(i + 1, 13).setValue(newStatus);
+        // Update Sign-In Time column (col 14 = index 13)
+        sheet.getRange(i + 1, 14).setValue(new Date());
+        // Clear any old Sign-Out Time on check-in re-entry (col 15 = index 14)
+        sheet.getRange(i + 1, 15).setValue('');
 
         var result = {
           status: 'ok',
@@ -1050,7 +1618,7 @@ function handleStatusUpdate(data) {
         if (newStatus === 'Checked In') {
           var fullName = String(values[i][1] || '').trim();
           var destination = String(values[i][4] || '').trim();
-          var email = String(values[i][7] || '').trim();
+          var email = String(values[i][8] || '').trim(); // EMAIL FIX: was [7], now [8] (shifted by Visitor Type)
 
           try {
             var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
@@ -1119,7 +1687,7 @@ function getOrCreateSheet(sheetId) {
 
   var ss;
   try {
-    ss = SpreadsheetApp.openById(sheetId);
+    ss = _openSheetCached(sheetId);
   } catch (e) {
     throw new Error('Cannot open sheet: ' + sheetId + '. Verify the sheet exists and is shared with the Web App owner. Error: ' + e.message);
   }
@@ -1154,22 +1722,7 @@ function setupSheet(sheet) {
   // Only set up headers if the sheet is empty
   if (sheet.getLastRow() > 0) return;
 
-  var headers = [
-    'Timestamp',
-    'Full Name',
-    'ID / Passport Number',
-    'Company Name',
-    'Destination',
-    'Visitation Date',
-    'Hand Phone',
-    'Email',
-    'ID Photo (Drive URL)',
-    'Selfie (Drive URL)',
-    'Visitor Number',
-    'Status',
-    'Sign-In Time',
-    'Sign-Out Time'
-  ];
+  var headers = VISITORLOG_HEADERS;
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
@@ -1291,10 +1844,74 @@ function generateVisitorNumber() {
 // ──────────────────────────────────────────────
 
 /**
+ * Diagnostic endpoint: sends a test email to verify MailApp is authorized.
+ * Surfaces the raw error message (OAuth scope, provisioning, quota, etc.)
+ * so the operator can diagnose deployment issues without checking Executions.
+ * Admin-gated: requires a valid admin token via validateRequest.
+ */
+function handleTestEmail(data) {
+  if (!data.to) {
+    return jsonResponse({ status: 'error', error: 'Missing to' }, 400);
+  }
+
+  console.log('handleTestEmail: attempting to send test email to ' + data.to);
+
+  try {
+    // Diagnostic variant: pass plain:true to send text-only (no htmlBody) —
+    // isolates whether the multipart/alternative MIME shape matters to delivery.
+    var opts = {
+      to: data.to,
+      subject: (data.plain === true) ? 'LITEVM test email (plain text)'
+              : (data.from ? 'LITEVM test email (' + data.from + ')'
+                 : (EMAIL_BRIDGE_FROM ? 'LITEVM test email (bridge)' : 'LITEVM test email')),
+    };
+    if (data.plain === true) {
+      opts.body = 'Test from LITEVM — plain text only, no htmlBody, no multipart.';
+    } else {
+      opts.body = 'Test from LITEVM — if you can read this, MailApp works.';
+      opts.htmlBody = '<p>Test from LITEVM — if you can read this, <b>MailApp works</b>.</p>';
+    }
+    if (data.from) { opts.from = data.from; }
+    sendEmailThroughBridge(opts);
+
+    console.log('handleTestEmail: test email sent successfully to ' + data.to);
+    return jsonResponse({ status: 'ok', sent: true, to: data.to }, 200);
+  } catch (e) {
+    console.error('handleTestEmail: FAILED to send to ' + data.to + ' — ' + e.message + ' | ' + e.stack);
+    return jsonResponse({ status: 'error', sent: false, error: e.message }, 200);
+  }
+}
+
+/**
+ * Send email through the configured bridge. When EMAIL_BRIDGE_FROM is set,
+ * routes via GmailApp with the established sender identity (gmail.com);
+ * otherwise falls back to MailApp (Workspace default sender).
+ */
+function sendEmailThroughBridge(opts) {
+  var from = opts.from || EMAIL_BRIDGE_FROM;
+  if (from) {
+    // Positional overload — unambiguous, documented:
+    // GmailApp.sendEmail(recipient, subject, body, options)
+    GmailApp.sendEmail(
+      opts.to,
+      opts.subject,
+      opts.body || '',
+      {
+        htmlBody: opts.htmlBody,
+        from: from,
+        name: opts.name || 'LITEVM Visitor Management',
+      }
+    );
+  } else {
+    MailApp.sendEmail(opts);
+  }
+}
+
+/**
  * Send email confirmation via MailApp.sendEmail().
  * MailApp is a built-in Apps Script service — no setup, no tokens needed.
  */
-function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
+function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType) {
   var subject = 'LITEVM — Visitor Registration Confirmation';
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(visitorNumber);
 
@@ -1323,6 +1940,7 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
     // Details
     + '<div style="margin-top:24px;padding:16px;background:#F8FAFC;border-radius:10px;text-align:left;">'
     + '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Name:</strong> ' + escapeHtml(fullName) + '</p>'
+    + (visitorType ? '<p style="font-size:14px;color:#1E293B;margin:0 0 4px 0;"><strong>Visitor Type:</strong> ' + escapeHtml(visitorType) + '</p>' : '')
     + '<p style="font-size:14px;color:#1E293B;margin:0;">Please show this QR code at the guard house for entry.</p>'
     + '</div>'
 
@@ -1335,7 +1953,7 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  MailApp.sendEmail({
+  sendEmailThroughBridge({
     to: toEmail,
     subject: subject,
     htmlBody: htmlBody,
@@ -1464,7 +2082,10 @@ function getDoorGroupIdForDestination(destination, sheetId) {
  * Find the first available (unassigned) card in the cardno sheet.
  * Pure read — does NOT modify the sheet.
  * @param {string} accessLevel — Currently unused (reserved for future access-level-based filtering)
- * @param {number|null} doorGroupId — Currently unused (reserved for future door-group-based filtering)
+ * @param {string} sheetId — The Google Sheet ID
+ * @param {number|null} doorGroupId — When provided, only cards whose DoorGroupID (col 5) matches are eligible.
+ *   Cards with an empty DoorGroupID never qualify for a group-scoped pick.
+ *   When null/undefined, falls back to any available card (legacy behaviour).
  * @returns {string|null} The CardNo value, or null if the pool is depleted
  */
 function pickUnusedCard(accessLevel, sheetId, doorGroupId) {
@@ -1473,15 +2094,21 @@ function pickUnusedCard(accessLevel, sheetId, doorGroupId) {
 
   var data = cardSheet.getDataRange().getValues();
 
-  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt
+  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt, 4=DoorGroupID
   for (var i = 1; i < data.length; i++) {
     var status = String(data[i][1] || '').trim().toLowerCase();
-    if (status === 'available' || status === '') {
-      return String(data[i][0] || '').trim();
+    if (status !== 'available' && status !== '') continue;
+
+    // Door-group scoped pick: card must carry the requested group.
+    if (doorGroupId !== null && doorGroupId !== undefined) {
+      var cardGroup = String(data[i][4] || '').trim();
+      if (cardGroup !== String(doorGroupId).trim()) continue;
     }
+
+    return String(data[i][0] || '').trim();
   }
 
-  return null; // Pool depleted — no Available cards
+  return null; // Pool depleted — no Available cards for this door group
 }
 
 /**
@@ -1533,11 +2160,12 @@ function assignCard(cardNo, visitorNumber, visitorName, sheetId) {
  * @returns {{ cardNo: string|null, cardQRUrl: string|null, status: string }}
  */
 function assignCardForVisitor(visitorNumber, fullName, destination, email, sheetId) {
-  // 1. Resolve access level from the visitor's destination
+  // 1. Resolve access level and door group from the visitor's destination
   var accessLevel = getAccessLevelForDestination(destination, sheetId);
+  var doorGroupId = getDoorGroupIdForDestination(destination, sheetId);
 
-  // 2. Pick an unused card (access level reserved for future filtering)
-  var cardNo = pickUnusedCard(accessLevel, sheetId);
+  // 2. Pick an unused card (door-group scoped when destination maps to one)
+  var cardNo = pickUnusedCard(accessLevel, sheetId, doorGroupId);
 
   if (!cardNo) {
     return { cardNo: null, status: 'depleted' };
@@ -1613,7 +2241,7 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  MailApp.sendEmail({
+  sendEmailThroughBridge({
     to: toEmail,
     subject: subject,
     htmlBody: htmlBody,
@@ -1632,12 +2260,13 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
  *
  * @param {string} visitorNumber — The visitor number whose card to release
  * @param {string} sheetId — The Google Sheet ID
- * @returns {boolean} true if card was found and released, false otherwise
+ * @param {Spreadsheet} [ss] — Optional pre-opened spreadsheet handle (avoids a second openById)
+ * @returns {(string|boolean)} The released card number, or false if not found
  */
-function releaseCardForVisitor(visitorNumber, sheetId) {
+function releaseCardForVisitor(visitorNumber, sheetId, ss) {
   if (!visitorNumber || !sheetId) return false;
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    if (!ss) ss = SpreadsheetApp.openById(sheetId);
     var cardSheet = ss.getSheetByName('cardno');
     if (!cardSheet) return false;
 
@@ -1645,8 +2274,9 @@ function releaseCardForVisitor(visitorNumber, sheetId) {
     for (var i = 1; i < data.length; i++) {
       var assignedTo = String(data[i][2] || '').trim();
       if (assignedTo === visitorNumber.trim()) {
+        var cardNumber = String(data[i][0] || '').trim();
         cardSheet.getRange(i + 1, 2, 1, 3).setValues([['Available', '', '']]);
-        return true;
+        return cardNumber;
       }
     }
     return false; // Card not found for this visitor
@@ -1712,11 +2342,11 @@ function handleBulkSignOut(data) {
         var found = false;
 
         for (var i = 1; i < values.length; i++) {
-          var rowVn = String(values[i][10] || '').trim();
+          var rowVn = String(values[i][11] || '').trim();
           if (rowVn !== vn) continue;
 
           found = true;
-          var currentStatus = String(values[i][11] || '').trim();
+          var currentStatus = String(values[i][12] || '').trim();
 
           // Stale checkbox protection
           if (currentStatus === 'Signed Out') {
@@ -1731,8 +2361,8 @@ function handleBulkSignOut(data) {
           }
 
           // Write Signed Out status + timestamp
-          sheet.getRange(i + 1, 12).setValue('Signed Out');
-          sheet.getRange(i + 1, 14).setValue(new Date());
+          sheet.getRange(i + 1, 13).setValue('Signed Out');
+          sheet.getRange(i + 1, 15).setValue(new Date());
 
           // Release card
           var cardReleased = releaseCardForVisitor(vn, sheetId);
@@ -1802,6 +2432,7 @@ function getOrCreateSettingsTab_(ss) {
   ensureSettingRow_(tab, 'autoSignOutEnabled', 'TRUE');
   ensureSettingRow_(tab, 'autoSignOutHour', '21');
   ensureSettingRow_(tab, 'guardPin', '1234');
+  ensureSettingRow_(tab, 'Note', 'Auto sign-out runs daily at 19:00 WIB (fixed)');
 
   return tab;
 }
@@ -1860,66 +2491,111 @@ function getSheetSettings_(sheetId) {
 
 /**
  * Auto sign-out checked-in visitors across all configured sheets.
- * Called by an hourly time-driven trigger.
- * Each sheet's Settings tab determines whether and when to sign out.
+ * Called by a daily time-driven trigger at 19:00 (WIB). Sign-out is a fixed
+ * global schedule — autoSignOutHour / autoSignOutEnabled are ignored.
  */
 function autoSignOut() {
-  var now = new Date();
-  var currentHour = now.getHours();
-  console.log('autoSignOut: Running at hour ' + currentHour);
+  // Self-heal: ensure triggers are installed (in case they were cleared by redeploy)
+  ensureTriggersInstalled();
 
-  // Read all active customers from master config, filtered by current hour
-  var masterConfig = _loadMasterConfig();
-  var sheetIds = [];
-  for (var sid in masterConfig) {
-    var c = masterConfig[sid];
-    if (c.status === 'active' && c.autoSignOutHour === currentHour) {
-      sheetIds.push(sid);
-    }
-  }
-
-  if (sheetIds.length === 0) {
-    console.log('autoSignOut: No customers to process at hour ' + currentHour);
+  // Fixed daily 19:00 run — guard against concurrent executions.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(120000)) {
+    console.warn('autoSignOut: Could not acquire lock — another instance is running, skipping');
     return;
   }
 
-  console.log('autoSignOut: Processing ' + sheetIds.length + ' customer(s) at hour ' + currentHour);
-  for (var s = 0; s < sheetIds.length; s++) {
-    var sheetId = sheetIds[s].trim();
-    if (!sheetId) continue;
+  try {
+    var timeZone = Session.getScriptTimeZone();
+    var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
-    try {
-      var ss = SpreadsheetApp.openById(sheetId);
-      var sheet = ss.getSheetByName('VisitorLog');
-      if (!sheet) continue;
+    // Process ALL active customers (no per-customer opt-out on hour or enabled flag).
+    var masterConfig = _loadMasterConfig();
+    var activeIds = [];
+    for (var sid in masterConfig) {
+      if (masterConfig[sid].status === 'active') activeIds.push(sid);
+    }
 
-      var data = sheet.getDataRange().getValues();
-      for (var i = 1; i < data.length; i++) {
-        var status = String(data[i][11] || '').trim(); // col 11 = Status
-        if (status === 'Checked In') {
-          var visitorNumber = String(data[i][10] || '').trim(); // col 10 = Visitor#
-          if (visitorNumber) {
-            // Write Signed Out status + timestamp
-            sheet.getRange(i + 1, 12).setValue('Signed Out');  // col 12 = Status (1-indexed)
-            sheet.getRange(i + 1, 14).setValue(new Date());    // col 14 = Sign-Out Time
-            // Release card
-            releaseCardForVisitor(visitorNumber, sheetId);
-            console.log('autoSignOut: Signed out ' + visitorNumber + ' from sheet ' + sheetId);
+    if (activeIds.length === 0) {
+      console.log('autoSignOut: No active customers to process');
+      return;
+    }
+
+    console.log('autoSignOut: Processing ' + activeIds.length + ' active customer(s) for ' + todayStr);
+
+    for (var s = 0; s < activeIds.length; s++) {
+      var sheetId = activeIds[s].trim();
+      if (!sheetId) continue;
+
+      try {
+        var ss = SpreadsheetApp.openById(sheetId);
+        var sheet = ss.getSheetByName('VisitorLog');
+        if (!sheet) {
+          console.log('autoSignOut: No VisitorLog sheet for ' + sheetId + ' — skipping');
+          continue;
+        }
+
+        var data = sheet.getDataRange().getValues();
+
+        // Find dirty rows: today's "Checked In" visitors (idempotency guard).
+        var dirty = {};        // 0-indexed data row -> true
+        var dirtyRows = [];    // 0-indexed data rows, ascending
+        var minRow = -1;
+        var maxRow = -1;
+        for (var i = 1; i < data.length; i++) {
+          var status = String(data[i][12] || '').trim(); // col 12 = Status
+          if (status === 'Checked In' && getDateString_(data[i][6]) === todayStr) {
+            dirty[i] = true;
+            dirtyRows.push(i);
+            if (minRow === -1 || i < minRow) minRow = i;
+            if (i > maxRow) maxRow = i;
           }
         }
+
+        if (dirtyRows.length === 0) {
+          console.log('autoSignOut: No checked-in visitors for sheet ' + sheetId);
+          continue;
+        }
+
+        // Write Status + Sign-Out Time in ONE setValues() over the minimal
+        // bounding range [minRow..maxRow] x [col 13..15]. Col 14 (Sign-In Time)
+        // sits between the two target columns and is preserved from existing
+        // data; non-dirty rows inside the span are also preserved.
+        var now = new Date();
+        var numRows = maxRow - minRow + 1;
+        var block = [];
+        for (var r = 0; r < numRows; r++) {
+          var dataIdx = minRow + r;
+          if (dirty[dataIdx]) {
+            block.push(['Signed Out', data[dataIdx][13], now]);
+          } else {
+            block.push([data[dataIdx][12], data[dataIdx][13], data[dataIdx][14]]);
+          }
+        }
+        sheet.getRange(minRow + 1, 13, numRows, 3).setValues(block);
+
+        // Release cards for each signed-out visitor (reuse the open ss handle).
+        var releasedCount = 0;
+        for (var d = 0; d < dirtyRows.length; d++) {
+          var visitorNumber = String(data[dirtyRows[d]][11] || '').trim();
+          if (!visitorNumber) continue;
+          if (releaseCardForVisitor(visitorNumber, sheetId, ss)) releasedCount++;
+        }
+
+        console.log('autoSignOut: Signed out ' + dirtyRows.length + ' visitor(s), released ' + releasedCount + ' card(s) for sheet ' + sheetId);
+      } catch (e) {
+        console.error('autoSignOut: Error for sheet ' + sheetId + ': ' + e.message);
       }
-      console.log('autoSignOut: Processed sheet ' + sheetId);
-    } catch (e) {
-      console.error('autoSignOut: Error for sheet ' + sheetId + ': ' + e.message);
     }
+  } finally {
+    lock.releaseLock();
   }
 }
 
 /**
- * Install or reinstall the hourly auto sign-out time-driven trigger.
+ * Install or reinstall the daily auto sign-out time-driven trigger.
  * Removes any existing autoSignOut triggers first to avoid duplicates.
- * The trigger fires every hour — each sheet's Settings tab controls
- * whether sign-out runs at that hour.
+ * Fires daily at 19:00 (19:00–20:00 project timezone = WIB).
  */
 function setupAutoSignOutTrigger() {
   // Remove existing auto sign-out triggers
@@ -1929,147 +2605,125 @@ function setupAutoSignOutTrigger() {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
-  // Install hourly trigger (fires at 00:00, 01:00, ... 23:00)
+  // Install daily trigger at 19:00 (WIB)
   ScriptApp.newTrigger('autoSignOut')
     .timeBased()
-    .everyHours(1)
-    .create();
-  console.log('setupAutoSignOutTrigger: Hourly auto sign-out trigger installed');
-}
-
-/**
- * Sync autoSignOutHour from each customer's Settings tab back to the
- * master config Customers tab. Runs daily at 02:00.
- * This lets customers set their own hour in their sheet, while keeping
- * the hourly trigger efficient (reads from master config only).
- */
-function syncAutoSignOutHours() {
-  var masterSheet = _getMasterConfigSheet();
-  if (!masterSheet) {
-    console.log('syncAutoSignOutHours: No master config sheet');
-    return;
-  }
-  var custSheet = masterSheet.getSheetByName('Customers');
-  if (!custSheet) {
-    console.log('syncAutoSignOutHours: No Customers tab');
-    return;
-  }
-
-  var data = custSheet.getDataRange().getValues();
-  if (data.length < 2) {
-    console.log('syncAutoSignOutHours: No customer rows');
-    return;
-  }
-
-  // Ensure column 7 (autoSignOutHour) header exists
-  var headers = data[0];
-  if (headers.length < 7) {
-    // Add header
-    custSheet.getRange(1, 7).setValue('autoSignOutHour');
-    headers[6] = 'autoSignOutHour';
-  }
-
-  var updated = 0;
-  var skipped = 0;
-
-  for (var i = 1; i < data.length; i++) {
-    var sheetId = String(data[i][0] || '').trim();
-    if (!sheetId) continue;
-    var status = String(data[i][4] || 'active').trim().toLowerCase();
-    if (status !== 'active') continue;
-
-    try {
-      // Read Settings tab from customer's sheet — auto-creates if missing
-      var ss = SpreadsheetApp.openById(sheetId);
-      var tab = ss.getSheetByName('Settings');
-      if (!tab) {
-        skipped++;
-        continue;
-      }
-
-      var settingsData = tab.getDataRange().getValues();
-      var hour = 21; // default
-
-      for (var r = 1; r < settingsData.length; r++) {
-        var key = String(settingsData[r][0] || '').trim().toLowerCase();
-        var val = String(settingsData[r][1] || '').trim();
-        if (key === 'autosignouthour') {
-          var parsed = parseInt(val, 10);
-          if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
-            hour = parsed;
-          }
-          break;
-        }
-      }
-
-      // Write to master config Customers tab, column 7 (G)
-      var currentVal = data[i][6];
-      if (currentVal !== hour) {
-        custSheet.getRange(i + 1, 7).setValue(hour);
-        data[i][6] = hour;
-        updated++;
-      }
-    } catch (e) {
-      console.warn('syncAutoSignOutHours: Error for sheet ' + sheetId + ': ' + e.message);
-      skipped++;
-    }
-  }
-
-  console.log('syncAutoSignOutHours: ' + updated + ' updated, ' + skipped + ' skipped');
-}
-
-/**
- * Install the daily sync trigger for autoSignOutHours.
- * Removes any existing sync triggers first.
- */
-function setupSyncTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'syncAutoSignOutHours') {
-      ScriptApp.deleteTrigger(triggers[i]);
-    }
-  }
-  ScriptApp.newTrigger('syncAutoSignOutHours')
-    .timeBased()
-    .atHour(2)
+    .atHour(19)
     .everyDays(1)
     .create();
-  console.log('setupSyncTrigger: Daily sync trigger installed at 02:00');
+  console.log('setupAutoSignOutTrigger: Daily auto sign-out trigger installed for 19:00–20:00');
 }
 
 /**
- * Release all Assigned cards back to Available.
- * Called by a daily time-driven trigger at 02:00 (moved from 18:00).
- * Loops through the cardno sheet; for every row where Status = "Assigned",
- * resets Status to "Available" and clears AssignedTo / AssignedAt.
+ * Multi-customer catch-up sweep: signs out any visitor still "Checked In" from
+ * a previous day (stragglers left behind by a failed 19:00 autoSignOut run) and
+ * releases their cards. Called by a daily time-driven trigger at 02:00.
+ * Falls back to the legacy single-sheet SHEET_ID behavior if no active
+ * customers are configured in the master config.
  */
 function releaseDailyCards() {
-  var sheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  if (!sheetId) {
-    console.warn('releaseDailyCards: SHEET_ID not configured — nothing to release');
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(120000)) {
+    console.warn('releaseDailyCards: Could not acquire lock — another instance is running, skipping');
     return;
   }
 
-  var cardSheet = getCardnoSheet(sheetId);
-  if (!cardSheet) {
-    console.warn('releaseDailyCards: cardno sheet not found — nothing to release');
-    return;
-  }
+  try {
+    var timeZone = Session.getScriptTimeZone();
+    var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
-  var data = cardSheet.getDataRange().getValues();
-  var released = 0;
-
-  for (var i = 1; i < data.length; i++) {
-    var status = String(data[i][1] || '').trim().toLowerCase();
-    if (status === 'assigned') {
-      cardSheet.getRange(i + 1, 2).setValue('Available');   // Status → Available
-      cardSheet.getRange(i + 1, 3).setValue('');             // Clear AssignedTo
-      cardSheet.getRange(i + 1, 4).setValue('');             // Clear AssignedAt
-      released++;
+    // Load active customers from master config.
+    var masterConfig = _loadMasterConfig();
+    var activeIds = [];
+    for (var sid in masterConfig) {
+      if (masterConfig[sid].status === 'active') activeIds.push(sid);
     }
-  }
 
-  console.log('releaseDailyCards: Released ' + released + ' cards back to Available');
+    // Fallback: if no active customers in master config, use legacy SHEET_ID
+    // so nothing silently stops for single-sheet deployments.
+    if (activeIds.length === 0) {
+      var legacySheetId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+      if (!legacySheetId) {
+        console.warn('releaseDailyCards: No active customers and SHEET_ID not configured — nothing to release');
+        return;
+      }
+      activeIds.push(legacySheetId);
+      console.log('releaseDailyCards: No active customers in master config — falling back to SHEET_ID');
+    }
+
+    var totalSignedOut = 0;
+    var totalReleased = 0;
+
+    for (var s = 0; s < activeIds.length; s++) {
+      var sheetId = activeIds[s].trim();
+      if (!sheetId) continue;
+
+      try {
+        var ss = SpreadsheetApp.openById(sheetId);
+        var sheet = ss.getSheetByName('VisitorLog');
+        if (!sheet) {
+          console.log('releaseDailyCards: No VisitorLog sheet for ' + sheetId + ' — skipping');
+          continue;
+        }
+
+        var data = sheet.getDataRange().getValues();
+
+        // Find dirty rows: yesterday's-or-older visitors still "Checked In".
+        var dirty = {};
+        var dirtyRows = [];
+        var minRow = -1;
+        var maxRow = -1;
+        for (var i = 1; i < data.length; i++) {
+          var status = String(data[i][12] || '').trim();
+          if (status === 'Checked In' && getDateString_(data[i][6]) !== todayStr) {
+            dirty[i] = true;
+            dirtyRows.push(i);
+            if (minRow === -1 || i < minRow) minRow = i;
+            if (i > maxRow) maxRow = i;
+          }
+        }
+
+        if (dirtyRows.length === 0) {
+          console.log('releaseDailyCards: No stragglers for sheet ' + sheetId);
+          continue;
+        }
+
+        // Same batch-write pattern as autoSignOut: one setValues() over the
+        // minimal bounding range, preserving col 14 (Sign-In Time) and any
+        // non-dirty rows inside the span.
+        var now = new Date();
+        var numRows = maxRow - minRow + 1;
+        var block = [];
+        for (var r = 0; r < numRows; r++) {
+          var dataIdx = minRow + r;
+          if (dirty[dataIdx]) {
+            block.push(['Signed Out', data[dataIdx][13], now]);
+          } else {
+            block.push([data[dataIdx][12], data[dataIdx][13], data[dataIdx][14]]);
+          }
+        }
+        sheet.getRange(minRow + 1, 13, numRows, 3).setValues(block);
+
+        // Release cards for each signed-out visitor (reuse the open ss handle).
+        var releasedCount = 0;
+        for (var d = 0; d < dirtyRows.length; d++) {
+          var visitorNumber = String(data[dirtyRows[d]][11] || '').trim();
+          if (!visitorNumber) continue;
+          if (releaseCardForVisitor(visitorNumber, sheetId, ss)) releasedCount++;
+        }
+
+        console.log('releaseDailyCards: Signed out ' + dirtyRows.length + ' straggler(s), released ' + releasedCount + ' card(s) for sheet ' + sheetId);
+        totalSignedOut += dirtyRows.length;
+        totalReleased += releasedCount;
+      } catch (e) {
+        console.error('releaseDailyCards: Error for sheet ' + sheetId + ': ' + e.message);
+      }
+    }
+
+    console.log('releaseDailyCards: Signed out ' + totalSignedOut + ' visitor(s), released ' + totalReleased + ' card(s) across ' + activeIds.length + ' sheet(s)');
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -2097,21 +2751,34 @@ function setupDailyReleaseTrigger() {
 }
 
 /**
- * One-shot auto-install: ensures hourly auto sign-out trigger and daily
- * card release trigger exist. Uses a versioned ScriptProperties flag so
- * it automatically reinstalls if the trigger schema changes.
+ * One-shot auto-install: ensures the daily auto sign-out trigger (19:00 WIB)
+ * and daily card release trigger (02:00) exist. Uses a versioned ScriptProperties
+ * flag so it automatically reinstalls if the trigger schema changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
 function ensureTriggersInstalled() {
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v3';
+  var SCHEMA_VERSION = 'v6';
 
-  // If already installed at current schema, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION) return;
-
-  // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers
+  // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
+  var hasAutoSignOut = false;
+  var hasDailyRelease = false;
+  for (var ti = 0; ti < triggers.length; ti++) {
+    var fn = triggers[ti].getHandlerFunction();
+    if (fn === 'autoSignOut') hasAutoSignOut = true;
+    if (fn === 'releaseDailyCards') hasDailyRelease = true;
+  }
+  // If schema matches AND both required triggers exist, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease) {
+    return;
+  }
+
+  // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers.
+  // This also cleans up the removed hourly autoSignOut trigger and the legacy
+  // syncAutoSignOutHours trigger from older deployments.
+  triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
     if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'syncAutoSignOutHours') {
@@ -2119,12 +2786,13 @@ function ensureTriggersInstalled() {
     }
   }
 
-  // Install hourly autoSignOut (fires at 00:00, 01:00, ... 23:00)
+  // Install daily autoSignOut at 19:00 (fixed, WIB)
   ScriptApp.newTrigger('autoSignOut')
     .timeBased()
-    .everyHours(1)
+    .atHour(19)
+    .everyDays(1)
     .create();
-  console.log('ensureTriggersInstalled: Installed hourly autoSignOut trigger');
+  console.log('ensureTriggersInstalled: Installed autoSignOut trigger at 19:00');
 
   // Install daily card release at 02:00
   ScriptApp.newTrigger('releaseDailyCards')
@@ -2133,14 +2801,6 @@ function ensureTriggersInstalled() {
     .everyDays(1)
     .create();
   console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
-
-  // Install daily sync of autoSignOutHours from Settings tab → master config
-  ScriptApp.newTrigger('syncAutoSignOutHours')
-    .timeBased()
-    .atHour(2)
-    .everyDays(1)
-    .create();
-  console.log('ensureTriggersInstalled: Installed syncAutoSignOutHours trigger at 02:00');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
@@ -2211,8 +2871,8 @@ function initialize() {
 // MIGRATION SYSTEM
 // ──────────────────────────────────────────────
 
-var SHEET_VERSION_CELL = 'VisitorLog!A1000';
-var LATEST_SHEET_VERSION = 4;
+var SHEET_VERSION_CELL = '_version!A1';
+var LATEST_SHEET_VERSION = 6;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -2364,27 +3024,134 @@ var MIGRATION_REGISTRY = [
       }
     }
   },
+  {
+    version: 5,
+    name: 'Move version marker to hidden _version sheet',
+    destructive: false,
+    description: 'Moves SHEET_VERSION from VisitorLog!A1000 to _version!A1 and clears the old cell',
+    fn: function(ss) {
+      console.log('Migration V5: Moving version marker to _version sheet');
+      
+      // Read old marker from VisitorLog!A1000
+      var vSheet = ss.getSheetByName('VisitorLog');
+      if (vSheet) {
+        var oldCell = vSheet.getRange('A1000');
+        var oldValue = String(oldCell.getValue());
+        var match = oldValue.match(/SHEET_VERSION=(\d+)/);
+        
+        if (match) {
+          // Write to new _version sheet
+          var newSheet = ss.getSheetByName('_version');
+          if (!newSheet) {
+            newSheet = ss.insertSheet('_version');
+            newSheet.hideSheet();
+          }
+          newSheet.getRange('A1').setValue('SHEET_VERSION=' + match[1]);
+          
+          // Clear old marker
+          oldCell.clear();
+          console.log('Migration V5: Migrated version ' + match[1] + ' from A1000 to _version sheet');
+        } else {
+          console.log('Migration V5: No old marker found at A1000 — initializing _version sheet');
+          var newSheet = ss.getSheetByName('_version');
+          if (!newSheet) {
+            newSheet = ss.insertSheet('_version');
+            newSheet.hideSheet();
+            newSheet.getRange('A1').setValue('SHEET_VERSION=0');
+          }
+        }
+      } else {
+        console.log('Migration V5: VisitorLog not found — creating _version sheet');
+        var newSheet = ss.getSheetByName('_version');
+        if (!newSheet) {
+          newSheet = ss.insertSheet('_version');
+          newSheet.hideSheet();
+          newSheet.getRange('A1').setValue('SHEET_VERSION=0');
+        }
+      }
+      
+      console.log('Migration V5: Complete');
+    }
+  },
+  {
+    version: 6,
+    name: 'Add Visitor Type column + VisitorType tab',
+    destructive: false,
+    description: 'Inserts Visitor Type column after Destination in VisitorLog, creates VisitorType tab',
+    fn: function(ss) {
+      console.log('Migration V6: Adding Visitor Type column and VisitorType tab');
+
+      var sheet = ss.getSheetByName('VisitorLog');
+      if (!sheet) {
+        console.log('Migration V6: VisitorLog not found — skipping column insert');
+      } else {
+        // Idempotency guard: read headers
+        var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        var hasVisitorType = false;
+        for (var h = 0; h < headers.length; h++) {
+          if (/visitor\s*type/i.test(String(headers[h] || ''))) {
+            hasVisitorType = true;
+            break;
+          }
+        }
+        if (hasVisitorType || headers.length >= 15) {
+          console.log('Migration V6: Visitor Type column already present — skipping');
+        } else {
+          // Insert column after Destination (col 5 = index 4, 1-indexed col 5)
+          sheet.insertColumnAfter(4);
+          sheet.getRange(1, 5).setValue('Visitor Type');
+          sheet.getRange(1, 5).setFontWeight('bold');
+          sheet.autoResizeColumn(5);
+          console.log('Migration V6: Inserted Visitor Type column at col 5');
+        }
+      }
+
+      // Create VisitorType tab if missing
+      var vtSheet = ss.getSheetByName('VisitorType');
+      if (!vtSheet) {
+        vtSheet = ss.insertSheet('VisitorType');
+        vtSheet.getRange(1, 1).setValue('Visitor Type');
+        vtSheet.getRange(1, 1).setFontWeight('bold');
+        vtSheet.setFrozenRows(1);
+        vtSheet.autoResizeColumn(1);
+        console.log('Migration V6: Created VisitorType tab');
+      } else {
+        console.log('Migration V6: VisitorType tab already exists — skipping');
+      }
+
+      console.log('Migration V6: Complete');
+    }
+  },
 ];
 
 /**
- * Read sheet version from VisitorLog!A1000.
+ * Read sheet version from _version!A1.
+ * Creates the _version sheet if it doesn't exist.
  * Returns 0 if no version marker found.
  */
 function getSheetVersion_(ss) {
-  var sheet = ss.getSheetByName('VisitorLog');
-  if (!sheet) return 0;
-  var cell = sheet.getRange(SHEET_VERSION_CELL.replace('VisitorLog!', '')).getValue();
+  var sheet = ss.getSheetByName('_version');
+  if (!sheet) {
+    sheet = ss.insertSheet('_version');
+    sheet.hideSheet();
+    return 0;
+  }
+  var cell = sheet.getRange('A1').getValue();
   var match = String(cell).match(/SHEET_VERSION=(\d+)/);
   return match ? parseInt(match[1], 10) : 0;
 }
 
 /**
- * Write sheet version to VisitorLog!A1000.
+ * Write sheet version to _version!A1.
+ * Creates the _version sheet if it doesn't exist.
  */
 function setSheetVersion_(ss, version) {
-  var sheet = ss.getSheetByName('VisitorLog');
-  if (!sheet) return;
-  sheet.getRange(SHEET_VERSION_CELL.replace('VisitorLog!', '')).setValue('SHEET_VERSION=' + version);
+  var sheet = ss.getSheetByName('_version');
+  if (!sheet) {
+    sheet = ss.insertSheet('_version');
+    sheet.hideSheet();
+  }
+  sheet.getRange('A1').setValue('SHEET_VERSION=' + version);
 }
 
 /**
@@ -2396,35 +3163,44 @@ function setSheetVersion_(ss, version) {
  * @returns {Object} { status, fromVersion, toVersion, migrationsRun, error? }
  */
 function handleMigration(sheetId) {
-  var ss = SpreadsheetApp.openById(sheetId);
-  var fromVersion = getSheetVersion_(ss);
-  var migrationsRun = [];
-
-  for (var i = 0; i < MIGRATION_REGISTRY.length; i++) {
-    var mig = MIGRATION_REGISTRY[i];
-    if (mig.version > fromVersion) {
-      try {
-        mig.fn(ss);
-        setSheetVersion_(ss, mig.version);
-        migrationsRun.push(mig.name + ' (v' + mig.version + ')');
-        console.log('Migration v' + mig.version + ' (' + mig.name + ') completed successfully');
-      } catch (e) {
-        console.error('Migration v' + mig.version + ' failed: ' + e.message);
-        return {
-          status: 'error',
-          error: 'Migration v' + mig.version + ' (' + mig.name + ') failed: ' + e.message,
-          fromVersion: fromVersion,
-          toVersion: mig.version - 1,
-          migrationsRun: migrationsRun
-        };
-      }
-    }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return { status: 'error', error: 'Could not acquire migration lock — another migration may be in progress' };
   }
 
-  return {
-    status: 'ok',
-    fromVersion: fromVersion,
-    toVersion: LATEST_SHEET_VERSION,
-    migrationsRun: migrationsRun
-  };
+  try {
+    var ss = SpreadsheetApp.openById(sheetId);
+    var fromVersion = getSheetVersion_(ss);
+    var migrationsRun = [];
+
+    for (var i = 0; i < MIGRATION_REGISTRY.length; i++) {
+      var mig = MIGRATION_REGISTRY[i];
+      if (mig.version > fromVersion) {
+        try {
+          mig.fn(ss);
+          setSheetVersion_(ss, mig.version);
+          migrationsRun.push(mig.name + ' (v' + mig.version + ')');
+          console.log('Migration v' + mig.version + ' (' + mig.name + ') completed successfully');
+        } catch (e) {
+          console.error('Migration v' + mig.version + ' failed: ' + e.message);
+          return {
+            status: 'error',
+            error: 'Migration v' + mig.version + ' (' + mig.name + ') failed: ' + e.message,
+            fromVersion: fromVersion,
+            toVersion: mig.version - 1,
+            migrationsRun: migrationsRun
+          };
+        }
+      }
+    }
+
+    return {
+      status: 'ok',
+      fromVersion: fromVersion,
+      toVersion: LATEST_SHEET_VERSION,
+      migrationsRun: migrationsRun
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }

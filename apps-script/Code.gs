@@ -2082,7 +2082,10 @@ function getDoorGroupIdForDestination(destination, sheetId) {
  * Find the first available (unassigned) card in the cardno sheet.
  * Pure read — does NOT modify the sheet.
  * @param {string} accessLevel — Currently unused (reserved for future access-level-based filtering)
- * @param {number|null} doorGroupId — Currently unused (reserved for future door-group-based filtering)
+ * @param {string} sheetId — The Google Sheet ID
+ * @param {number|null} doorGroupId — When provided, only cards whose DoorGroupID (col 5) matches are eligible.
+ *   Cards with an empty DoorGroupID never qualify for a group-scoped pick.
+ *   When null/undefined, falls back to any available card (legacy behaviour).
  * @returns {string|null} The CardNo value, or null if the pool is depleted
  */
 function pickUnusedCard(accessLevel, sheetId, doorGroupId) {
@@ -2091,15 +2094,21 @@ function pickUnusedCard(accessLevel, sheetId, doorGroupId) {
 
   var data = cardSheet.getDataRange().getValues();
 
-  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt
+  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt, 4=DoorGroupID
   for (var i = 1; i < data.length; i++) {
     var status = String(data[i][1] || '').trim().toLowerCase();
-    if (status === 'available' || status === '') {
-      return String(data[i][0] || '').trim();
+    if (status !== 'available' && status !== '') continue;
+
+    // Door-group scoped pick: card must carry the requested group.
+    if (doorGroupId !== null && doorGroupId !== undefined) {
+      var cardGroup = String(data[i][4] || '').trim();
+      if (cardGroup !== String(doorGroupId).trim()) continue;
     }
+
+    return String(data[i][0] || '').trim();
   }
 
-  return null; // Pool depleted — no Available cards
+  return null; // Pool depleted — no Available cards for this door group
 }
 
 /**
@@ -2151,11 +2160,12 @@ function assignCard(cardNo, visitorNumber, visitorName, sheetId) {
  * @returns {{ cardNo: string|null, cardQRUrl: string|null, status: string }}
  */
 function assignCardForVisitor(visitorNumber, fullName, destination, email, sheetId) {
-  // 1. Resolve access level from the visitor's destination
+  // 1. Resolve access level and door group from the visitor's destination
   var accessLevel = getAccessLevelForDestination(destination, sheetId);
+  var doorGroupId = getDoorGroupIdForDestination(destination, sheetId);
 
-  // 2. Pick an unused card (access level reserved for future filtering)
-  var cardNo = pickUnusedCard(accessLevel, sheetId);
+  // 2. Pick an unused card (door-group scoped when destination maps to one)
+  var cardNo = pickUnusedCard(accessLevel, sheetId, doorGroupId);
 
   if (!cardNo) {
     return { cardNo: null, status: 'depleted' };
