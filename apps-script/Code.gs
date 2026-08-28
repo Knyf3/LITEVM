@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.11.6';  // Increment this to track deployed versions
+var CODE_VERSION = '1.12.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
