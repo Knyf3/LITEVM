@@ -335,7 +335,7 @@ function _checkAutoRegisterRateLimit_() {
 
 /**
  * Count today's registrations for a customer sheet by Visitation Date.
- * Scans VisitorLog, counts rows where col 5 matches today's date.
+ * Scans VisitorLog, counts rows where the Visitation Date column matches today's date.
  * Returns null on error (caller decides fail-open vs fail-closed).
  *
  * @param {string} sheetId - Customer's Google Sheet ID
@@ -350,12 +350,18 @@ function getDailyVisitorCount_(sheetId) {
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return 0; // header only
 
+    var visitDateIdx = getColumnIndex_(data, 'Visitation Date');
+    if (visitDateIdx === -1) {
+      console.error('getDailyVisitorCount_: VisitorLog missing Visitation Date header');
+      return null;
+    }
+
     var timeZone = Session.getScriptTimeZone();
     var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
     var count = 0;
     for (var i = 1; i < data.length; i++) {
-      var cell = data[i][6]; // Col G = Visitation Date (index 6, after Visitor Type insert)
+      var cell = data[i][visitDateIdx];
       var dateStr = '';
       if (cell instanceof Date && !isNaN(cell.getTime())) {
         dateStr = Utilities.formatDate(cell, timeZone, 'yyyy-MM-dd');
@@ -1038,23 +1044,46 @@ function handleRegistration(data, visitorLimit) {
 
   // Write to Google Sheet
   var sheet = getOrCreateSheet(data.sheetId);
-  sheet.appendRow([
-    new Date(),            // 0 Timestamp
-    fullName,              // 1 Full Name
-    idNumber,              // 2 ID / Passport Number
-    company,               // 3 Company Name
-    destination,           // 4 Destination
-    visitorType,           // 5 Visitor Type (NEW)
-    visitationDate,        // 6 Visitation Date
-    phone,                 // 7 Hand Phone
-    email,                 // 8 Email
-    idPhotoUrl,            // 9 ID Photo
-    selfieUrl,             // 10 Selfie
-    visitorNumber,         // 11 Visitor #
-    'Pending Entry',       // 12 Status
-    '',                    // 13 Sign-In Time
-    '',                    // 14 Sign-Out Time
-  ]);
+  var sheetData = sheet.getDataRange().getValues();
+  var headerLen = sheetData.length > 0 ? sheetData[0].length : VISITORLOG_HEADERS.length;
+
+  var colNames = [
+    'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
+    'Destination', 'Visitor Type', 'Visitation Date', 'Hand Phone', 'Email',
+    'ID Photo (Drive URL)', 'Selfie (Drive URL)', 'Visitor Number', 'Status',
+    'Sign-In Time', 'Sign-Out Time'
+  ];
+  var cols = resolveColumns(sheetData, colNames);
+
+  // All 15 canonical headers must be present BEFORE appending (no partial write).
+  for (var h = 0; h < colNames.length; h++) {
+    if (cols[colNames[h]] === -1) {
+      return jsonResponse({ status: 'error', error: 'VisitorLog header missing: ' + colNames[h] }, 500);
+    }
+  }
+
+  // Build a full-width row array (length = header row length), placing each
+  // field at its resolved index and leaving everything else empty.
+  var rowArr = new Array(headerLen);
+  for (var k = 0; k < headerLen; k++) rowArr[k] = '';
+
+  rowArr[cols['Timestamp']] = new Date();
+  rowArr[cols['Full Name']] = fullName;
+  rowArr[cols['ID / Passport Number']] = idNumber;
+  rowArr[cols['Company Name']] = company;
+  rowArr[cols['Destination']] = destination;
+  rowArr[cols['Visitor Type']] = visitorType;
+  rowArr[cols['Visitation Date']] = visitationDate;
+  rowArr[cols['Hand Phone']] = phone;
+  rowArr[cols['Email']] = email;
+  rowArr[cols['ID Photo (Drive URL)']] = idPhotoUrl;
+  rowArr[cols['Selfie (Drive URL)']] = selfieUrl;
+  rowArr[cols['Visitor Number']] = visitorNumber;
+  rowArr[cols['Status']] = 'Pending Entry';
+  rowArr[cols['Sign-In Time']] = '';
+  rowArr[cols['Sign-Out Time']] = '';
+
+  sheet.appendRow(rowArr);
 
   // Send email confirmation (non-blocking — catch errors)
   try {
@@ -1087,9 +1116,19 @@ function getCardNumberForVisitor(visitorNumber, sheetId) {
     var cardSheet = ss.getSheetByName('cardno');
     if (!cardSheet) return '';
     var data = cardSheet.getDataRange().getValues();
+
+    var cols = resolveColumns(data, ['CardNo', 'AssignedTo']);
+    var cardNoIdx = cols['CardNo'];
+    var assignedToIdx = cols['AssignedTo'];
+
+    if (cardNoIdx === -1 || assignedToIdx === -1) {
+      console.warn('getCardNumberForVisitor: cardno sheet missing CardNo/AssignedTo headers');
+      return '';
+    }
+
     for (var i = 1; i < data.length; i++) {
-      if (String(data[i][2] || '').trim() === visitorNumber.trim()) {
-        return String(data[i][0] || '').trim();
+      if (String(data[i][assignedToIdx] || '').trim() === visitorNumber.trim()) {
+        return String(data[i][cardNoIdx] || '').trim();
       }
     }
   } catch (e) {
@@ -1118,13 +1157,23 @@ function handleLookupByCard(cardNo, sheetId) {
     }
     
     var cardData = cardSheet.getDataRange().getValues();
+
+    var cols = resolveColumns(cardData, ['CardNo', 'Status', 'AssignedTo']);
+    var cardNoIdx = cols['CardNo'];
+    var statusIdx = cols['Status'];
+    var assignedToIdx = cols['AssignedTo'];
+
+    if (cardNoIdx === -1 || statusIdx === -1 || assignedToIdx === -1) {
+      return jsonResponse({ status: 'error', message: 'cardno sheet headers missing required columns' }, 500);
+    }
+
     var visitorNumber = '';
     var cardStatus = '';
-    
+
     for (var i = 1; i < cardData.length; i++) {
-      if (String(cardData[i][0] || '').trim() === cardNo.trim()) {
-        visitorNumber = String(cardData[i][2] || '').trim();
-        cardStatus = String(cardData[i][1] || '').trim();
+      if (String(cardData[i][cardNoIdx] || '').trim() === cardNo.trim()) {
+        visitorNumber = String(cardData[i][assignedToIdx] || '').trim();
+        cardStatus = String(cardData[i][statusIdx] || '').trim();
         break;
       }
     }
@@ -1156,18 +1205,40 @@ function handleLookup(visitorNumber, sheetId) {
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
-  // Headers are in row 1 (index 0). Data starts at row 2 (index 1).
-  // Columns: 0=Timestamp, 1=Full Name, 2=ID/Passport, 3=Company,
-  //          4=Destination, 5=Visitor Type, 6=Visitation Date, 7=Phone, 8=Email,
-  //          9=ID Photo URL, 10=Selfie URL, 11=Visitor Number,
-  //          12=Status, 13=Sign-In Time, 14=Sign-Out Time
+  var cols = resolveColumns(data, [
+    'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
+    'Destination', 'Visitor Type', 'Visitation Date', 'Hand Phone', 'Email',
+    'ID Photo (Drive URL)', 'Selfie (Drive URL)', 'Visitor Number', 'Status',
+    'Sign-In Time', 'Sign-Out Time'
+  ]);
+
+  // Required headers — fail loud with a 500 rather than misread rows.
+  if (cols['Visitor Number'] === -1 || cols['Status'] === -1) {
+    return jsonResponse({ status: 'error', message: 'VisitorLog headers missing required columns' }, 500);
+  }
+
+  var tsIdx = cols['Timestamp'];
+  var fullNameIdx = cols['Full Name'];
+  var idNumberIdx = cols['ID / Passport Number'];
+  var companyIdx = cols['Company Name'];
+  var destinationIdx = cols['Destination'];
+  var visitorTypeIdx = cols['Visitor Type'];
+  var visitationDateIdx = cols['Visitation Date'];
+  var phoneIdx = cols['Hand Phone'];
+  var emailIdx = cols['Email'];
+  var idPhotoIdx = cols['ID Photo (Drive URL)'];
+  var selfieIdx = cols['Selfie (Drive URL)'];
+  var visitorNumberIdx = cols['Visitor Number'];
+  var statusIdx = cols['Status'];
+  var signInIdx = cols['Sign-In Time'];
+  var signOutIdx = cols['Sign-Out Time'];
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var vn = String(row[11] || '').trim();
+    var vn = String(row[visitorNumberIdx] || '').trim();
 
     if (vn === visitorNumber.trim()) {
-      var ts = row[0];
+      var ts = row[tsIdx];
       var registrationTime = '';
       if (ts instanceof Date) {
         registrationTime = formatDateForDisplay(ts);
@@ -1175,24 +1246,24 @@ function handleLookup(visitorNumber, sheetId) {
         registrationTime = String(ts);
       }
 
-      var status = String(row[12] || 'Pending Entry');
+      var status = String(row[statusIdx] || 'Pending Entry');
 
       var visitor = {
         visitorNumber: vn,
-        fullName: String(row[1] || ''),
-        idNumber: String(row[2] || ''),
-        company: String(row[3] || ''),
-        destination: String(row[4] || ''),
-        visitorType: String(row[5] || ''),
-        visitationDate: getDateString_(row[6]),
-        phone: String(row[7] || ''),
-        email: String(row[8] || ''),
-        idPhotoUrl: String(row[9] || ''),
-        selfieUrl: String(row[10] || ''),
+        fullName: String(row[fullNameIdx] || ''),
+        idNumber: String(row[idNumberIdx] || ''),
+        company: String(row[companyIdx] || ''),
+        destination: String(row[destinationIdx] || ''),
+        visitorType: String(row[visitorTypeIdx] || ''),
+        visitationDate: getDateString_(row[visitationDateIdx]),
+        phone: String(row[phoneIdx] || ''),
+        email: String(row[emailIdx] || ''),
+        idPhotoUrl: String(row[idPhotoIdx] || ''),
+        selfieUrl: String(row[selfieIdx] || ''),
         status: status,
         registrationTime: registrationTime,
-        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
-        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
+        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
+        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
       };
 
       if (status === 'Checked In') {
@@ -1221,6 +1292,34 @@ function handleTodayVisitors(sheetId) {
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
+  var cols = resolveColumns(data, [
+    'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
+    'Destination', 'Visitor Type', 'Visitation Date', 'Hand Phone', 'Email',
+    'ID Photo (Drive URL)', 'Selfie (Drive URL)', 'Visitor Number', 'Status',
+    'Sign-In Time', 'Sign-Out Time'
+  ]);
+
+  if (cols['Visitation Date'] === -1 || cols['Visitor Number'] === -1 ||
+      cols['Status'] === -1 || cols['Full Name'] === -1) {
+    return jsonResponse({ status: 'error', message: 'VisitorLog headers missing required columns' }, 500);
+  }
+
+  var tsIdx = cols['Timestamp'];
+  var fullNameIdx = cols['Full Name'];
+  var idNumberIdx = cols['ID / Passport Number'];
+  var companyIdx = cols['Company Name'];
+  var destinationIdx = cols['Destination'];
+  var visitorTypeIdx = cols['Visitor Type'];
+  var visitationDateIdx = cols['Visitation Date'];
+  var phoneIdx = cols['Hand Phone'];
+  var emailIdx = cols['Email'];
+  var idPhotoIdx = cols['ID Photo (Drive URL)'];
+  var selfieIdx = cols['Selfie (Drive URL)'];
+  var visitorNumberIdx = cols['Visitor Number'];
+  var statusIdx = cols['Status'];
+  var signInIdx = cols['Sign-In Time'];
+  var signOutIdx = cols['Sign-Out Time'];
+
   var timeZone = Session.getScriptTimeZone();
   var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
@@ -1228,29 +1327,29 @@ function handleTodayVisitors(sheetId) {
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date (shifted by Visitor Type)
+    var visitDateStr = getDateString_(row[visitationDateIdx]);
 
     // Filter by Visitation Date matching today
     if (visitDateStr === todayStr) {
-      var ts = row[0];
-      var status = String(row[12] || 'Pending Entry');
-      var vn = String(row[11] || '');
+      var ts = row[tsIdx];
+      var status = String(row[statusIdx] || 'Pending Entry');
+      var vn = String(row[visitorNumberIdx] || '');
       var visitor = {
         visitorNumber: vn,
-        fullName: String(row[1] || ''),
-        idNumber: String(row[2] || ''),
-        company: String(row[3] || ''),
-        destination: String(row[4] || ''),
-        visitorType: String(row[5] || ''),
+        fullName: String(row[fullNameIdx] || ''),
+        idNumber: String(row[idNumberIdx] || ''),
+        company: String(row[companyIdx] || ''),
+        destination: String(row[destinationIdx] || ''),
+        visitorType: String(row[visitorTypeIdx] || ''),
         visitationDate: visitDateStr,
-        phone: String(row[7] || ''),
-        email: String(row[8] || ''),
-        idPhotoUrl: String(row[9] || ''),
-        selfieUrl: String(row[10] || ''),
+        phone: String(row[phoneIdx] || ''),
+        email: String(row[emailIdx] || ''),
+        idPhotoUrl: String(row[idPhotoIdx] || ''),
+        selfieUrl: String(row[selfieIdx] || ''),
         status: status,
         registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-        signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
-        signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
+        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
+        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
       };
       if (status === 'Checked In') {
         visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
@@ -1272,6 +1371,32 @@ function handleReport(data, sheetId) {
   var sheet = getOrCreateSheet(data.sheetId || sheetId);
   var allData = sheet.getDataRange().getValues();
 
+  var cols = resolveColumns(allData, [
+    'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
+    'Destination', 'Visitor Type', 'Visitation Date', 'Hand Phone', 'Email',
+    'ID Photo (Drive URL)', 'Selfie (Drive URL)', 'Visitor Number', 'Status',
+    'Sign-In Time', 'Sign-Out Time'
+  ]);
+
+  if (cols['Visitation Date'] === -1 || cols['Status'] === -1 ||
+      cols['Visitor Number'] === -1 || cols['Visitor Type'] === -1) {
+    return jsonResponse({ status: 'error', message: 'VisitorLog headers missing required columns' }, 500);
+  }
+
+  var tsIdx = cols['Timestamp'];
+  var fullNameIdx = cols['Full Name'];
+  var idNumberIdx = cols['ID / Passport Number'];
+  var companyIdx = cols['Company Name'];
+  var destinationIdx = cols['Destination'];
+  var visitorTypeIdx = cols['Visitor Type'];
+  var visitationDateIdx = cols['Visitation Date'];
+  var phoneIdx = cols['Hand Phone'];
+  var emailIdx = cols['Email'];
+  var visitorNumberIdx = cols['Visitor Number'];
+  var statusIdx = cols['Status'];
+  var signInIdx = cols['Sign-In Time'];
+  var signOutIdx = cols['Sign-Out Time'];
+
   var fromDate = data.fromDate || '';
   var toDate = data.toDate || '';
   var timeZone = Session.getScriptTimeZone();
@@ -1284,30 +1409,30 @@ function handleReport(data, sheetId) {
 
   for (var i = 1; i < allData.length; i++) {
     var row = allData[i];
-    var visitDateStr = getDateString_(row[6]); // col 6 = Visitation Date
+    var visitDateStr = getDateString_(row[visitationDateIdx]);
 
     // Apply date range filter
     if (fromDate && visitDateStr < fromDate) continue;
     if (toDate && visitDateStr > toDate) continue;
 
-    var ts = row[0];
-    var status = String(row[12] || 'Pending Entry');
-    var vn = String(row[11] || '');
+    var ts = row[tsIdx];
+    var status = String(row[statusIdx] || 'Pending Entry');
+    var vn = String(row[visitorNumberIdx] || '');
 
     var visitor = {
       visitorNumber: vn,
-      fullName: String(row[1] || ''),
-      idNumber: String(row[2] || ''),
-      company: String(row[3] || ''),
-      destination: String(row[4] || ''),
-      visitorType: String(row[5] || ''),
+      fullName: String(row[fullNameIdx] || ''),
+      idNumber: String(row[idNumberIdx] || ''),
+      company: String(row[companyIdx] || ''),
+      destination: String(row[destinationIdx] || ''),
+      visitorType: String(row[visitorTypeIdx] || ''),
       visitationDate: visitDateStr,
-      phone: String(row[7] || ''),
-      email: String(row[8] || ''),
+      phone: String(row[phoneIdx] || ''),
+      email: String(row[emailIdx] || ''),
       status: status,
       registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-      signInTime: row[13] ? (row[13] instanceof Date ? formatDateForDisplay(row[13]) : String(row[13])) : '',
-      signOutTime: row[14] ? (row[14] instanceof Date ? formatDateForDisplay(row[14]) : String(row[14])) : '',
+      signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
+      signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
     };
 
     if (status === 'Pending Entry' || status === 'Pending') {
@@ -1494,11 +1619,11 @@ function seedCardPool(count, prefix) {
 
   var sheet = getCardnoSheet(sheetId);
   if (!sheet) {
-    // Cardno sheet doesn't exist yet — create it
+    // Cardno sheet doesn't exist yet — create it with canonical 5 headers.
     var ss = SpreadsheetApp.openById(sheetId);
     sheet = ss.insertSheet('cardno');
-    sheet.getRange(1, 1, 1, 4).setValues([['CardNo', 'Status', 'AssignedTo', 'AssignedAt']]);
-    sheet.getRange(1, 1, 1, 4).setFontWeight('bold');
+    sheet.getRange(1, 1, 1, CARDNO_HEADERS.length).setValues([CARDNO_HEADERS]);
+    sheet.getRange(1, 1, 1, CARDNO_HEADERS.length).setFontWeight('bold');
     sheet.setFrozenRows(1);
     console.log('seedCardPool: Created cardno sheet with headers');
   }
@@ -1511,14 +1636,15 @@ function seedCardPool(count, prefix) {
   }
 
   // Generate cards: prefix padded to 5 digits, e.g. 10001, 10002...
+  // 5 columns: CardNo, Status, AssignedTo, AssignedAt, DoorGroupID (empty).
   var cards = [];
   for (var i = 1; i <= count; i++) {
     var padded = ('00000' + i).slice(-5);
-    cards.push([prefix + padded, 'Available', '', '']);
+    cards.push([prefix + padded, 'Available', '', '', '']);
   }
 
-  sheet.getRange(2, 1, cards.length, 4).setValues(cards);
-  sheet.autoResizeColumns(1, 4);
+  sheet.getRange(2, 1, cards.length, 5).setValues(cards);
+  sheet.autoResizeColumns(1, 5);
 
   console.log('seedCardPool: Added ' + count + ' cards (e.g. ' + prefix + '00001 to ' + prefix + ('00000' + count).slice(-5) + ')');
 }
@@ -1545,6 +1671,24 @@ function handleStatusUpdate(data) {
   var dataRange = sheet.getDataRange();
   var values = dataRange.getValues();
 
+  var cols = resolveColumns(values, [
+    'Full Name', 'Destination', 'Email', 'Visitor Number', 'Status',
+    'Sign-In Time', 'Sign-Out Time'
+  ]);
+
+  if (cols['Visitor Number'] === -1 || cols['Status'] === -1 ||
+      cols['Sign-In Time'] === -1 || cols['Sign-Out Time'] === -1) {
+    return jsonResponse({ status: 'error', message: 'VisitorLog headers missing required columns' }, 500);
+  }
+
+  var fullNameIdx = cols['Full Name'];
+  var destinationIdx = cols['Destination'];
+  var emailIdx = cols['Email'];
+  var visitorNumberIdx = cols['Visitor Number'];
+  var statusIdx = cols['Status'];
+  var signInIdx = cols['Sign-In Time'];
+  var signOutIdx = cols['Sign-Out Time'];
+
   // Use LockService for the Checked In and Signed Out paths to serialize concurrent requests
   // and prevent two guards from picking the same card or signing out the same visitor
   var lock = null;
@@ -1557,10 +1701,10 @@ function handleStatusUpdate(data) {
 
   try {
     for (var i = 1; i < values.length; i++) {
-      var vn = String(values[i][11] || '').trim();
+      var vn = String(values[i][visitorNumberIdx] || '').trim();
 
       if (vn === visitorNumber.trim()) {
-        var currentStatus = String(values[i][12] || '').trim();
+        var currentStatus = String(values[i][statusIdx] || '').trim();
 
         // ── SIGNED OUT PATH ──
         if (newStatus === 'Signed Out') {
@@ -1571,9 +1715,9 @@ function handleStatusUpdate(data) {
             return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
           }
 
-          // Write Sign-Out: Status to col 13, Sign-Out Time to col 15
-          sheet.getRange(i + 1, 13).setValue('Signed Out');
-          sheet.getRange(i + 1, 15).setValue(new Date());
+          // Write Sign-Out: Status + Sign-Out Time at resolved indices.
+          sheet.getRange(i + 1, statusIdx + 1).setValue('Signed Out');
+          sheet.getRange(i + 1, signOutIdx + 1).setValue(new Date());
 
           // Release card immediately on sign-out
           var releasedCard = false;
@@ -1601,12 +1745,10 @@ function handleStatusUpdate(data) {
           return jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
         }
 
-        // Update Status column (col 13 = index 12)
-        sheet.getRange(i + 1, 13).setValue(newStatus);
-        // Update Sign-In Time column (col 14 = index 13)
-        sheet.getRange(i + 1, 14).setValue(new Date());
-        // Clear any old Sign-Out Time on check-in re-entry (col 15 = index 14)
-        sheet.getRange(i + 1, 15).setValue('');
+        // Update Status, Sign-In Time, and clear Sign-Out Time at resolved indices.
+        sheet.getRange(i + 1, statusIdx + 1).setValue(newStatus);
+        sheet.getRange(i + 1, signInIdx + 1).setValue(new Date());
+        sheet.getRange(i + 1, signOutIdx + 1).setValue('');
 
         var result = {
           status: 'ok',
@@ -1616,9 +1758,9 @@ function handleStatusUpdate(data) {
 
         // If Checked In, proceed with card assignment (inside lock)
         if (newStatus === 'Checked In') {
-          var fullName = String(values[i][1] || '').trim();
-          var destination = String(values[i][4] || '').trim();
-          var email = String(values[i][8] || '').trim(); // EMAIL FIX: was [7], now [8] (shifted by Visitor Type)
+          var fullName = String(values[i][fullNameIdx] || '').trim();
+          var destination = String(values[i][destinationIdx] || '').trim();
+          var email = String(values[i][emailIdx] || '').trim();
 
           try {
             var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
@@ -2018,14 +2160,23 @@ function getAccessLevelForDestination(destination, sheetId) {
   }
 
   var data = destSheet.getDataRange().getValues();
+
+  var cols = resolveColumns(data, ['Destination', 'Access Level']);
+  var destIdx = cols['Destination'];
+  var levelIdx = cols['Access Level'];
+
+  if (destIdx === -1 || levelIdx === -1) {
+    console.warn('getAccessLevelForDestination: Destination sheet missing Destination/Access Level headers');
+    return null;
+  }
+
   var destLower = destination.trim().toLowerCase();
 
   // Row 0 = headers; data starts at row 1
-  // Column 0 = Destination, Column 1 = Access Level
   for (var i = 1; i < data.length; i++) {
-    var rowDest = String(data[i][0] || '').trim().toLowerCase();
+    var rowDest = String(data[i][destIdx] || '').trim().toLowerCase();
     if (rowDest === destLower) {
-      var level = String(data[i][1] || '').trim();
+      var level = String(data[i][levelIdx] || '').trim();
       return level || null;
     }
   }
@@ -2061,14 +2212,28 @@ function getDoorGroupIdForDestination(destination, sheetId) {
   }
 
   var data = destSheet.getDataRange().getValues();
+
+  var cols = resolveColumns(data, ['Destination', 'DoorGroupID']);
+  var destIdx = cols['Destination'];
+  var doorGroupIdx = cols['DoorGroupID'];
+
+  if (destIdx === -1) {
+    console.warn('getDoorGroupIdForDestination: Destination sheet missing Destination header');
+    return null;
+  }
+  if (doorGroupIdx === -1) {
+    // Pre-V3 sheets have no DoorGroupID column — a normal compat case.
+    console.info('getDoorGroupIdForDestination: DoorGroupID header missing — returning null');
+    return null;
+  }
+
   var destLower = destination.trim().toLowerCase();
 
   // Row 0 = headers; data starts at row 1
-  // Column 0 = Destination, Column 1 = Access Level, Column 2 = DoorGroupID
   for (var i = 1; i < data.length; i++) {
-    var rowDest = String(data[i][0] || '').trim().toLowerCase();
+    var rowDest = String(data[i][destIdx] || '').trim().toLowerCase();
     if (rowDest === destLower) {
-      var dgId = data[i][2];
+      var dgId = data[i][doorGroupIdx];
       if (dgId === '' || dgId === undefined || dgId === null) return null;
       var num = parseInt(dgId, 10);
       return isNaN(num) ? null : num;
@@ -2094,18 +2259,37 @@ function pickUnusedCard(accessLevel, sheetId, doorGroupId) {
 
   var data = cardSheet.getDataRange().getValues();
 
-  // Column layout: 0=CardNo, 1=Status, 2=AssignedTo, 3=AssignedAt, 4=DoorGroupID
+  // Resolve required/optional columns by header name (header-agnostic).
+  var cols = resolveColumns(data, ['CardNo', 'Status', 'DoorGroupID']);
+  var cardNoIdx = cols['CardNo'];
+  var statusIdx = cols['Status'];
+  var doorGroupIdx = cols['DoorGroupID'];
+
+  if (cardNoIdx === -1 || statusIdx === -1) {
+    console.error('pickUnusedCard: cardno sheet missing required CardNo/Status headers — aborting');
+    return null;
+  }
+
+  // If a door group was requested but the sheet has no DoorGroupID column,
+  // fall back to a legacy any-Available pick rather than failing the check-in.
+  var groupScoped = doorGroupId !== null && doorGroupId !== undefined;
+  if (groupScoped && doorGroupIdx === -1) {
+    console.warn('pickUnusedCard: DoorGroupID header missing but doorGroupId=' + doorGroupId +
+                 ' requested — falling back to any-Available pick');
+    groupScoped = false;
+  }
+
   for (var i = 1; i < data.length; i++) {
-    var status = String(data[i][1] || '').trim().toLowerCase();
+    var status = String(data[i][statusIdx] || '').trim().toLowerCase();
     if (status !== 'available' && status !== '') continue;
 
     // Door-group scoped pick: card must carry the requested group.
-    if (doorGroupId !== null && doorGroupId !== undefined) {
-      var cardGroup = String(data[i][4] || '').trim();
+    if (groupScoped) {
+      var cardGroup = String(data[i][doorGroupIdx] || '').trim();
       if (cardGroup !== String(doorGroupId).trim()) continue;
     }
 
-    return String(data[i][0] || '').trim();
+    return String(data[i][cardNoIdx] || '').trim();
   }
 
   return null; // Pool depleted — no Available cards for this door group
@@ -2124,20 +2308,33 @@ function assignCard(cardNo, visitorNumber, visitorName, sheetId) {
 
   var data = cardSheet.getDataRange().getValues();
 
-  for (var i = 1; i < data.length; i++) {
-    var rowCardNo = String(data[i][0] || '').trim();
-    if (rowCardNo === cardNo) {
-      // Atomic write: mark Status, AssignedTo, AssignedAt in contiguous range
-      cardSheet.getRange(i + 1, 2).setValue('Assigned');      // Status
-      cardSheet.getRange(i + 1, 3).setValue(visitorNumber);   // AssignedTo
-      cardSheet.getRange(i + 1, 4).setValue(new Date());      // AssignedAt
+  // Resolve required columns by header name (header-agnostic).
+  var cols = resolveColumns(data, ['CardNo', 'Status', 'AssignedTo', 'AssignedAt']);
+  var cardNoIdx = cols['CardNo'];
+  var statusIdx = cols['Status'];
+  var assignedToIdx = cols['AssignedTo'];
+  var assignedAtIdx = cols['AssignedAt'];
 
-      // Optimistic re-read to verify the write took
-      var checkValues = cardSheet.getRange(i + 1, 1, 1, 4).getValues();
-      if (checkValues[0][1] !== 'Assigned' || checkValues[0][2] !== visitorNumber) {
+  if (cardNoIdx === -1 || statusIdx === -1 || assignedToIdx === -1 || assignedAtIdx === -1) {
+    console.error('assignCard: cardno sheet missing required headers (CardNo/Status/AssignedTo/AssignedAt)');
+    return false;
+  }
+
+  for (var i = 1; i < data.length; i++) {
+    var rowCardNo = String(data[i][cardNoIdx] || '').trim();
+    if (rowCardNo === cardNo) {
+      // Atomic write: mark Status, AssignedTo, AssignedAt at resolved indices.
+      cardSheet.getRange(i + 1, statusIdx + 1).setValue('Assigned');        // Status
+      cardSheet.getRange(i + 1, assignedToIdx + 1).setValue(visitorNumber); // AssignedTo
+      cardSheet.getRange(i + 1, assignedAtIdx + 1).setValue(new Date());    // AssignedAt
+
+      // Optimistic re-read to verify the write took (per-column at resolved indices).
+      var checkStatus = cardSheet.getRange(i + 1, statusIdx + 1).getValue();
+      var checkAssignedTo = cardSheet.getRange(i + 1, assignedToIdx + 1).getValue();
+      if (checkStatus !== 'Assigned' || checkAssignedTo !== visitorNumber) {
         console.error('assignCard: Concurrency check FAILED for card ' + cardNo +
                       ' — expected Assigned/' + visitorNumber +
-                      ', got ' + checkValues[0][1] + '/' + checkValues[0][2]);
+                      ', got ' + checkStatus + '/' + checkAssignedTo);
         return false;
       }
 
@@ -2271,11 +2468,26 @@ function releaseCardForVisitor(visitorNumber, sheetId, ss) {
     if (!cardSheet) return false;
 
     var data = cardSheet.getDataRange().getValues();
+
+    var cols = resolveColumns(data, ['CardNo', 'Status', 'AssignedTo', 'AssignedAt']);
+    var cardNoIdx = cols['CardNo'];
+    var statusIdx = cols['Status'];
+    var assignedToIdx = cols['AssignedTo'];
+    var assignedAtIdx = cols['AssignedAt'];
+
+    if (cardNoIdx === -1 || statusIdx === -1 || assignedToIdx === -1 || assignedAtIdx === -1) {
+      console.error('releaseCardForVisitor: cardno sheet missing required headers — cannot release');
+      return false;
+    }
+
     for (var i = 1; i < data.length; i++) {
-      var assignedTo = String(data[i][2] || '').trim();
+      var assignedTo = String(data[i][assignedToIdx] || '').trim();
       if (assignedTo === visitorNumber.trim()) {
-        var cardNumber = String(data[i][0] || '').trim();
-        cardSheet.getRange(i + 1, 2, 1, 3).setValues([['Available', '', '']]);
+        var cardNumber = String(data[i][cardNoIdx] || '').trim();
+        // Per-column writes at resolved indices (no assumption of contiguity).
+        cardSheet.getRange(i + 1, statusIdx + 1).setValue('Available');
+        cardSheet.getRange(i + 1, assignedToIdx + 1).setValue('');
+        cardSheet.getRange(i + 1, assignedAtIdx + 1).setValue('');
         return cardNumber;
       }
     }
@@ -2324,6 +2536,20 @@ function handleBulkSignOut(data) {
       return jsonResponse({ status: 'error', error: 'VisitorLog sheet not found' }, 404);
     }
 
+    // Resolve columns once from the header row (stable across iterations).
+    var headerValues = sheet.getDataRange().getValues();
+    var cols = resolveColumns(headerValues, ['Visitor Number', 'Status', 'Sign-In Time', 'Sign-Out Time']);
+
+    if (cols['Visitor Number'] === -1 || cols['Status'] === -1 ||
+        cols['Sign-In Time'] === -1 || cols['Sign-Out Time'] === -1) {
+      return jsonResponse({ status: 'error', error: 'VisitorLog headers missing required columns' }, 500);
+    }
+
+    var visitorNumberIdx = cols['Visitor Number'];
+    var statusIdx = cols['Status'];
+    var signInIdx = cols['Sign-In Time'];
+    var signOutIdx = cols['Sign-Out Time'];
+
     var results = [];
     var summary = { ok: 0, skipped: 0, error: 0 };
 
@@ -2342,11 +2568,11 @@ function handleBulkSignOut(data) {
         var found = false;
 
         for (var i = 1; i < values.length; i++) {
-          var rowVn = String(values[i][11] || '').trim();
+          var rowVn = String(values[i][visitorNumberIdx] || '').trim();
           if (rowVn !== vn) continue;
 
           found = true;
-          var currentStatus = String(values[i][12] || '').trim();
+          var currentStatus = String(values[i][statusIdx] || '').trim();
 
           // Stale checkbox protection
           if (currentStatus === 'Signed Out') {
@@ -2360,9 +2586,9 @@ function handleBulkSignOut(data) {
             break;
           }
 
-          // Write Signed Out status + timestamp
-          sheet.getRange(i + 1, 13).setValue('Signed Out');
-          sheet.getRange(i + 1, 15).setValue(new Date());
+          // Write Signed Out status + timestamp at resolved indices.
+          sheet.getRange(i + 1, statusIdx + 1).setValue('Signed Out');
+          sheet.getRange(i + 1, signOutIdx + 1).setValue(new Date());
 
           // Release card
           var cardReleased = releaseCardForVisitor(vn, sheetId);
@@ -2537,14 +2763,27 @@ function autoSignOut() {
 
         var data = sheet.getDataRange().getValues();
 
+        var cols = resolveColumns(data, ['Status', 'Visitation Date', 'Visitor Number', 'Sign-In Time', 'Sign-Out Time']);
+        var statusIdx = cols['Status'];
+        var visitationDateIdx = cols['Visitation Date'];
+        var visitorNumberIdx = cols['Visitor Number'];
+        var signInIdx = cols['Sign-In Time'];
+        var signOutIdx = cols['Sign-Out Time'];
+
+        if (statusIdx === -1 || visitationDateIdx === -1 || visitorNumberIdx === -1 ||
+            signInIdx === -1 || signOutIdx === -1) {
+          console.error('autoSignOut: VisitorLog missing required headers for sheet ' + sheetId + ' — skipping');
+          continue;
+        }
+
         // Find dirty rows: today's "Checked In" visitors (idempotency guard).
         var dirty = {};        // 0-indexed data row -> true
         var dirtyRows = [];    // 0-indexed data rows, ascending
         var minRow = -1;
         var maxRow = -1;
         for (var i = 1; i < data.length; i++) {
-          var status = String(data[i][12] || '').trim(); // col 12 = Status
-          if (status === 'Checked In' && getDateString_(data[i][6]) === todayStr) {
+          var status = String(data[i][statusIdx] || '').trim();
+          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx]) === todayStr) {
             dirty[i] = true;
             dirtyRows.push(i);
             if (minRow === -1 || i < minRow) minRow = i;
@@ -2557,27 +2796,38 @@ function autoSignOut() {
           continue;
         }
 
-        // Write Status + Sign-Out Time in ONE setValues() over the minimal
-        // bounding range [minRow..maxRow] x [col 13..15]. Col 14 (Sign-In Time)
-        // sits between the two target columns and is preserved from existing
-        // data; non-dirty rows inside the span are also preserved.
+        // Only use a single multi-column range when Status / Sign-In Time /
+        // Sign-Out Time are contiguous (canonical layout: signIn = status+1,
+        // signOut = status+2). Otherwise fall back to per-row writes.
         var now = new Date();
-        var numRows = maxRow - minRow + 1;
-        var block = [];
-        for (var r = 0; r < numRows; r++) {
-          var dataIdx = minRow + r;
-          if (dirty[dataIdx]) {
-            block.push(['Signed Out', data[dataIdx][13], now]);
-          } else {
-            block.push([data[dataIdx][12], data[dataIdx][13], data[dataIdx][14]]);
+        var contiguous = (signInIdx === statusIdx + 1 && signOutIdx === statusIdx + 2);
+        if (contiguous) {
+          // Write Status + Sign-Out Time in ONE setValues() over the minimal
+          // bounding range, preserving Sign-In Time and any non-dirty rows
+          // inside the span.
+          var numRows = maxRow - minRow + 1;
+          var block = [];
+          for (var r = 0; r < numRows; r++) {
+            var dataIdx = minRow + r;
+            if (dirty[dataIdx]) {
+              block.push(['Signed Out', data[dataIdx][signInIdx], now]);
+            } else {
+              block.push([data[dataIdx][statusIdx], data[dataIdx][signInIdx], data[dataIdx][signOutIdx]]);
+            }
+          }
+          sheet.getRange(minRow + 1, statusIdx + 1, numRows, 3).setValues(block);
+        } else {
+          for (var d = 0; d < dirtyRows.length; d++) {
+            var dataIdx = dirtyRows[d];
+            sheet.getRange(dataIdx + 1, statusIdx + 1).setValue('Signed Out');
+            sheet.getRange(dataIdx + 1, signOutIdx + 1).setValue(now);
           }
         }
-        sheet.getRange(minRow + 1, 13, numRows, 3).setValues(block);
 
         // Release cards for each signed-out visitor (reuse the open ss handle).
         var releasedCount = 0;
         for (var d = 0; d < dirtyRows.length; d++) {
-          var visitorNumber = String(data[dirtyRows[d]][11] || '').trim();
+          var visitorNumber = String(data[dirtyRows[d]][visitorNumberIdx] || '').trim();
           if (!visitorNumber) continue;
           if (releaseCardForVisitor(visitorNumber, sheetId, ss)) releasedCount++;
         }
@@ -2668,14 +2918,27 @@ function releaseDailyCards() {
 
         var data = sheet.getDataRange().getValues();
 
+        var cols = resolveColumns(data, ['Status', 'Visitation Date', 'Visitor Number', 'Sign-In Time', 'Sign-Out Time']);
+        var statusIdx = cols['Status'];
+        var visitationDateIdx = cols['Visitation Date'];
+        var visitorNumberIdx = cols['Visitor Number'];
+        var signInIdx = cols['Sign-In Time'];
+        var signOutIdx = cols['Sign-Out Time'];
+
+        if (statusIdx === -1 || visitationDateIdx === -1 || visitorNumberIdx === -1 ||
+            signInIdx === -1 || signOutIdx === -1) {
+          console.error('releaseDailyCards: VisitorLog missing required headers for sheet ' + sheetId + ' — skipping');
+          continue;
+        }
+
         // Find dirty rows: yesterday's-or-older visitors still "Checked In".
         var dirty = {};
         var dirtyRows = [];
         var minRow = -1;
         var maxRow = -1;
         for (var i = 1; i < data.length; i++) {
-          var status = String(data[i][12] || '').trim();
-          if (status === 'Checked In' && getDateString_(data[i][6]) !== todayStr) {
+          var status = String(data[i][statusIdx] || '').trim();
+          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx]) !== todayStr) {
             dirty[i] = true;
             dirtyRows.push(i);
             if (minRow === -1 || i < minRow) minRow = i;
@@ -2688,26 +2951,37 @@ function releaseDailyCards() {
           continue;
         }
 
-        // Same batch-write pattern as autoSignOut: one setValues() over the
-        // minimal bounding range, preserving col 14 (Sign-In Time) and any
-        // non-dirty rows inside the span.
+        // Only use a single multi-column range when Status / Sign-In Time /
+        // Sign-Out Time are contiguous (canonical layout: signIn = status+1,
+        // signOut = status+2). Otherwise fall back to per-row writes.
         var now = new Date();
-        var numRows = maxRow - minRow + 1;
-        var block = [];
-        for (var r = 0; r < numRows; r++) {
-          var dataIdx = minRow + r;
-          if (dirty[dataIdx]) {
-            block.push(['Signed Out', data[dataIdx][13], now]);
-          } else {
-            block.push([data[dataIdx][12], data[dataIdx][13], data[dataIdx][14]]);
+        var contiguous = (signInIdx === statusIdx + 1 && signOutIdx === statusIdx + 2);
+        if (contiguous) {
+          // One setValues() over the minimal bounding range, preserving
+          // Sign-In Time and any non-dirty rows inside the span.
+          var numRows = maxRow - minRow + 1;
+          var block = [];
+          for (var r = 0; r < numRows; r++) {
+            var dataIdx = minRow + r;
+            if (dirty[dataIdx]) {
+              block.push(['Signed Out', data[dataIdx][signInIdx], now]);
+            } else {
+              block.push([data[dataIdx][statusIdx], data[dataIdx][signInIdx], data[dataIdx][signOutIdx]]);
+            }
+          }
+          sheet.getRange(minRow + 1, statusIdx + 1, numRows, 3).setValues(block);
+        } else {
+          for (var d = 0; d < dirtyRows.length; d++) {
+            var dataIdx = dirtyRows[d];
+            sheet.getRange(dataIdx + 1, statusIdx + 1).setValue('Signed Out');
+            sheet.getRange(dataIdx + 1, signOutIdx + 1).setValue(now);
           }
         }
-        sheet.getRange(minRow + 1, 13, numRows, 3).setValues(block);
 
         // Release cards for each signed-out visitor (reuse the open ss handle).
         var releasedCount = 0;
         for (var d = 0; d < dirtyRows.length; d++) {
-          var visitorNumber = String(data[dirtyRows[d]][11] || '').trim();
+          var visitorNumber = String(data[dirtyRows[d]][visitorNumberIdx] || '').trim();
           if (!visitorNumber) continue;
           if (releaseCardForVisitor(visitorNumber, sheetId, ss)) releasedCount++;
         }
@@ -2842,6 +3116,86 @@ function sanitizePhone(str) {
 }
 
 // ──────────────────────────────────────────────
+// COLUMN RESOLUTION HELPERS
+// ──────────────────────────────────────────────
+
+/**
+ * Normalize a header label for case-/whitespace-insensitive comparison.
+ * Lowercases, trims, and collapses internal whitespace runs to a single space.
+ *
+ * @param {*} value - The header cell value
+ * @returns {string} Normalized label
+ */
+function normalizeHeader_(value) {
+  return String(value == null ? '' : value)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Resolve the 0-based column index of a header cell by name.
+ * Case-insensitive and whitespace-insensitive. Row 0 is the header row.
+ *
+ * @param {Array<Array>} data - 2D array from getDataRange().getValues()
+ * @param {string} headerName - Canonical header name to find
+ * @returns {number} 0-based index, or -1 if the header is absent
+ */
+function getColumnIndex_(data, headerName) {
+  if (!data || data.length === 0) return -1;
+  var headers = data[0];
+  var target = normalizeHeader_(headerName);
+  for (var j = 0; j < headers.length; j++) {
+    if (normalizeHeader_(headers[j]) === target) return j;
+  }
+  return -1;
+}
+
+/**
+ * Single-pass wrapper: resolve a list of header names to a {name: index} map.
+ * Scans the header row exactly once, then maps each requested name to its
+ * 0-based index (or -1 if absent).
+ *
+ * @param {Array<Array>} data - 2D array from getDataRange().getValues()
+ * @param {string[]} nameList - Header names to resolve
+ * @returns {Object} Map of name -> 0-based index (or -1)
+ */
+function resolveColumns(data, nameList) {
+  var map = {};
+  var headerIndex = {};
+  if (data && data.length > 0) {
+    var headers = data[0];
+    for (var j = 0; j < headers.length; j++) {
+      var key = normalizeHeader_(headers[j]);
+      if (!(key in headerIndex)) headerIndex[key] = j; // first occurrence wins
+    }
+  }
+  for (var i = 0; i < nameList.length; i++) {
+    var name = nameList[i];
+    var idx = headerIndex[normalizeHeader_(name)];
+    map[name] = (idx === undefined) ? -1 : idx;
+  }
+  return map;
+}
+
+/**
+ * Return the 1-based position of the last non-empty cell in a row array.
+ * Used by migration V7 to measure effective column width (trailing empty
+ * string cells do not count as content).
+ *
+ * @param {Array} row - A single row array from getValues()
+ * @returns {number} 1-based index of the last non-empty cell, or 0 if all empty
+ */
+function _lastNonEmpty_(row) {
+  if (!row) return 0;
+  for (var c = row.length - 1; c >= 0; c--) {
+    var v = row[c];
+    if (v !== '' && v !== undefined && v !== null) return c + 1;
+  }
+  return 0;
+}
+
+// ──────────────────────────────────────────────
 // MANUAL SETUP FUNCTION (run once in editor)
 // ──────────────────────────────────────────────
 
@@ -2872,7 +3226,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = '_version!A1';
-var LATEST_SHEET_VERSION = 6;
+var LATEST_SHEET_VERSION = 7;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -2880,6 +3234,7 @@ var VISITORLOG_HEADERS = [
   'ID / Passport Number',
   'Company Name',
   'Destination',
+  'Visitor Type',
   'Visitation Date',
   'Hand Phone',
   'Email',
@@ -2891,7 +3246,7 @@ var VISITORLOG_HEADERS = [
   'Sign-Out Time'
 ];
 
-var CARDNO_HEADERS = ['CardNo', 'Status', 'AssignedTo', 'AssignedAt'];
+var CARDNO_HEADERS = ['CardNo', 'Status', 'AssignedTo', 'AssignedAt', 'DoorGroupID'];
 
 var DESTINATION_HEADERS = ['Destination', 'Access Level', 'DoorGroupID'];
 
@@ -3120,6 +3475,84 @@ var MIGRATION_REGISTRY = [
       }
 
       console.log('Migration V6: Complete');
+    }
+  },
+  {
+    version: 7,
+    name: 'Reconcile VisitorLog/cardno headers to canonical columns',
+    destructive: false,
+    description: 'Aligns VisitorLog and cardno headers to the canonical 15-column and 5-column layouts',
+    fn: function(ss) {
+      console.log('Migration V7: Reconciling VisitorLog/cardno headers');
+
+      // ── VisitorLog ──
+      var vSheet = ss.getSheetByName('VisitorLog');
+      if (!vSheet) {
+        console.log('Migration V7: VisitorLog not found — skipping');
+      } else {
+        var data = vSheet.getDataRange().getValues();
+        var headerRow = data.length > 0 ? data[0] : [];
+        var hasVisitorType = getColumnIndex_(data, 'Visitor Type') !== -1;
+
+        if (!hasVisitorType) {
+          // Distinguish "14-wide sheet (V6 never ran)" from "15-wide data whose
+          // header row is stale": if any data row extends past the header's
+          // effective width, the Visitor Type column already exists in the data
+          // and we must NOT insert (which would shift data and corrupt it).
+          var headerWidth = _lastNonEmpty_(headerRow);
+          var maxDataWidth = 0;
+          for (var d = 1; d < data.length; d++) {
+            var w = _lastNonEmpty_(data[d]);
+            if (w > maxDataWidth) maxDataWidth = w;
+          }
+          var dataWide = maxDataWidth > headerWidth || vSheet.getLastColumn() > headerWidth;
+
+          if (dataWide) {
+            console.log('Migration V7: VisitorLog data already 15-wide — rewriting header row only');
+          } else {
+            // Insert a Visitor Type column after Destination (col 5) and shift
+            // existing data right — same mechanics as V6.
+            vSheet.insertColumnAfter(4);
+            vSheet.getRange(1, 5).setValue('Visitor Type');
+            vSheet.getRange(1, 5).setFontWeight('bold');
+            vSheet.autoResizeColumn(5);
+            console.log('Migration V7: Inserted Visitor Type column at col 5');
+          }
+        }
+
+        // Always rewrite the header row to the canonical 15-column order (idempotent).
+        vSheet.getRange(1, 1, 1, VISITORLOG_HEADERS.length).setValues([VISITORLOG_HEADERS]);
+        vSheet.getRange(1, 1, 1, VISITORLOG_HEADERS.length).setFontWeight('bold');
+        console.log('Migration V7: VisitorLog header set to canonical 15 columns');
+      }
+
+      // ── cardno ──
+      var cSheet = ss.getSheetByName('cardno');
+      if (!cSheet) {
+        console.log('Migration V7: cardno not found — skipping');
+      } else {
+        var cData = cSheet.getDataRange().getValues();
+
+        // DoorGroupID: append header cell only (no data shift).
+        if (getColumnIndex_(cData, 'DoorGroupID') === -1) {
+          cSheet.getRange(1, 5).setValue('DoorGroupID');
+          cSheet.getRange(1, 5).setFontWeight('bold');
+          console.log('Migration V7: Appended DoorGroupID header to cardno');
+        }
+        if (getColumnIndex_(cData, 'AssignedTo') === -1) {
+          cSheet.getRange(1, 3).setValue('AssignedTo');
+          cSheet.getRange(1, 3).setFontWeight('bold');
+          console.log('Migration V7: Set AssignedTo header on cardno');
+        }
+        if (getColumnIndex_(cData, 'AssignedAt') === -1) {
+          cSheet.getRange(1, 4).setValue('AssignedAt');
+          cSheet.getRange(1, 4).setFontWeight('bold');
+          console.log('Migration V7: Set AssignedAt header on cardno');
+        }
+        console.log('Migration V7: cardno header reconciled to canonical 5 columns');
+      }
+
+      console.log('Migration V7: Complete');
     }
   },
 ];
