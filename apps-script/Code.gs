@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.12.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.13.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -96,39 +96,95 @@ function _getMasterConfigSheet() {
 
 /**
  * Load all customer rows from the "Customers" tab of the master config sheet.
- * Caches the result in the per-execution global _masterConfig.
+ * Resolves columns by header name (not position) so the schema can grow without
+ * breaking deployments, and caches the result in two layers:
+ *   - a per-execution global (_masterConfig), and
+ *   - a Script Properties JSON cache (MASTER_CONFIG_CACHE) with a 5-minute TTL,
+ *     so repeated hourly ticks don't re-open the master sheet on every run.
  *
- * Customers tab schema (9 columns):
- *   sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | registeredAt
+ * Customers tab schema (header-name resolved):
+ *   sheetId | allowedOrigins | tier | visitorLimit | status | notes |
+ *   autoSignOutHour | autoSignOutEnabled | registeredAt | timezone
  *
- * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier, visitorLimit, status, notes, registeredAt }
+ * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier,
+ *   visitorLimit, status, notes, autoSignOutHour, autoSignOutEnabled,
+ *   registeredAt, timezone }
  */
 function _loadMasterConfig() {
   if (_masterConfig !== null) return _masterConfig;
+
+  var props = PropertiesService.getScriptProperties();
+
+  // ── Script Properties cache (TTL 5 min) ──
+  var MASTER_CONFIG_TTL_MS = 5 * 60 * 1000;
+  var cachedRaw = props.getProperty('MASTER_CONFIG_CACHE');
+  if (cachedRaw) {
+    try {
+      var cached = JSON.parse(cachedRaw);
+      if (cached && cached.at && (Date.now() - cached.at) < MASTER_CONFIG_TTL_MS) {
+        _masterConfig = cached.data || {};
+        return _masterConfig;
+      }
+    } catch (e) { /* stale/corrupt cache — fall through to a live read */ }
+  }
+
   var sheet = _getMasterConfigSheet();
   if (!sheet) { _masterConfig = {}; return {}; }
   var custSheet = sheet.getSheetByName('Customers');
   if (!custSheet) { _masterConfig = {}; return {}; }
   var data = custSheet.getDataRange().getValues();
+
+  var cols = resolveColumns(data, [
+    'sheetId', 'allowedOrigins', 'tier', 'visitorLimit', 'status', 'notes',
+    'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt', 'timezone'
+  ]);
+
   var config = {};
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var sid = String(row[0] || '').trim();
+    var sid = String(row[cols['sheetId']] || '').trim();
     if (!sid) continue;
+
+    var hourCell = cols['autoSignOutHour'] !== -1 ? row[cols['autoSignOutHour']] : undefined;
+    var enabledCell = cols['autoSignOutEnabled'] !== -1 ? row[cols['autoSignOutEnabled']] : undefined;
+    var registeredCell = cols['registeredAt'] !== -1 ? row[cols['registeredAt']] : undefined;
+    var tzCell = cols['timezone'] !== -1 ? row[cols['timezone']] : '';
+
     config[sid] = {
       sheetId: sid,
-      allowedOrigins: String(row[1] || '').trim(),
-      tier: String(row[2] || 'free').trim().toLowerCase(),
-      visitorLimit: row[3] !== undefined && row[3] !== null && row[3] !== '' ? parseInt(row[3], 10) : 50,
-      status: String(row[4] || 'active').trim().toLowerCase(),
-      notes: String(row[5] || '').trim(),
-      autoSignOutHour: row[6] !== undefined && row[6] !== null && row[6] !== '' ? parseInt(row[6], 10) : 21,
-      autoSignOutEnabled: row[7] !== undefined && row[7] !== null ? String(row[7]).toUpperCase() === 'TRUE' : true,
-      registeredAt: row[8] instanceof Date ? row[8] : (row[8] ? String(row[8]) : null),
+      allowedOrigins: String(row[cols['allowedOrigins']] || '').trim(),
+      tier: String(row[cols['tier']] || 'free').trim().toLowerCase(),
+      visitorLimit: row[cols['visitorLimit']] !== undefined && row[cols['visitorLimit']] !== null && row[cols['visitorLimit']] !== '' ? parseInt(row[cols['visitorLimit']], 10) : 50,
+      status: String(row[cols['status']] || 'active').trim().toLowerCase(),
+      notes: String(row[cols['notes']] || '').trim(),
+      autoSignOutHour: hourCell !== undefined && hourCell !== null && hourCell !== '' ? parseInt(hourCell, 10) : 21,
+      autoSignOutEnabled: enabledCell !== undefined && enabledCell !== null ? String(enabledCell).toUpperCase() === 'TRUE' : true,
+      registeredAt: registeredCell instanceof Date ? registeredCell : (registeredCell ? String(registeredCell) : null),
+      timezone: tzCell ? String(tzCell).trim() : null,
     };
   }
   _masterConfig = config;
+
+  // ── Persist to Script Properties cache ──
+  try {
+    props.setProperty('MASTER_CONFIG_CACHE', JSON.stringify({ at: Date.now(), data: config }));
+  } catch (e) {
+    console.warn('_loadMasterConfig: failed to write MASTER_CONFIG_CACHE: ' + e.message);
+  }
+
   return config;
+}
+
+/**
+ * Invalidate both the per-execution master config cache and the Script
+ * Properties JSON cache. Call after any write that mutates the Customers tab
+ * (e.g. auto-register appending a row) so the next read is live.
+ */
+function _invalidateMasterConfigCache_() {
+  _masterConfig = null;
+  try {
+    PropertiesService.getScriptProperties().deleteProperty('MASTER_CONFIG_CACHE');
+  } catch (e) { /* ignore */ }
 }
 
 /**
@@ -140,6 +196,70 @@ function _loadMasterConfig() {
 function _getCustomerConfig(sheetId) {
   var config = _loadMasterConfig();
   return config[sheetId] || null;
+}
+
+/**
+ * Validate an IANA timezone string by attempting a formatDate. Returns false
+ * (rather than throwing) so callers can fall through to the next priority.
+ *
+ * @param {*} tz - Candidate timezone string
+ * @returns {boolean} true if the string is a valid IANA timezone
+ */
+function _isValidTimeZone_(tz) {
+  if (!tz || typeof tz !== 'string') return false;
+  var trimmed = tz.trim();
+  if (!trimmed) return false;
+  try {
+    Utilities.formatDate(new Date(), trimmed, 'yyyy');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Resolve the effective IANA timezone for a customer, in priority order:
+ *   (1) Settings tab 'timezone' row (if present and valid)
+ *   (2) master config entry 'timezone' (if present and valid)
+ *   (3) Session.getScriptTimeZone() (project timezone)
+ *
+ * Invalid values log a warning and fall through to the next priority.
+ *
+ * NOTE: autoSignOut() does NOT use this helper — reading the Settings tab per
+ * sheet at ~100-customer scale is too expensive, so it uses the master-config
+ * timezone directly. Request-time helpers (handleTodayVisitors, handleReport,
+ * getDailyVisitorCount_) may pay the Settings read since the sheet is already
+ * open and the call volume is per-request.
+ *
+ * @param {string} sheetId - Customer's Google Sheet ID
+ * @param {Object} [masterConfigEntry] - Cached master config entry (avoids a re-fetch)
+ * @returns {string} IANA timezone string
+ */
+function getCustomerTimeZone_(sheetId, masterConfigEntry) {
+  if (masterConfigEntry === undefined || masterConfigEntry === null) {
+    masterConfigEntry = _getCustomerConfig(sheetId);
+  }
+
+  // Priority 1: Settings tab timezone (best-effort; may not exist yet).
+  var fromSettings = null;
+  try {
+    var settings = getSheetSettings_(sheetId);
+    if (settings && settings.timezone) fromSettings = settings.timezone;
+  } catch (e) { /* settings read is best-effort */ }
+  if (fromSettings && _isValidTimeZone_(fromSettings)) return fromSettings;
+  if (fromSettings) {
+    console.warn('getCustomerTimeZone_: invalid Settings timezone "' + fromSettings + '" for ' + sheetId + ' — falling through');
+  }
+
+  // Priority 2: master config timezone.
+  var fromMaster = masterConfigEntry ? masterConfigEntry.timezone : null;
+  if (fromMaster && _isValidTimeZone_(fromMaster)) return fromMaster;
+  if (fromMaster) {
+    console.warn('getCustomerTimeZone_: invalid master-config timezone "' + fromMaster + '" for ' + sheetId + ' — falling through');
+  }
+
+  // Priority 3: project timezone.
+  return Session.getScriptTimeZone();
 }
 
 /**
@@ -213,7 +333,7 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     }
 
     // ── Guard 5: Double-check — another execution may have registered this sheetId ──
-    _masterConfig = null;
+    _invalidateMasterConfigCache_();
     var existing = _getCustomerConfig(sheetId);
     if (existing) {
       console.log('[autoRegister] Customer ' + sheetId + ' was registered by another execution — using existing record');
@@ -229,6 +349,7 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
       notes: 'Auto-registered by LITEVM on ' + new Date().toISOString(),
       autoSignOutHour: 21,
       autoSignOutEnabled: true,
+      timezone: '', // empty → inherit Settings tab or project tz
     };
 
     // Allow override via AUTO_REGISTER_DEFAULTS JSON in Script Properties
@@ -243,34 +364,62 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
         if (parsed.notes !== undefined) defaults.notes = String(parsed.notes);
         if (parsed.autoSignOutHour !== undefined) defaults.autoSignOutHour = parseInt(parsed.autoSignOutHour, 10);
         if (parsed.autoSignOutEnabled !== undefined) defaults.autoSignOutEnabled = String(parsed.autoSignOutEnabled).toUpperCase() === 'TRUE';
+        if (parsed.timezone !== undefined) defaults.timezone = String(parsed.timezone).trim();
       } catch (e) {
         console.warn('[autoRegister] Failed to parse AUTO_REGISTER_DEFAULTS: ' + e.message);
       }
     }
 
-    // ── Append row to Customers tab ──
+    // ── Append row to Customers tab (header-name resolved, full-width) ──
     var custSheet = masterSheet.getSheetByName('Customers');
     if (!custSheet) {
       console.warn('[autoRegister] Customers tab not found in master config');
       return null;
     }
 
-    custSheet.appendRow([
-      sheetId,
-      defaults.allowedOrigins,
-      defaults.tier,
-      defaults.visitorLimit,
-      defaults.status,
-      defaults.notes,
-      defaults.autoSignOutHour,
-      defaults.autoSignOutEnabled,
-      new Date(), // registeredAt
+    var custData = custSheet.getDataRange().getValues();
+    var custCols = resolveColumns(custData, [
+      'sheetId', 'allowedOrigins', 'tier', 'visitorLimit', 'status', 'notes',
+      'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt', 'timezone'
     ]);
+
+    // All required master-config headers must be present BEFORE appending
+    // (fail loud — a partial row would corrupt positional reads elsewhere).
+    var MASTER_REQUIRED = ['sheetId', 'allowedOrigins', 'tier', 'visitorLimit',
+      'status', 'notes', 'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt'];
+    for (var mh = 0; mh < MASTER_REQUIRED.length; mh++) {
+      if (custCols[MASTER_REQUIRED[mh]] === -1) {
+        console.error('[autoRegister] Master config Customers tab missing header: ' + MASTER_REQUIRED[mh]);
+        return null;
+      }
+    }
+
+    // Build a full-width row (length = header row length), placing each field
+    // at its resolved index and leaving everything else empty. 'timezone' is
+    // appended last with an empty default (same pattern as handleRegistration).
+    var headerLen = custData.length > 0 ? custData[0].length : custCols['registeredAt'] + 1;
+    var custRow = new Array(headerLen);
+    for (var ck = 0; ck < headerLen; ck++) custRow[ck] = '';
+
+    custRow[custCols['sheetId']] = sheetId;
+    custRow[custCols['allowedOrigins']] = defaults.allowedOrigins;
+    custRow[custCols['tier']] = defaults.tier;
+    custRow[custCols['visitorLimit']] = defaults.visitorLimit;
+    custRow[custCols['status']] = defaults.status;
+    custRow[custCols['notes']] = defaults.notes;
+    custRow[custCols['autoSignOutHour']] = defaults.autoSignOutHour;
+    custRow[custCols['autoSignOutEnabled']] = defaults.autoSignOutEnabled;
+    custRow[custCols['registeredAt']] = new Date();
+    if (custCols['timezone'] !== -1) {
+      custRow[custCols['timezone']] = defaults.timezone;
+    }
+
+    custSheet.appendRow(custRow);
 
     SpreadsheetApp.flush(); // Ensure write is committed
 
     // ── Invalidate cache so next call sees the new row ──
-    _masterConfig = null;
+    _invalidateMasterConfigCache_();
 
     // ── Log the auto-registration ──
     console.log('[autoRegister] Successfully registered sheetId ' + sheetId + ' with status=' + defaults.status + ' tier=' + defaults.tier);
@@ -339,9 +488,10 @@ function _checkAutoRegisterRateLimit_() {
  * Returns null on error (caller decides fail-open vs fail-closed).
  *
  * @param {string} sheetId - Customer's Google Sheet ID
+ * @param {string} [tz] - IANA timezone for "today" (defaults to project tz)
  * @returns {number|null} Count of today's registrations, or null on error
  */
-function getDailyVisitorCount_(sheetId) {
+function getDailyVisitorCount_(sheetId, tz) {
   try {
     var ss = SpreadsheetApp.openById(sheetId);
     var sheet = ss.getSheetByName('VisitorLog');
@@ -356,7 +506,7 @@ function getDailyVisitorCount_(sheetId) {
       return null;
     }
 
-    var timeZone = Session.getScriptTimeZone();
+    var timeZone = tz || Session.getScriptTimeZone();
     var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
     var count = 0;
@@ -392,7 +542,7 @@ function checkVisitorLimit_(sheetId) {
   }
 
   var limit = customer.visitorLimit;
-  var current = getDailyVisitorCount_(sheetId);
+  var current = getDailyVisitorCount_(sheetId, getCustomerTimeZone_(sheetId, customer));
 
   // Fail-open: if count errored (null), allow registration
   if (current === null) {
@@ -672,6 +822,7 @@ function doGet(e) {
           guardPin: settings.guardPin,
           autoSignOutEnabled: settings.enabled,
           autoSignOutHour: settings.hour,
+          timezone: settings.timezone || (customer ? customer.timezone : null) || Session.getScriptTimeZone(),
           actEnabled: actEnabled,
         }, 200);
       }
@@ -740,7 +891,7 @@ function doPost(e) {
     // Handle auto sign-out trigger setup
     if (data.mode === 'setupAutoSignOut') {
       setupAutoSignOutTrigger();
-      return jsonResponse({ status: 'ok', message: "Daily auto sign-out trigger installed (fires 19:00–20:00 WIB)." }, 200);
+      return jsonResponse({ status: 'ok', message: "Hourly auto sign-out trigger installed (per-customer timezone/hour)." }, 200);
     }
 
     // Handle ACTApi license issuance
@@ -1093,7 +1244,7 @@ function handleRegistration(data, visitorLimit) {
   }
 
   // Get updated count for response
-  var updatedCount = getDailyVisitorCount_(data.sheetId);
+  var updatedCount = getDailyVisitorCount_(data.sheetId, getCustomerTimeZone_(data.sheetId));
   var response = { visitorNumber: visitorNumber, status: 'ok' };
   if (visitorLimit && updatedCount !== null) {
     response.usage = {
@@ -1202,6 +1353,7 @@ function handleLookupByCard(cardNo, sheetId) {
 }
 
 function handleLookup(visitorNumber, sheetId) {
+  var customerTz = getCustomerTimeZone_(sheetId);
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
@@ -1241,7 +1393,7 @@ function handleLookup(visitorNumber, sheetId) {
       var ts = row[tsIdx];
       var registrationTime = '';
       if (ts instanceof Date) {
-        registrationTime = formatDateForDisplay(ts);
+        registrationTime = formatDateForDisplay(ts, customerTz);
       } else {
         registrationTime = String(ts);
       }
@@ -1255,15 +1407,15 @@ function handleLookup(visitorNumber, sheetId) {
         company: String(row[companyIdx] || ''),
         destination: String(row[destinationIdx] || ''),
         visitorType: String(row[visitorTypeIdx] || ''),
-        visitationDate: getDateString_(row[visitationDateIdx]),
+        visitationDate: getDateString_(row[visitationDateIdx], customerTz),
         phone: String(row[phoneIdx] || ''),
         email: String(row[emailIdx] || ''),
         idPhotoUrl: String(row[idPhotoIdx] || ''),
         selfieUrl: String(row[selfieIdx] || ''),
         status: status,
         registrationTime: registrationTime,
-        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
-        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
+        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx], customerTz) : String(row[signInIdx])) : '',
+        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx], customerTz) : String(row[signOutIdx])) : '',
       };
 
       if (status === 'Checked In') {
@@ -1281,14 +1433,15 @@ function handleLookup(visitorNumber, sheetId) {
 // HANDLER: Today's Visitors
 // ──────────────────────────────────────────────
 
-function getDateString_(cell) {
+function getDateString_(cell, tz) {
   if (cell instanceof Date && !isNaN(cell.getTime())) {
-    return Utilities.formatDate(cell, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    return Utilities.formatDate(cell, tz || Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
   return String(cell || '').trim();
 }
 
 function handleTodayVisitors(sheetId) {
+  var customerTz = getCustomerTimeZone_(sheetId);
   var sheet = getOrCreateSheet(sheetId);
   var data = sheet.getDataRange().getValues();
 
@@ -1320,14 +1473,13 @@ function handleTodayVisitors(sheetId) {
   var signInIdx = cols['Sign-In Time'];
   var signOutIdx = cols['Sign-Out Time'];
 
-  var timeZone = Session.getScriptTimeZone();
-  var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+  var todayStr = Utilities.formatDate(new Date(), customerTz, 'yyyy-MM-dd');
 
   var visitors = [];
 
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var visitDateStr = getDateString_(row[visitationDateIdx]);
+    var visitDateStr = getDateString_(row[visitationDateIdx], customerTz);
 
     // Filter by Visitation Date matching today
     if (visitDateStr === todayStr) {
@@ -1347,9 +1499,9 @@ function handleTodayVisitors(sheetId) {
         idPhotoUrl: String(row[idPhotoIdx] || ''),
         selfieUrl: String(row[selfieIdx] || ''),
         status: status,
-        registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
-        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
+        registrationTime: ts instanceof Date ? formatDateForDisplay(ts, customerTz) : String(ts),
+        signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx], customerTz) : String(row[signInIdx])) : '',
+        signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx], customerTz) : String(row[signOutIdx])) : '',
       };
       if (status === 'Checked In') {
         visitor.cardNo = getCardNumberForVisitor(vn, sheetId);
@@ -1368,6 +1520,7 @@ function handleTodayVisitors(sheetId) {
 function handleReport(data, sheetId) {
   SpreadsheetApp.flush();
 
+  var customerTz = getCustomerTimeZone_(data.sheetId || sheetId);
   var sheet = getOrCreateSheet(data.sheetId || sheetId);
   var allData = sheet.getDataRange().getValues();
 
@@ -1399,7 +1552,6 @@ function handleReport(data, sheetId) {
 
   var fromDate = data.fromDate || '';
   var toDate = data.toDate || '';
-  var timeZone = Session.getScriptTimeZone();
 
   var visitors = [];
   var pendingCount = 0;
@@ -1409,7 +1561,7 @@ function handleReport(data, sheetId) {
 
   for (var i = 1; i < allData.length; i++) {
     var row = allData[i];
-    var visitDateStr = getDateString_(row[visitationDateIdx]);
+    var visitDateStr = getDateString_(row[visitationDateIdx], customerTz);
 
     // Apply date range filter
     if (fromDate && visitDateStr < fromDate) continue;
@@ -1430,9 +1582,9 @@ function handleReport(data, sheetId) {
       phone: String(row[phoneIdx] || ''),
       email: String(row[emailIdx] || ''),
       status: status,
-      registrationTime: ts instanceof Date ? formatDateForDisplay(ts) : String(ts),
-      signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx]) : String(row[signInIdx])) : '',
-      signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx]) : String(row[signOutIdx])) : '',
+      registrationTime: ts instanceof Date ? formatDateForDisplay(ts, customerTz) : String(ts),
+      signInTime: row[signInIdx] ? (row[signInIdx] instanceof Date ? formatDateForDisplay(row[signInIdx], customerTz) : String(row[signInIdx])) : '',
+      signOutTime: row[signOutIdx] ? (row[signOutIdx] instanceof Date ? formatDateForDisplay(row[signOutIdx], customerTz) : String(row[signOutIdx])) : '',
     };
 
     if (status === 'Pending Entry' || status === 'Pending') {
@@ -1799,13 +1951,13 @@ function handleStatusUpdate(data) {
 // HELPER: Format date for display
 // ──────────────────────────────────────────────
 
-function formatDateForDisplay(date) {
-  var hours = date.getHours();
-  var minutes = date.getMinutes();
-  var hrStr = ('0' + hours).slice(-2);
-  var minStr = ('0' + minutes).slice(-2);
-  var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return hrStr + ':' + minStr + ' ' + date.getDate() + ' ' + months[date.getMonth()] + ' ' + date.getFullYear();
+function formatDateForDisplay(date, tz) {
+  // Use Utilities.formatDate so the displayed wall-clock time is in the
+  // caller's timezone (customer tz where known). The previous implementation
+  // read UTC component accessors (getHours/getMinutes/getDate/getMonth/
+  // getFullYear), which return UTC values in Apps Script regardless of the
+  // script's timezone — this was the display bug.
+  return Utilities.formatDate(date, tz || Session.getScriptTimeZone(), 'HH:mm dd MMM yyyy');
 }
 
 // ──────────────────────────────────────────────
@@ -2658,7 +2810,10 @@ function getOrCreateSettingsTab_(ss) {
   ensureSettingRow_(tab, 'autoSignOutEnabled', 'TRUE');
   ensureSettingRow_(tab, 'autoSignOutHour', '21');
   ensureSettingRow_(tab, 'guardPin', '1234');
-  ensureSettingRow_(tab, 'Note', 'Auto sign-out runs daily at 19:00 WIB (fixed)');
+  ensureSettingRow_(tab, 'timezone', '');
+  // Keep the informational Note in sync with the new per-customer schedule
+  // (v1.12.0 said "daily at 19:00 WIB (fixed)").
+  _setSettingValue_(tab, 'Note', 'Auto sign-out runs at the configured hour in the customer timezone.');
 
   return tab;
 }
@@ -2678,19 +2833,38 @@ function ensureSettingRow_(tab, key, defaultValue) {
 }
 
 /**
+ * Set a setting row's value in-place if the key exists (only writing when the
+ * value actually changes), otherwise append it. Used to migrate the Note text
+ * without touching user-customizable settings.
+ */
+function _setSettingValue_(tab, key, value) {
+  var data = tab.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '').trim().toLowerCase() === key.toLowerCase()) {
+      if (String(data[i][1] || '') !== value) {
+        tab.getRange(i + 1, 2).setValue(value);
+      }
+      return;
+    }
+  }
+  ensureSettingRow_(tab, key, value);
+}
+
+/**
  * Read all settings from a customer sheet's Settings tab.
- * Returns {enabled: boolean, hour: number, guardPin: string}.
+ * Returns { enabled: boolean, hour: number, guardPin: string, timezone: string|null }.
  * Creates the tab with defaults if missing.
  */
 function getSheetSettings_(sheetId) {
   try {
-    var ss = SpreadsheetApp.openById(sheetId);
+    var ss = _openSheetCached(sheetId);
     var tab = getOrCreateSettingsTab_(ss);
     var data = tab.getDataRange().getValues();
 
     var enabled = true;      // default
     var hour = 21;           // default
     var guardPin = '1234';   // default
+    var timezone = null;     // default (inherit master config or project tz)
 
     for (var i = 1; i < data.length; i++) {
       var key = String(data[i][0] || '').trim().toLowerCase();
@@ -2705,52 +2879,130 @@ function getSheetSettings_(sheetId) {
         }
       } else if (key === 'guardpin') {
         guardPin = val;
+      } else if (key === 'timezone') {
+        if (val) timezone = val;
       }
     }
 
-    return { enabled: enabled, hour: hour, guardPin: guardPin };
+    return { enabled: enabled, hour: hour, guardPin: guardPin, timezone: timezone };
   } catch (e) {
     console.warn('getSheetSettings_: Error reading sheet ' + sheetId + ': ' + e.message);
-    return { enabled: false, hour: -1, guardPin: '1234' };
+    return { enabled: false, hour: -1, guardPin: '1234', timezone: null };
   }
 }
 
 /**
- * Auto sign-out checked-in visitors across all configured sheets.
- * Called by a daily time-driven trigger at 19:00 (WIB). Sign-out is a fixed
- * global schedule — autoSignOutHour / autoSignOutEnabled are ignored.
+ * Read the pending auto sign-out queue (sheetIds that matched the hourly gate
+ * in a prior run but were left unprocessed due to the 6-minute batch cap).
+ * Returns an array (empty if none / corrupt).
+ */
+function _readPendingAutoSignOut_() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('AUTO_SIGNOUT_PENDING');
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Persist the pending auto sign-out queue. Empty array deletes the property so
+ * a completed batch never leaves a stale queue behind.
+ */
+function _writePendingAutoSignOut_(ids) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    if (!ids || ids.length === 0) {
+      props.deleteProperty('AUTO_SIGNOUT_PENDING');
+    } else {
+      props.setProperty('AUTO_SIGNOUT_PENDING', JSON.stringify(ids));
+    }
+  } catch (e) {
+    console.warn('autoSignOut: failed to write AUTO_SIGNOUT_PENDING: ' + e.message);
+  }
+}
+
+/**
+ * Auto sign-out of checked-in visitors, gated per customer by their own
+ * timezone and autoSignOutHour (HOURLY trigger). Each tick:
+ *   1. Resumes any pending batch left over from a prior 6-minute-capped run.
+ *   2. Finds active customers whose configured hour matches the current hour
+ *      in their timezone.
+ *   3. Processes up to AUTO_SIGNOUT_BATCH_CAP sheets, queueing the rest in
+ *      Script Properties AUTO_SIGNOUT_PENDING for the next tick.
+ *
+ * autoSignOutEnabled / autoSignOutHour are read from MASTER CONFIG only — the
+ * Settings tab is UI-display-only, and reading it per-sheet at ~100-customer
+ * scale is too expensive.
  */
 function autoSignOut() {
   // Self-heal: ensure triggers are installed (in case they were cleared by redeploy)
   ensureTriggersInstalled();
 
-  // Fixed daily 19:00 run — guard against concurrent executions.
+  // Hourly run — guard against concurrent executions. Reduced from 120s to 30s:
+  // the hourly window is a full hour wide and a stale lock must never hold a
+  // whole hour's worth of ticks.
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(120000)) {
+  if (!lock.tryLock(30000)) {
     console.warn('autoSignOut: Could not acquire lock — another instance is running, skipping');
     return;
   }
 
   try {
-    var timeZone = Session.getScriptTimeZone();
-    var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
+    var now = new Date(); // snapshot ONCE — the hour must not roll mid-run
+    var AUTO_SIGNOUT_BATCH_CAP = 40;
 
-    // Process ALL active customers (no per-customer opt-out on hour or enabled flag).
     var masterConfig = _loadMasterConfig();
-    var activeIds = [];
-    for (var sid in masterConfig) {
-      if (masterConfig[sid].status === 'active') activeIds.push(sid);
+
+    // ── Build the ordered candidate list ──
+    // Pending (already due from a prior capped run) first, then newly-matched.
+    var candidates = [];
+    var seen = {};
+
+    var pending = _readPendingAutoSignOut_();
+    for (var p = 0; p < pending.length; p++) {
+      var pid = pending[p];
+      if (!pid || seen[pid]) continue;
+      var pe = masterConfig[pid];
+      if (!pe || pe.status !== 'active') continue; // stale/missing — drop
+      seen[pid] = true;
+      candidates.push({ sheetId: pid, tz: pe.timezone || Session.getScriptTimeZone() });
     }
 
-    if (activeIds.length === 0) {
-      console.log('autoSignOut: No active customers to process');
+    for (var sid in masterConfig) {
+      var entry = masterConfig[sid];
+      if (entry.status !== 'active') continue;
+      if (!entry.autoSignOutEnabled) continue; // per-customer opt-out (master config)
+      if (seen[sid]) continue;
+
+      var customerTz = entry.timezone || Session.getScriptTimeZone();
+      var customerHourStr = Utilities.formatDate(now, customerTz, 'HH');
+      if (parseInt(customerHourStr, 10) !== entry.autoSignOutHour) continue;
+
+      seen[sid] = true;
+      candidates.push({ sheetId: sid, tz: customerTz });
+    }
+
+    if (candidates.length === 0) {
+      console.log('autoSignOut: No customers due for sign-out at this tick');
       return;
     }
 
-    console.log('autoSignOut: Processing ' + activeIds.length + ' active customer(s) for ' + todayStr);
+    // ── Cap at AUTO_SIGNOUT_BATCH_CAP; queue the remainder for the next tick ──
+    var processIds = candidates.slice(0, AUTO_SIGNOUT_BATCH_CAP);
+    var remainingIds = [];
+    for (var r = AUTO_SIGNOUT_BATCH_CAP; r < candidates.length; r++) {
+      remainingIds.push(candidates[r].sheetId);
+    }
+    _writePendingAutoSignOut_(remainingIds);
 
-    for (var s = 0; s < activeIds.length; s++) {
-      var sheetId = activeIds[s].trim();
+    console.log('autoSignOut: Processing ' + processIds.length + ' customer(s), ' + remainingIds.length + ' queued for next tick');
+
+    for (var s = 0; s < processIds.length; s++) {
+      var sheetId = processIds[s].sheetId;
+      var customerTz = processIds[s].tz;
       if (!sheetId) continue;
 
       try {
@@ -2776,6 +3028,9 @@ function autoSignOut() {
           continue;
         }
 
+        // Customer-local "today" for the idempotency guard.
+        var customerTodayStr = Utilities.formatDate(now, customerTz, 'yyyy-MM-dd');
+
         // Find dirty rows: today's "Checked In" visitors (idempotency guard).
         var dirty = {};        // 0-indexed data row -> true
         var dirtyRows = [];    // 0-indexed data rows, ascending
@@ -2783,7 +3038,7 @@ function autoSignOut() {
         var maxRow = -1;
         for (var i = 1; i < data.length; i++) {
           var status = String(data[i][statusIdx] || '').trim();
-          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx]) === todayStr) {
+          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx], customerTz) === customerTodayStr) {
             dirty[i] = true;
             dirtyRows.push(i);
             if (minRow === -1 || i < minRow) minRow = i;
@@ -2799,7 +3054,6 @@ function autoSignOut() {
         // Only use a single multi-column range when Status / Sign-In Time /
         // Sign-Out Time are contiguous (canonical layout: signIn = status+1,
         // signOut = status+2). Otherwise fall back to per-row writes.
-        var now = new Date();
         var contiguous = (signInIdx === statusIdx + 1 && signOutIdx === statusIdx + 2);
         if (contiguous) {
           // Write Status + Sign-Out Time in ONE setValues() over the minimal
@@ -2843,9 +3097,9 @@ function autoSignOut() {
 }
 
 /**
- * Install or reinstall the daily auto sign-out time-driven trigger.
+ * Install or reinstall the HOURLY auto sign-out time-driven trigger.
  * Removes any existing autoSignOut triggers first to avoid duplicates.
- * Fires daily at 19:00 (19:00–20:00 project timezone = WIB).
+ * The per-customer hour gating happens inside autoSignOut().
  */
 function setupAutoSignOutTrigger() {
   // Remove existing auto sign-out triggers
@@ -2855,18 +3109,17 @@ function setupAutoSignOutTrigger() {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
-  // Install daily trigger at 19:00 (WIB)
+  // Install hourly trigger — autoSignOut() gates per customer timezone/hour.
   ScriptApp.newTrigger('autoSignOut')
     .timeBased()
-    .atHour(19)
-    .everyDays(1)
+    .everyHours(1)
     .create();
-  console.log('setupAutoSignOutTrigger: Daily auto sign-out trigger installed for 19:00–20:00');
+  console.log('setupAutoSignOutTrigger: Hourly auto sign-out trigger installed');
 }
 
 /**
  * Multi-customer catch-up sweep: signs out any visitor still "Checked In" from
- * a previous day (stragglers left behind by a failed 19:00 autoSignOut run) and
+ * a previous day (stragglers left behind by a failed hourly autoSignOut run) and
  * releases their cards. Called by a daily time-driven trigger at 02:00.
  * Falls back to the legacy single-sheet SHEET_ID behavior if no active
  * customers are configured in the master config.
@@ -2879,6 +3132,10 @@ function releaseDailyCards() {
   }
 
   try {
+    // Keep the PROJECT timezone for the straggler criterion ("not today").
+    // Card release is a nightly global sweep, not a per-customer schedule, so
+    // a customer-local timezone could misclassify late-night visitors as
+    // stragglers (or vice-versa). We pass the project tz explicitly for clarity.
     var timeZone = Session.getScriptTimeZone();
     var todayStr = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd');
 
@@ -2938,7 +3195,7 @@ function releaseDailyCards() {
         var maxRow = -1;
         for (var i = 1; i < data.length; i++) {
           var status = String(data[i][statusIdx] || '').trim();
-          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx]) !== todayStr) {
+          if (status === 'Checked In' && getDateString_(data[i][visitationDateIdx], timeZone) !== todayStr) {
             dirty[i] = true;
             dirtyRows.push(i);
             if (minRow === -1 || i < minRow) minRow = i;
@@ -3025,15 +3282,69 @@ function setupDailyReleaseTrigger() {
 }
 
 /**
- * One-shot auto-install: ensures the daily auto sign-out trigger (19:00 WIB)
- * and daily card release trigger (02:00) exist. Uses a versioned ScriptProperties
- * flag so it automatically reinstalls if the trigger schema changes.
+ * One-shot master-config schema migration (SEPARATE from MIGRATION_REGISTRY,
+ * which is customer-sheet-only). Adds the 'timezone' header to the Customers
+ * tab if missing. Guarded by the MASTER_CONFIG_SCHEMA_VERSION Script Property
+ * so it runs exactly once.
+ *
+ * Called from ensureTriggersInstalled() on first request after deploy so the
+ * master schema migrates automatically (no manual admin step). Cheap on every
+ * subsequent call: a single Script Property read.
+ *
+ * @returns {Object} { status, migrated, schema, column?, error? }
+ */
+function _migrateMasterConfigV2() {
+  var MASTER_CONFIG_SCHEMA_VERSION = 'v2'; // v1 = 9-col schema, v2 = +timezone
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('MASTER_CONFIG_SCHEMA_VERSION') === MASTER_CONFIG_SCHEMA_VERSION) {
+    return { status: 'ok', migrated: false, schema: MASTER_CONFIG_SCHEMA_VERSION };
+  }
+
+  var sheet = _getMasterConfigSheet();
+  if (!sheet) {
+    return { status: 'error', error: 'Master config sheet not accessible' };
+  }
+  var custSheet = sheet.getSheetByName('Customers');
+  if (!custSheet) {
+    return { status: 'error', error: 'Customers tab not found in master config' };
+  }
+
+  var data = custSheet.getDataRange().getValues();
+  var headers = data.length > 0 ? data[0] : [];
+
+  // Header already present? Mark schema and stop (idempotent).
+  if (resolveColumns(data, ['timezone'])['timezone'] !== -1) {
+    props.setProperty('MASTER_CONFIG_SCHEMA_VERSION', MASTER_CONFIG_SCHEMA_VERSION);
+    console.log('_migrateMasterConfigV2: timezone header already present');
+    return { status: 'ok', migrated: false, schema: MASTER_CONFIG_SCHEMA_VERSION };
+  }
+
+  // Append 'timezone' at the first free column after the last non-empty header.
+  var lastCol = _lastNonEmpty_(headers);
+  var tzCol = lastCol + 1; // 1-based
+  custSheet.getRange(1, tzCol).setValue('timezone');
+  custSheet.getRange(1, tzCol).setFontWeight('bold');
+  console.log('_migrateMasterConfigV2: appended timezone header at column ' + tzCol);
+
+  props.setProperty('MASTER_CONFIG_SCHEMA_VERSION', MASTER_CONFIG_SCHEMA_VERSION);
+  _invalidateMasterConfigCache_();
+  return { status: 'ok', migrated: true, schema: MASTER_CONFIG_SCHEMA_VERSION, column: tzCol };
+}
+
+/**
+ * One-shot auto-install: migrates the master config schema (timezone header),
+ * then ensures the HOURLY auto sign-out trigger and daily card release trigger
+ * (02:00) exist. Uses a versioned ScriptProperties flag so it automatically
+ * reinstalls if the trigger schema changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
 function ensureTriggersInstalled() {
+  // Master-config schema migration (cheap no-op after the first successful run).
+  _migrateMasterConfigV2();
+
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v6';
+  var SCHEMA_VERSION = 'v7';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
@@ -3050,7 +3361,7 @@ function ensureTriggersInstalled() {
   }
 
   // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers.
-  // This also cleans up the removed hourly autoSignOut trigger and the legacy
+  // This also cleans up the legacy daily autoSignOut trigger and the removed
   // syncAutoSignOutHours trigger from older deployments.
   triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
@@ -3060,13 +3371,12 @@ function ensureTriggersInstalled() {
     }
   }
 
-  // Install daily autoSignOut at 19:00 (fixed, WIB)
+  // Install HOURLY autoSignOut (per-customer timezone/hour gating inside).
   ScriptApp.newTrigger('autoSignOut')
     .timeBased()
-    .atHour(19)
-    .everyDays(1)
+    .everyHours(1)
     .create();
-  console.log('ensureTriggersInstalled: Installed autoSignOut trigger at 19:00');
+  console.log('ensureTriggersInstalled: Installed hourly autoSignOut trigger');
 
   // Install daily card release at 02:00
   ScriptApp.newTrigger('releaseDailyCards')
@@ -3226,7 +3536,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = '_version!A1';
-var LATEST_SHEET_VERSION = 7;
+var LATEST_SHEET_VERSION = 8;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -3553,6 +3863,17 @@ var MIGRATION_REGISTRY = [
       }
 
       console.log('Migration V7: Complete');
+    }
+  },
+  {
+    version: 8,
+    name: 'Add timezone row to Settings tab',
+    destructive: false,
+    description: 'Ensures the Settings tab carries a timezone row (empty default)',
+    fn: function(ss) {
+      console.log('Migration V8: Ensuring timezone row in Settings tab');
+      getOrCreateSettingsTab_(ss); // ensureSettingRow_ handles idempotently
+      console.log('Migration V8: Complete');
     }
   },
 ];
