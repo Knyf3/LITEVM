@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.14.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.15.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -104,11 +104,12 @@ function _getMasterConfigSheet() {
  *
  * Customers tab schema (header-name resolved):
  *   sheetId | allowedOrigins | tier | visitorLimit | status | notes |
- *   autoSignOutHour | autoSignOutEnabled | timezone | retentionDays
+ *   autoSignOutHour | autoSignOutEnabled | timezone | retentionDays |
+ *   expiryDate | expiryWarningDays
  *
  * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier,
  *   visitorLimit, status, notes, autoSignOutHour, autoSignOutEnabled,
- *   timezone, retentionDays }
+ *   timezone, retentionDays, expiryDate, expiryWarningDays }
  */
 function _loadMasterConfig() {
   if (_masterConfig !== null) return _masterConfig;
@@ -136,7 +137,8 @@ function _loadMasterConfig() {
 
   var cols = resolveColumns(data, [
     'sheetId', 'allowedOrigins', 'tier', 'visitorLimit', 'status', 'notes',
-    'autoSignOutHour', 'autoSignOutEnabled', 'retentionDays', 'timezone'
+    'autoSignOutHour', 'autoSignOutEnabled', 'retentionDays', 'timezone',
+    'expiryDate', 'expiryWarningDays'
   ]);
 
   var config = {};
@@ -159,6 +161,31 @@ function _loadMasterConfig() {
       }
     }
 
+    // expiryDate is OPTIONAL: blank/empty → null (no expiry for this customer).
+    // Stored as a raw string; parsed strictly at enforcement time by
+    // parseRetentionDate_ (never coerced to a Date here).
+    var expiryDate = null;
+    if (cols['expiryDate'] !== -1) {
+      var rawExpiry = String(row[cols['expiryDate']] || '').trim();
+      if (rawExpiry) expiryDate = rawExpiry;
+    }
+
+    // expiryWarningDays is OPTIONAL: blank → default 7 (silent, the common
+    // "unset" case); NaN / negative → default 7 with a warning.
+    var expiryWarningDays = 7;
+    if (cols['expiryWarningDays'] !== -1) {
+      var rawWarning = String(row[cols['expiryWarningDays']] || '').trim();
+      if (rawWarning !== '') {
+        var parsedWarning = parseInt(rawWarning, 10);
+        if (isNaN(parsedWarning) || parsedWarning < 0) {
+          console.warn('_loadMasterConfig: invalid expiryWarningDays "' + rawWarning + '" for ' + sid + ' — using default 7');
+          expiryWarningDays = 7;
+        } else {
+          expiryWarningDays = parsedWarning;
+        }
+      }
+    }
+
     config[sid] = {
       sheetId: sid,
       allowedOrigins: String(row[cols['allowedOrigins']] || '').trim(),
@@ -170,6 +197,8 @@ function _loadMasterConfig() {
       autoSignOutEnabled: enabledCell !== undefined && enabledCell !== null ? String(enabledCell).toUpperCase() === 'TRUE' : true,
       retentionDays: retentionDays,
       timezone: tzCell ? String(tzCell).trim() : null,
+      expiryDate: expiryDate,
+      expiryWarningDays: expiryWarningDays,
     };
   }
   _masterConfig = config;
@@ -574,6 +603,29 @@ function checkVisitorLimit_(sheetId) {
 }
 
 /**
+ * Build the standard "valid" result object for validateRequest, annotating the
+ * derived expiry state when known. Keeps the allow-return sites DRY so every
+ * allow path reports a consistent expiryState + remainingDays shape.
+ *
+ * @param {Object} customer - Master config entry
+ * @param {Object} expiryInfo - Result of computeExpiryState_ (may be null)
+ * @returns {Object} { valid:true, tier, visitorLimit, status, expiryState?, remainingDays? }
+ */
+function buildValidResult_(customer, expiryInfo) {
+  var result = {
+    valid: true,
+    tier: customer.tier,
+    visitorLimit: customer.visitorLimit,
+    status: customer.status,
+  };
+  if (expiryInfo) {
+    result.expiryState = expiryInfo.expiryState;
+    result.remainingDays = expiryInfo.remainingDays;
+  }
+  return result;
+}
+
+/**
  * Validate an incoming request against the master config.
  *
  * NEW BEHAVIOR for unknown sheetIds:
@@ -589,10 +641,13 @@ function checkVisitorLimit_(sheetId) {
  *         - For all other epTypes → allow (returns status='pending')
  *      b. If auto-register fails → deny with INVALID_CUSTOMER
  *   2. If customer status is 'pending' and epType is 'register' → deny ACCOUNT_PENDING
- *   3. If customer status is not 'active' and not 'pending' → deny ACCOUNT_DISABLED
- *   4. If endpointType is NOT 'register' → skip origin check, allow
- *   5. If origin is reported → check against allowedOrigins whitelist
- *   6. If origin not whitelisted → deny with ORIGIN_BLOCKED
+ *   3. If customer status is 'pending' (non-register) → allow
+ *   4. If customer is expired (derived from expiryDate) → deny ACCOUNT_EXPIRED
+ *      (overrides paused/disabled; pending wins above)
+ *   5. If customer status is not 'active' → deny ACCOUNT_DISABLED
+ *   6. If endpointType is NOT 'register' → skip origin check, allow
+ *   7. If origin is reported → check against allowedOrigins whitelist
+ *   8. If origin not whitelisted → deny with ORIGIN_BLOCKED
  *
  * @param {Object} e - The doGet/doPost event object
  * @param {string} sheetId - Customer's Google Sheet ID
@@ -660,6 +715,28 @@ function validateRequest(e, sheetId, endpointType) {
     return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
   }
 
+  // ── NEW: derived expiry enforcement (computed fresh on every request) ──
+  // Expiry is NEVER stored as a status; it is derived from the customer's
+  // expiryDate on each request. 'expiring' is annotation-only (allow). 'expired'
+  // DENIES even if status is still 'active' — and, because this step runs before
+  // the status check below, it also overrides paused/disabled status. Pending
+  // accounts return above, so ACCOUNT_PENDING always wins over expiry for
+  // never-activated accounts.
+  var expiryInfo = computeExpiryState_(customer, new Date());
+  if (expiryInfo.expiryState === 'expired') {
+    logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_EXPIRED', endpointType, null);
+    return {
+      valid: false,
+      error: 'ACCOUNT_EXPIRED',
+      message: 'Customer subscription expired.',
+      expiryDate: customer.expiryDate,
+      remainingDays: expiryInfo.remainingDays,
+      tier: customer.tier,
+      visitorLimit: customer.visitorLimit,
+      status: customer.status,
+    };
+  }
+
   // Check account status for non-pending, non-active states
   if (customer.status !== 'active') {
     logDeniedRequest(sheetId, _extractOrigin_(e), 'ACCOUNT_' + customer.status.toUpperCase(), endpointType, null);
@@ -668,7 +745,7 @@ function validateRequest(e, sheetId, endpointType) {
 
   // Only enforce origin checks on registration endpoint
   if (endpointType !== 'register') {
-    return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+    return buildValidResult_(customer, expiryInfo);
   }
 
   // ─── REGISTRATION-SPECIFIC CHECKS ───
@@ -708,7 +785,7 @@ function validateRequest(e, sheetId, endpointType) {
   }
 
   // All checks passed
-  return { valid: true, tier: customer.tier, visitorLimit: customer.visitorLimit, status: customer.status };
+  return buildValidResult_(customer, expiryInfo);
 }
 
 /**
@@ -828,9 +905,13 @@ function doGet(e) {
         var settings = getSheetSettings_(sheetId);
         var customer = _getCustomerConfig(sheetId);
         var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+        // Derived expiry is authoritative: an expired customer gets
+        // actEnabled=false even if status is still 'active'.
+        var expiryInfo = customer ? computeExpiryState_(customer, new Date()) : { expiryState: 'none', remainingDays: null };
         var actEnabled = customer !== null &&
           customer.status === 'active' &&
-          entitledTiers.indexOf(customer.tier) !== -1;
+          entitledTiers.indexOf(customer.tier) !== -1 &&
+          expiryInfo.expiryState !== 'expired';
         return jsonResponse({
           status: 'ok',
           guardPin: settings.guardPin,
@@ -838,6 +919,9 @@ function doGet(e) {
           autoSignOutHour: settings.hour,
           timezone: settings.timezone || (customer ? customer.timezone : null) || Session.getScriptTimeZone(),
           actEnabled: actEnabled,
+          expiryDate: customer && customer.expiryDate ? customer.expiryDate : null,
+          remainingDays: expiryInfo.remainingDays,
+          expiryState: expiryInfo.expiryState,
         }, 200);
       }
     }
@@ -881,6 +965,7 @@ function doPost(e) {
     else if (data.mode === 'bulkSignOut') epType = 'admin';
     else if (data.mode === 'setupAutoSignOut') epType = 'admin';
     else if (data.mode === 'retentionDryRun' || data.mode === 'runRetention') epType = 'admin';
+    else if (data.mode === 'expiryDryRun' || data.mode === 'runExpiry') epType = 'admin';
     else if (data.mode) epType = 'admin';
 
     var validation = validateRequest(e, data.sheetId, epType);
@@ -918,6 +1003,17 @@ function doPost(e) {
     if (data.mode === 'runRetention') {
       runRetention(false);
       return jsonResponse({ status: 'ok', message: 'Retention purge complete.' }, 200);
+    }
+
+    // Handle expiry pass manual triggers (admin-gated). expiryDryRun performs
+    // the full scan + ExpiryLog writes but skips status changes.
+    if (data.mode === 'expiryDryRun') {
+      runExpiry(true);
+      return jsonResponse({ status: 'ok', message: 'Expiry dry run complete — no status changes applied.' }, 200);
+    }
+    if (data.mode === 'runExpiry') {
+      runExpiry(false);
+      return jsonResponse({ status: 'ok', message: 'Expiry pass complete.' }, 200);
     }
 
     // Handle ACTApi license issuance
@@ -1038,6 +1134,13 @@ function handleIssueLicense(data) {
     var customer = _getCustomerConfig(data.sheetId);
     if (!customer) {
       return jsonResponse({ status: 'error', error: 'Customer not found' }, 404);
+    }
+    // Derived expiry guard: an expired customer must NOT be issued a license
+    // even if status is still 'active' (the daily pass materializes 'disabled'
+    // the next morning; enforcement here is always derived).
+    var expiryInfo = computeExpiryState_(customer, new Date());
+    if (expiryInfo.expiryState === 'expired') {
+      return jsonResponse({ status: 'error', error: 'ACCOUNT_EXPIRED', message: 'Customer subscription expired.' }, 403);
     }
     if (customer.status !== 'active') {
       return jsonResponse({
@@ -3352,6 +3455,72 @@ function parseRetentionDate_(str) {
 }
 
 /**
+ * Compute today's date as a local-midnight Date in the given IANA timezone.
+ * Thin wrapper: format "now" into the target tz ('yyyy-MM-dd' via
+ * Utilities.formatDate), then re-parse that string with parseRetentionDate_
+ * so the result is a local-midnight Date (no UTC-midnight trap). Falls back to
+ * the script project timezone if `tz` is empty or not a valid IANA zone.
+ *
+ * @param {string} tz - IANA timezone string (may be empty/invalid)
+ * @returns {Date} Local-midnight Date for today in the effective timezone
+ */
+function computeTodayLocalMidnight_(tz) {
+  var effectiveTz = (tz && _isValidTimeZone_(tz)) ? tz : Session.getScriptTimeZone();
+  var todayStr = Utilities.formatDate(new Date(), effectiveTz, 'yyyy-MM-dd');
+  return parseRetentionDate_(todayStr);
+}
+
+/**
+ * Derive a customer's expiry state — the SINGLE SOURCE OF TRUTH for per-customer
+ * subscription expiry. Expiry is NEVER stored as a status column; it is derived
+ * from the customer's `expiryDate` (raw ISO string) on every call. Returns:
+ *   - 'none'     → no expiryDate configured (or unparseable)
+ *   - 'active'   → expiryDate is more than expiryWarningDays away
+ *   - 'expiring' → within the warning window (remainingDays <= expiryWarningDays,
+ *                  including remainingDays === 0 — the expiry date itself)
+ *   - 'expired'  → remainingDays < 0 (today is strictly after the expiry date)
+ *
+ * Same-day boundary: the customer is valid THROUGH the expiryDate day. On the
+ * expiry date remainingDays === 0 → 'expiring' (still allowed). The daily pass
+ * materializes status='disabled' the NEXT morning once remainingDays < 0.
+ *
+ * Timezone: the day boundary is evaluated in the customer's master-config
+ * timezone (fallback: script project timezone), so "today" means the customer's
+ * local today, not the GAS project's.
+ *
+ * @param {Object} customer - Master config entry (must carry expiryDate,
+ *   expiryWarningDays, timezone, sheetId)
+ * @param {Date} [now] - Reference "now" (defaults to new Date()); injectable
+ *   for deterministic testing
+ * @returns {Object} { expiryState: 'none'|'active'|'expiring'|'expired',
+ *   remainingDays: number|null }
+ */
+function computeExpiryState_(customer, now) {
+  // No expiry configured → not time-limited.
+  if (!customer.expiryDate) {
+    return { expiryState: 'none', remainingDays: null };
+  }
+
+  var expiryDateLocalMidnight = parseRetentionDate_(customer.expiryDate);
+  if (expiryDateLocalMidnight === null) {
+    console.warn('computeExpiryState_: unparseable expiryDate "' + customer.expiryDate + '" for ' + customer.sheetId + ' — treating as no expiry');
+    return { expiryState: 'none', remainingDays: null };
+  }
+
+  var todayLocalMidnight = computeTodayLocalMidnight_(customer.timezone);
+  var remainingDays = Math.round((expiryDateLocalMidnight - todayLocalMidnight) / 86400000);
+
+  // Warning window is the customer's configured expiryWarningDays (default 7).
+  var warningDays = customer.expiryWarningDays;
+  if (warningDays === undefined || warningDays === null || isNaN(warningDays)) warningDays = 7;
+
+  if (remainingDays < 0) return { expiryState: 'expired', remainingDays: remainingDays };
+  if (remainingDays === 0) return { expiryState: 'expiring', remainingDays: remainingDays };
+  if (remainingDays <= warningDays) return { expiryState: 'expiring', remainingDays: remainingDays };
+  return { expiryState: 'active', remainingDays: remainingDays };
+}
+
+/**
  * Extract a Google Drive file ID from a Drive URL of the form
  * https://drive.google.com/file/d/<FILE_ID>/view (or /open, /preview, etc.).
  * Returns null when the input is not a string, is empty, or does not contain a
@@ -3397,6 +3566,88 @@ function logPurge_(entry) {
     ]);
   } catch (e) {
     console.error('Failed to log retention purge: ' + e.message);
+  }
+}
+
+/**
+ * Log a per-customer expiry event to the ExpiryLog tab of the master config
+ * sheet. Creates the tab with headers if it does not already exist. Mirrors
+ * logPurge_: always wrapped so an ExpiryLog write failure never aborts the
+ * expiry run.
+ *
+ * @param {Object} entry - { sheetId, expiryDate, remainingDays, action,
+ *   previousStatus }
+ */
+function logExpiry_(entry) {
+  try {
+    var sheet = _getMasterConfigSheet();
+    if (!sheet) return;
+    var expirySheet = sheet.getSheetByName('ExpiryLog');
+    if (!expirySheet) {
+      expirySheet = sheet.insertSheet('ExpiryLog');
+      expirySheet.appendRow(['Timestamp', 'SheetId', 'ExpiryDate', 'RemainingDays', 'Action', 'PreviousStatus']);
+    }
+    expirySheet.appendRow([
+      new Date(),
+      entry.sheetId || '',
+      entry.expiryDate || '',
+      entry.remainingDays !== undefined && entry.remainingDays !== null ? entry.remainingDays : '',
+      entry.action || '',
+      entry.previousStatus || ''
+    ]);
+  } catch (e) {
+    console.error('Failed to log expiry: ' + e.message);
+  }
+}
+
+/**
+ * Write a customer's status cell in the master config Customers tab. Resolves
+ * columns by header name (sheetId + status), scans for the matching sheetId,
+ * and sets the status cell. Flushes the write and invalidates the master config
+ * cache so the next validateRequest reads the fresh status. Always wrapped so a
+ * status write failure never aborts the expiry run.
+ *
+ * @param {string} sheetId - Customer's Google Sheet ID
+ * @param {string} newStatus - New status value to write (e.g. 'disabled')
+ * @returns {boolean} true if the write succeeded, false otherwise
+ */
+function setCustomerStatus(sheetId, newStatus) {
+  try {
+    var sheet = _getMasterConfigSheet();
+    if (!sheet) {
+      console.error('setCustomerStatus: master config sheet not accessible');
+      return false;
+    }
+    var custSheet = sheet.getSheetByName('Customers');
+    if (!custSheet) {
+      console.error('setCustomerStatus: Customers tab not found in master config');
+      return false;
+    }
+
+    var data = custSheet.getDataRange().getValues();
+    var cols = resolveColumns(data, ['sheetId', 'status']);
+    var sidIdx = cols['sheetId'];
+    var statusIdx = cols['status'];
+    if (sidIdx === -1 || statusIdx === -1) {
+      console.error('setCustomerStatus: Customers tab missing sheetId/status headers');
+      return false;
+    }
+
+    for (var i = 1; i < data.length; i++) {
+      var sid = String(data[i][sidIdx] || '').trim();
+      if (sid === sheetId) {
+        custSheet.getRange(i + 1, statusIdx + 1).setValue(newStatus);
+        SpreadsheetApp.flush(); // Ensure write is committed
+        _invalidateMasterConfigCache_();
+        return true;
+      }
+    }
+
+    console.warn('setCustomerStatus: sheetId ' + sheetId + ' not found in Customers tab');
+    return false;
+  } catch (e) {
+    console.error('setCustomerStatus: ' + e.message);
+    return false;
   }
 }
 
@@ -3646,6 +3897,109 @@ function runRetention(dryRun) {
 }
 
 /**
+ * Daily per-customer expiry pass (run via runDailyMaintenance at 02:05).
+ *
+ * Design (warn-first): 'expiring' is PURELY DERIVED — the daily pass only
+ * MATERIALIZES a status='disabled' write when a customer is already 'expired'
+ * (remainingDays < 0) AND its current status is still 'active'. It NEVER
+ * touches 'paused' or operator-disabled status. A customer with no expiryDate
+ * (or an unparseable one) is never disabled here. Expiry enforcement in
+ * validateRequest / handleIssueLicense / config is always DERIVED fresh from
+ * expiryDate on every request, so the status write here is only a persisted
+ * fallback for downstream consumers that read status directly.
+ *
+ * Audit only: results go to the ExpiryLog tab. EXPIRY_ALERT_EMAIL is deferred
+ * to v1.16.0 — no email is sent in this version.
+ *
+ * @param {boolean} [dryRun] - When true, scan + log only; skip status writes.
+ */
+function runExpiry(dryRun) {
+  // Self-heal: ensure triggers are installed (in case they were cleared by redeploy).
+  ensureTriggersInstalled();
+
+  // Daily run — guard against concurrent executions. Hold the lock for the
+  // entire function (same pattern as runRetention).
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    console.warn('runExpiry: Could not acquire lock — another instance is running, skipping');
+    return;
+  }
+
+  try {
+    var masterConfig = _loadMasterConfig();
+
+    var disabledCount = 0;
+    var warnedCount = 0;
+    var alreadyCount = 0;
+
+    for (var sid in masterConfig) {
+      var customer = masterConfig[sid];
+      if (!customer.expiryDate) continue; // no expiry → nothing to do
+
+      var expiryInfo = computeExpiryState_(customer, new Date());
+
+      if (expiryInfo.expiryState === 'expired') {
+        if (customer.status === 'active') {
+          // Materialize the disable only for still-active customers.
+          if (!dryRun) {
+            setCustomerStatus(sid, 'disabled');
+          }
+          logExpiry_({
+            sheetId: sid,
+            expiryDate: customer.expiryDate,
+            remainingDays: expiryInfo.remainingDays,
+            action: dryRun ? 'would_disable' : 'disabled',
+            previousStatus: 'active'
+          });
+          disabledCount++;
+        } else {
+          // Already 'disabled'/'paused' (or operator-disabled) — NEVER touch status.
+          logExpiry_({
+            sheetId: sid,
+            expiryDate: customer.expiryDate,
+            remainingDays: expiryInfo.remainingDays,
+            action: 'already_disabled',
+            previousStatus: customer.status
+          });
+          alreadyCount++;
+        }
+      } else if (expiryInfo.expiryState === 'expiring') {
+        // Warning window — audit only, no status write.
+        logExpiry_({
+          sheetId: sid,
+          expiryDate: customer.expiryDate,
+          remainingDays: expiryInfo.remainingDays,
+          action: 'warn',
+          previousStatus: customer.status
+        });
+        warnedCount++;
+      }
+      // 'active' / 'none' → no log row (signal-to-noise).
+    }
+
+    // After writes, invalidate the cache so a subsequent validateRequest in
+    // this (or any) execution reads the fresh persisted status.
+    if (!dryRun) {
+      _invalidateMasterConfigCache_();
+    }
+
+    console.log('runExpiry: Run complete — ' + disabledCount + ' disabled, ' + warnedCount + ' warned, ' + alreadyCount + ' already-disabled' + (dryRun ? ' (dry run)' : ''));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Daily maintenance wrapper (time-driven trigger at 02:05). Runs retention
+ * purge first, then the expiry pass. Replaces the old runRetention trigger so
+ * the trigger count stays at 3 (autoSignOut, releaseDailyCards, and this one).
+ */
+function runDailyMaintenance() {
+  runRetention(false);
+  runExpiry(false);
+}
+
+/**
  * One-shot master-config schema migration (SEPARATE from MIGRATION_REGISTRY,
  * which is customer-sheet-only). Adds the 'timezone' header to the Customers
  * tab if missing. Guarded by the MASTER_CONFIG_SCHEMA_VERSION Script Property
@@ -3750,10 +4104,77 @@ function _migrateMasterConfigV3() {
 }
 
 /**
+ * One-shot master-config schema migration (SEPARATE from MIGRATION_REGISTRY,
+ * which is customer-sheet-only). Adds the 'expiryDate' and 'expiryWarningDays'
+ * headers to the Customers tab if missing. Guarded by the
+ * MASTER_CONFIG_SCHEMA_VERSION Script Property so it runs exactly once, and
+ * each header is guarded individually (idempotent per-header) so a partial
+ * prior run self-heals. Existing customer rows are untouched (empty expiryDate
+ * = no expiry; empty expiryWarningDays = default 7 at read time).
+ *
+ * Called from ensureTriggersInstalled() on first request after deploy so the
+ * master schema migrates automatically (no manual admin step).
+ *
+ * @returns {Object} { status, migrated, schema, columns?, error? }
+ */
+function _migrateMasterConfigV4() {
+  var MASTER_CONFIG_SCHEMA_VERSION = 'v4'; // v1 = 9-col, v2 = +timezone, v3 = +retentionDays, v4 = +expiryDate, +expiryWarningDays
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('MASTER_CONFIG_SCHEMA_VERSION') === MASTER_CONFIG_SCHEMA_VERSION) {
+    return { status: 'ok', migrated: false, schema: MASTER_CONFIG_SCHEMA_VERSION };
+  }
+
+  var sheet = _getMasterConfigSheet();
+  if (!sheet) {
+    return { status: 'error', error: 'Master config sheet not accessible' };
+  }
+  var custSheet = sheet.getSheetByName('Customers');
+  if (!custSheet) {
+    return { status: 'error', error: 'Customers tab not found in master config' };
+  }
+
+  var data = custSheet.getDataRange().getValues();
+  var headers = data.length > 0 ? data[0] : [];
+
+  var migrated = false;
+  var appended = [];
+
+  // Header 1: expiryDate (guarded individually).
+  if (resolveColumns(data, ['expiryDate'])['expiryDate'] === -1) {
+    var lastCol = _lastNonEmpty_(headers);
+    var expiryDateCol = lastCol + 1; // 1-based
+    custSheet.getRange(1, expiryDateCol).setValue('expiryDate');
+    custSheet.getRange(1, expiryDateCol).setFontWeight('bold');
+    console.log('_migrateMasterConfigV4: appended expiryDate header at column ' + expiryDateCol);
+    // Refresh so the next header appends after this one.
+    data = custSheet.getDataRange().getValues();
+    headers = data.length > 0 ? data[0] : [];
+    migrated = true;
+    appended.push('expiryDate');
+  }
+
+  // Header 2: expiryWarningDays (guarded individually).
+  if (resolveColumns(data, ['expiryWarningDays'])['expiryWarningDays'] === -1) {
+    var lastCol2 = _lastNonEmpty_(headers);
+    var expiryWarningDaysCol = lastCol2 + 1; // 1-based
+    custSheet.getRange(1, expiryWarningDaysCol).setValue('expiryWarningDays');
+    custSheet.getRange(1, expiryWarningDaysCol).setFontWeight('bold');
+    console.log('_migrateMasterConfigV4: appended expiryWarningDays header at column ' + expiryWarningDaysCol);
+    migrated = true;
+    appended.push('expiryWarningDays');
+  }
+
+  props.setProperty('MASTER_CONFIG_SCHEMA_VERSION', MASTER_CONFIG_SCHEMA_VERSION);
+  _invalidateMasterConfigCache_();
+  return { status: 'ok', migrated: migrated, schema: MASTER_CONFIG_SCHEMA_VERSION, columns: appended };
+}
+
+/**
  * One-shot auto-install: migrates the master config schema (timezone +
- * retentionDays headers), then ensures the HOURLY auto sign-out trigger, the
- * daily card release trigger (02:00), and the daily retention purge trigger
- * (02:05) exist. Uses a versioned ScriptProperties flag so it automatically
+ * retentionDays + expiryDate + expiryWarningDays headers), then ensures the
+ * HOURLY auto sign-out trigger, the daily card release trigger (02:00), and
+ * the daily maintenance trigger (02:05, which runs retention purge + expiry
+ * pass) exist. Uses a versioned ScriptProperties flag so it automatically
  * reinstalls if the trigger schema changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
@@ -3761,35 +4182,35 @@ function ensureTriggersInstalled() {
   // Master-config schema migrations (cheap no-ops after the first successful run).
   _migrateMasterConfigV2();
   _migrateMasterConfigV3();
+  _migrateMasterConfigV4();
 
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v8';
+  var SCHEMA_VERSION = 'v9';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
   var hasAutoSignOut = false;
   var hasDailyRelease = false;
-  var hasRetention = false;
+  var hasDailyMaintenance = false;
   for (var ti = 0; ti < triggers.length; ti++) {
     var fn = triggers[ti].getHandlerFunction();
     if (fn === 'autoSignOut') hasAutoSignOut = true;
     if (fn === 'releaseDailyCards') hasDailyRelease = true;
-    if (fn === 'runRetention') hasRetention = true;
+    if (fn === 'runDailyMaintenance') hasDailyMaintenance = true;
   }
   // If schema matches AND all three required triggers exist, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasRetention) {
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasDailyMaintenance) {
     return;
   }
 
-  // Delete ALL existing autoSignOut + releaseDailyCards + runRetention +
-  // syncAutoSignOutHours triggers. This also cleans up the legacy daily
-  // autoSignOut trigger and the removed syncAutoSignOutHours trigger from
-  // older deployments.
+  // Delete ALL existing autoSignOut + releaseDailyCards + runDailyMaintenance +
+  // syncAutoSignOutHours triggers. The legacy 'runRetention' trigger is also
+  // removed here so old deployments get it replaced by runDailyMaintenance.
   triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'runRetention' || fn === 'syncAutoSignOutHours') {
+    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'runRetention' || fn === 'runDailyMaintenance' || fn === 'syncAutoSignOutHours') {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
@@ -3809,19 +4230,20 @@ function ensureTriggersInstalled() {
     .create();
   console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
 
-  // Install daily retention purge at 02:05 (5-minute window: 02:05–02:10).
-  // releaseDailyCards holds the script lock at 02:00 (up to 120s, ~until 02:02),
-  // so the 02:05 start keeps the two daily runs from contending on the lock.
-  // If `.nearMinute(5)` is rejected in this combination at runtime, fall back to
-  // `.atHour(2).everyDays(1)` (fires within the 02:00–03:00 window) — lock
-  // contention with releaseDailyCards is the expected isolation.
-  ScriptApp.newTrigger('runRetention')
+  // Install daily maintenance at 02:05 (5-minute window: 02:05–02:10). This
+  // runs retention purge + expiry pass. releaseDailyCards holds the script
+  // lock at 02:00 (up to 120s, ~until 02:02), so the 02:05 start keeps the two
+  // daily runs from contending on the lock. If `.nearMinute(5)` is rejected in
+  // this combination at runtime, fall back to `.atHour(2).everyDays(1)` (fires
+  // within the 02:00–03:00 window) — lock contention with releaseDailyCards is
+  // the expected isolation.
+  ScriptApp.newTrigger('runDailyMaintenance')
     .timeBased()
     .atHour(2)
     .nearMinute(5)
     .everyDays(1)
     .create();
-  console.log('ensureTriggersInstalled: Installed runRetention trigger at 02:05');
+  console.log('ensureTriggersInstalled: Installed runDailyMaintenance trigger at 02:05');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);

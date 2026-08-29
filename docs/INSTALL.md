@@ -1,6 +1,6 @@
 # LITEVM — Complete Installation Guide
 
-**Version:** 1.14.0
+**Version:** 1.15.0
 
 A lightweight, mobile-first visitor pre-registration system with guard verification portal, card assignment, and auto sign-out. Built on Google Sheets, Google Apps Script, and GitHub Pages.
 
@@ -91,7 +91,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 1. Click **Deploy** → **New deployment**
 2. Select **Web app** as deployment type
-3. **Description**: `LITEVM v1.14.0`
+3. **Description**: `LITEVM v1.15.0`
 4. **Execute as**: `Me`
 5. **Who has access**: `Anyone`
 6. Click **Deploy**
@@ -103,7 +103,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 ```bash
 curl -sL "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?mode=health"
-# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.14.0"}
+# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.15.0"}
 ```
 
 ### 1E. Install Auto Sign-Out Trigger (one-time)
@@ -132,7 +132,7 @@ This is your **admin control panel** — one sheet that manages all customers.
 
 Rename the default sheet to **`Customers`** and set up these **header names** in row 1:
 
-`sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone` | `retentionDays`
+`sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone` | `retentionDays` | `expiryDate` | `expiryWarningDays`
 
 > **Header-name driven:** the backend resolves columns by header NAME (`resolveColumns`), never by column address. Order is flexible — you may insert or reorder columns freely; the `timezone` header can live anywhere. Do not rename or delete headers. Adding a new header at any position is safe and requires no code change.
 
@@ -150,14 +150,16 @@ Rename the default sheet to **`Customers`** and set up these **header names** in
 | `autoSignOutEnabled` | `TRUE` or `FALSE` (default `TRUE`) |
 | `timezone` | IANA timezone for the customer (e.g. `Asia/Jakarta`, `Asia/Singapore`). Used to evaluate the auto sign-out hour and daily boundaries. Empty = GAS project timezone. |
 | `retentionDays` | Retention window in days. VisitorLog rows whose Visitation Date is older than this are purged daily (see Step 9). Empty/blank = no purge. Suggested default `90`. |
+| `expiryDate` | Customer subscription expiry date in `YYYY-MM-DD` form. The customer is valid **through** this date (inclusive); enforcement disables access the morning after. Empty/blank = no expiry. |
+| `expiryWarningDays` | Number of days before `expiryDate` that the customer enters the "expiring" warning state (no access change, audit-only). Empty/blank or invalid = default `7`. |
 
 ### 2C. Add Your First Customer
 
 Row 1 header + Row 2 = your customer:
 
-| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | timezone | retentionDays |
-|---------|---------------|------|-------------|--------|-------|----------------|-------------------|----------|---------------|
-| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `demo.litevm.itt.web.id` | `pro` | `1000` | `active` | `Test sheet` | `21` | `TRUE` | `Asia/Jakarta` | `90` |
+| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | timezone | retentionDays | expiryDate | expiryWarningDays |
+|---------|---------------|------|-------------|--------|-------|----------------|-------------------|----------|---------------|------------|-------------------|
+| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `demo.litevm.itt.web.id` | `pro` | `1000` | `active` | `Test sheet` | `21` | `TRUE` | `Asia/Jakarta` | `90` | *(blank — no expiry)* | *(blank — default 7)* |
 
 ### 2D. Create the DeniedLog Tab (optional but recommended)
 
@@ -451,7 +453,7 @@ Set per customer in **Master Config → Customers tab** — the `retentionDays` 
 
 ### How It Works
 
-1. A **daily** time-driven trigger runs `runRetention()` at **02:05** (installed automatically alongside the auto sign-out and card-release triggers; it self-heals on deploy).
+1. A **daily** time-driven trigger runs `runDailyMaintenance()` at **02:05** (which runs the retention purge then the expiry pass; installed automatically alongside the auto sign-out and card-release triggers and self-heals on deploy).
 2. The purge criterion is **Visitation Date only** — there is **no status filter**. No-shows, pending, and never-came visitors are purged just like checked-in visitors once their Visitation Date falls outside the window.
 3. A row is purged only when its Visitation Date is **strictly older** than `retentionDays` days ago (a row dated exactly `retentionDays` days ago is kept).
 4. Photos (ID photo + selfie) are moved to Drive **Trash** (`setTrashed(true)`), not permanently deleted.
@@ -494,6 +496,71 @@ Purging moves photos to Drive Trash; Drive **quota is not freed until the Trash 
 ### PurgeLog Location
 
 Purge results are written to the **`PurgeLog`** tab on the **Master Config** sheet (auto-created on first purge). Columns: `Timestamp`, `SheetId`, `RowsPurged`, `PhotosTrashed`, `RowsSkippedUnparseable`, `RowsSkippedEmpty`, `PhotoErrors`.
+
+---
+
+## Step 10: Customer Expiry
+
+Per-customer subscription expiry. A customer's access lapses automatically when its subscription `expiryDate` passes, without you having to remember to flip their status manually.
+
+### Configuration
+
+Set per customer in **Master Config → Customers tab**:
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `expiryDate` | `2026-12-31` | Subscription end date (`YYYY-MM-DD`). Customer is valid **through** this date. Empty/blank = no expiry. |
+| `expiryWarningDays` | `7` | Days before `expiryDate` the customer enters the "expiring" warning state. Empty/blank = `7`. |
+
+### How It Works (warn-first)
+
+1. Expiry state is **derived from `expiryDate` on every request** — it is not stored in the `status` column.
+2. **Expiring** (`remainingDays` between `expiryWarningDays` and `0`, inclusive): the customer keeps full access; the state is surfaced for audit only (via the `config` endpoint's `expiryState` field). No status change.
+3. **Expired** (`remainingDays < 0`): requests are denied with `ACCOUNT_EXPIRED` immediately — even if the `status` column still says `active`.
+4. The daily **02:05** pass (`runDailyMaintenance` → `runExpiry`) also *materializes* `status=disabled` for expired customers whose status is still `active`. This persisted write is a fallback; enforcement is always derived.
+
+### Same-Day Boundary
+
+A customer is valid **through** their `expiryDate` day, inclusive. On the expiry date itself `remainingDays === 0` and the customer is still allowed (state = `expiring`). They are denied (`ACCOUNT_EXPIRED`) and materialized `disabled` the **next morning**, once `remainingDays` goes negative. The day boundary is evaluated in the customer's configured `timezone` (fallback: the GAS project timezone).
+
+### What Respects Expiry
+
+- **All API requests** (`validateRequest`) — expired customers get `ACCOUNT_EXPIRED`.
+- **`actEnabled`** (config endpoint) — `false` for expired customers, even if status is still `active`.
+- **License issuance** (`issueLicense`) — refused with `ACCOUNT_EXPIRED` for expired customers.
+
+> Email alerting on expiry is **not** in this version — it is planned for a future release (`EXPIRY_ALERT_EMAIL`).
+
+### Dry Run
+
+Preview what the expiry pass would do **without** changing any status:
+
+```bash
+curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "expiryDryRun", "sheetId": "CUSTOMER_SHEET_ID"}'
+```
+
+Dry-run rows in **ExpiryLog** use `Action = would_disable` (live runs use `disabled`, `already_disabled`, or `warn`).
+
+To force an immediate live expiry pass (instead of waiting for 02:05):
+
+```bash
+curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "runExpiry", "sheetId": "CUSTOMER_SHEET_ID"}'
+```
+
+### ExpiryLog Location
+
+Expiry events are written to the **`ExpiryLog`** tab on the **Master Config** sheet (auto-created on first run). Columns: `Timestamp`, `SheetId`, `ExpiryDate`, `RemainingDays`, `Action`, `PreviousStatus`.
+
+### Recovery (Re-enable an Expired Customer)
+
+1. In **Master Config → Customers**, set the customer's `expiryDate` to a future date (or clear it for no expiry).
+2. If the daily pass already materialized `status=disabled`, set `status` back to `active`.
+
+> The daily pass **never** re-disables a customer whose `expiryDate` is blank — clearing/extending the date is sufficient to stop future disables. A `paused` or operator-disabled customer is also never touched by the expiry pass.
 
 ---
 
