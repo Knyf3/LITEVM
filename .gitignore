@@ -25,4 +25,14 @@ config.local.js
 
 # Apps Script (Google)
 .clasp.json
-.clasprcmarketing/video/
+.clasprc
+
+# Python
+__pycache__/
+*.pyc
+
+# Local Hermes artifacts
+apps-script/.hermes/
+
+# Marketing video production workspace (raw assets + build scripts)
+marketing/video/

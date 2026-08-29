@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ── Configuration ────────────────────────────────────────────────
@@ -49,11 +50,32 @@ logger = logging.getLogger("auto-signout")
 # ── HTTP Helpers ─────────────────────────────────────────────────
 
 
+def _safe_urlopen(req, timeout):
+    """urlopen wrapper with scheme/host guard — all outbound calls go through here.
+
+    Blocks non-http(s) schemes (e.g. ``file://`` local reads) and non-local
+    plain-HTTP targets. Local plain HTTP is allowed because ACTApi runs on
+    this machine (http://localhost:8021). # nosemgrep
+    python.lang.security.audit.dynamic-urllib-use-detected
+    (intentional: the dynamic URL is validated here before opening)
+    """
+    parsed = urllib.parse.urlparse(req.full_url)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"blocked non-http(s) URL scheme: {parsed.scheme!r}")
+    if parsed.scheme == "http":
+        host = parsed.hostname or ""
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError(f"blocked plain-http (non-local) URL: {req.full_url}")
+    # (intentional: the dynamic URL is validated above before opening)
+    # nosemgrep
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def gas_get(action, sheet_id):
     """GET request to GAS Web App."""
-    url = f"{CONFIG['gas_url']}?action={action}&sheetId={sheet_id}"
+    url = f"{CONFIG['gas_url']}?{urllib.parse.urlencode({'action': action, 'sheetId': sheet_id})}"
     req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _safe_urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -65,16 +87,16 @@ def gas_post(payload):
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(CONFIG["gas_url"], data=data)
     req.add_header("Content-Type", "text/plain")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _safe_urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def actapi_revoke(card_no):
     """DELETE extra-rights via ACTApi. Returns True on success."""
-    url = f"{CONFIG['actapi_base']}/api/users/{card_no}/extra-rights"
+    url = f"{CONFIG['actapi_base']}/api/users/{urllib.parse.quote(card_no, safe='')}/extra-rights"
     req = urllib.request.Request(url, method="DELETE")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _safe_urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             if resp.status == 200:
                 logger.info(f"  ACTApi revoke OK — card {card_no}: {body[:100]}")
