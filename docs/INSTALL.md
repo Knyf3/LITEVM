@@ -1,6 +1,6 @@
 # LITEVM — Complete Installation Guide
 
-**Version:** 1.13.0
+**Version:** 1.14.0
 
 A lightweight, mobile-first visitor pre-registration system with guard verification portal, card assignment, and auto sign-out. Built on Google Sheets, Google Apps Script, and GitHub Pages.
 
@@ -91,7 +91,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 1. Click **Deploy** → **New deployment**
 2. Select **Web app** as deployment type
-3. **Description**: `LITEVM v1.13.0`
+3. **Description**: `LITEVM v1.14.0`
 4. **Execute as**: `Me`
 5. **Who has access**: `Anyone`
 6. Click **Deploy**
@@ -103,7 +103,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 ```bash
 curl -sL "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?mode=health"
-# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.13.0"}
+# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.14.0"}
 ```
 
 ### 1E. Install Auto Sign-Out Trigger (one-time)
@@ -132,7 +132,7 @@ This is your **admin control panel** — one sheet that manages all customers.
 
 Rename the default sheet to **`Customers`** and set up these **header names** in row 1:
 
-`sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone`
+`sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone` | `retentionDays`
 
 > **Header-name driven:** the backend resolves columns by header NAME (`resolveColumns`), never by column address. Order is flexible — you may insert or reorder columns freely; the `timezone` header can live anywhere. Do not rename or delete headers. Adding a new header at any position is safe and requires no code change.
 
@@ -149,14 +149,15 @@ Rename the default sheet to **`Customers`** and set up these **header names** in
 | `autoSignOutHour` | Hour for auto sign-out (0-23, default `21`) |
 | `autoSignOutEnabled` | `TRUE` or `FALSE` (default `TRUE`) |
 | `timezone` | IANA timezone for the customer (e.g. `Asia/Jakarta`, `Asia/Singapore`). Used to evaluate the auto sign-out hour and daily boundaries. Empty = GAS project timezone. |
+| `retentionDays` | Retention window in days. VisitorLog rows whose Visitation Date is older than this are purged daily (see Step 9). Empty/blank = no purge. Suggested default `90`. |
 
 ### 2C. Add Your First Customer
 
 Row 1 header + Row 2 = your customer:
 
-| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | timezone |
-|---------|---------------|------|-------------|--------|-------|----------------|-------------------|----------|
-| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `demo.litevm.itt.web.id` | `pro` | `1000` | `active` | `Test sheet` | `21` | `TRUE` | `Asia/Jakarta` |
+| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | timezone | retentionDays |
+|---------|---------------|------|-------------|--------|-------|----------------|-------------------|----------|---------------|
+| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `demo.litevm.itt.web.id` | `pro` | `1000` | `active` | `Test sheet` | `21` | `TRUE` | `Asia/Jakarta` | `90` |
 
 ### 2D. Create the DeniedLog Tab (optional but recommended)
 
@@ -433,6 +434,66 @@ curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec
 | v6 | Visitor Type column + tab | Adds Visitor Type column after Destination in VisitorLog, creates VisitorType tab |
 
 > **Important:** Always run migration per-customer. No bulk migration to prevent cascading failures.
+
+---
+
+## Step 9: Data Retention (Automatic Purge)
+
+The system can automatically delete old VisitorLog rows to keep customer sheets within Google Sheets cell limits and protect visitor privacy.
+
+### Configuration
+
+Set per customer in **Master Config → Customers tab** — the `retentionDays` column:
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `retentionDays` | `90` | Purge rows whose Visitation Date is older than this many days. Empty/blank = no purge. |
+
+### How It Works
+
+1. A **daily** time-driven trigger runs `runRetention()` at **02:05** (installed automatically alongside the auto sign-out and card-release triggers; it self-heals on deploy).
+2. The purge criterion is **Visitation Date only** — there is **no status filter**. No-shows, pending, and never-came visitors are purged just like checked-in visitors once their Visitation Date falls outside the window.
+3. A row is purged only when its Visitation Date is **strictly older** than `retentionDays` days ago (a row dated exactly `retentionDays` days ago is kept).
+4. Photos (ID photo + selfie) are moved to Drive **Trash** (`setTrashed(true)`), not permanently deleted.
+5. Each purge writes a row to the **PurgeLog** tab on the Master Config sheet (created automatically).
+
+### Daily Limits (Large Backlogs)
+
+The daily run is deliberately bounded to protect the 6-minute Apps Script execution limit:
+
+- **10 customer sheets** per run (the remainder queues to the next day automatically).
+- **50 rows** per sheet per run.
+- **150 Drive operations** per run.
+
+A large backlog (more than ~1000 qualifying rows) therefore drains gradually at ~50 rows/sheet/day rather than all at once. If you need to purge a very large backlog in one shot, contact your administrator for a one-time bulk cleanup — do not raise these limits in code.
+
+### Dry Run
+
+To preview what would be purged **without** deleting any rows or trashing any photos, trigger a dry run (requires a valid customer sheetId):
+
+```bash
+curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "retentionDryRun", "sheetId": "CUSTOMER_SHEET_ID"}'
+```
+
+Dry-run results appear in the **PurgeLog** tab with the sheetId prefixed `[DRY] ` and nothing is actually removed.
+
+To force an immediate live purge (instead of waiting for the 02:05 trigger):
+
+```bash
+curl -sL --post302 -X POST "https://script.google.com/macros/s/YOUR_GAS_URL/exec" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "runRetention", "sheetId": "CUSTOMER_SHEET_ID"}'
+```
+
+### Trash Note
+
+Purging moves photos to Drive Trash; Drive **quota is not freed until the Trash is emptied manually** (or by your Drive retention policy). To reclaim space, empty the Drive Trash periodically.
+
+### PurgeLog Location
+
+Purge results are written to the **`PurgeLog`** tab on the **Master Config** sheet (auto-created on first purge). Columns: `Timestamp`, `SheetId`, `RowsPurged`, `PhotosTrashed`, `RowsSkippedUnparseable`, `RowsSkippedEmpty`, `PhotoErrors`.
 
 ---
 

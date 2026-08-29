@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.13.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.14.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -104,11 +104,11 @@ function _getMasterConfigSheet() {
  *
  * Customers tab schema (header-name resolved):
  *   sheetId | allowedOrigins | tier | visitorLimit | status | notes |
- *   autoSignOutHour | autoSignOutEnabled | registeredAt | timezone
+ *   autoSignOutHour | autoSignOutEnabled | timezone | retentionDays
  *
  * @returns {Object} Map of sheetId -> { sheetId, allowedOrigins, tier,
  *   visitorLimit, status, notes, autoSignOutHour, autoSignOutEnabled,
- *   registeredAt, timezone }
+ *   timezone, retentionDays }
  */
 function _loadMasterConfig() {
   if (_masterConfig !== null) return _masterConfig;
@@ -136,7 +136,7 @@ function _loadMasterConfig() {
 
   var cols = resolveColumns(data, [
     'sheetId', 'allowedOrigins', 'tier', 'visitorLimit', 'status', 'notes',
-    'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt', 'timezone'
+    'autoSignOutHour', 'autoSignOutEnabled', 'retentionDays', 'timezone'
   ]);
 
   var config = {};
@@ -147,8 +147,17 @@ function _loadMasterConfig() {
 
     var hourCell = cols['autoSignOutHour'] !== -1 ? row[cols['autoSignOutHour']] : undefined;
     var enabledCell = cols['autoSignOutEnabled'] !== -1 ? row[cols['autoSignOutEnabled']] : undefined;
-    var registeredCell = cols['registeredAt'] !== -1 ? row[cols['registeredAt']] : undefined;
     var tzCell = cols['timezone'] !== -1 ? row[cols['timezone']] : '';
+    // retentionDays is OPTIONAL: blank/empty → null (no purge for this customer).
+    var retentionDays = null;
+    if (cols['retentionDays'] !== -1 && row[cols['retentionDays']] !== '' && row[cols['retentionDays']] !== null && row[cols['retentionDays']] !== undefined) {
+      var parsedRetention = parseInt(String(row[cols['retentionDays']]).trim(), 10);
+      if (!isNaN(parsedRetention)) {
+        retentionDays = parsedRetention;
+      } else {
+        console.warn('_loadMasterConfig: non-numeric retentionDays for ' + sid + ' — treating as no purge');
+      }
+    }
 
     config[sid] = {
       sheetId: sid,
@@ -159,7 +168,7 @@ function _loadMasterConfig() {
       notes: String(row[cols['notes']] || '').trim(),
       autoSignOutHour: hourCell !== undefined && hourCell !== null && hourCell !== '' ? parseInt(hourCell, 10) : 21,
       autoSignOutEnabled: enabledCell !== undefined && enabledCell !== null ? String(enabledCell).toUpperCase() === 'TRUE' : true,
-      registeredAt: registeredCell instanceof Date ? registeredCell : (registeredCell ? String(registeredCell) : null),
+      retentionDays: retentionDays,
       timezone: tzCell ? String(tzCell).trim() : null,
     };
   }
@@ -380,13 +389,15 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     var custData = custSheet.getDataRange().getValues();
     var custCols = resolveColumns(custData, [
       'sheetId', 'allowedOrigins', 'tier', 'visitorLimit', 'status', 'notes',
-      'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt', 'timezone'
+      'autoSignOutHour', 'autoSignOutEnabled', 'retentionDays', 'timezone'
     ]);
 
     // All required master-config headers must be present BEFORE appending
     // (fail loud — a partial row would corrupt positional reads elsewhere).
+    // retentionDays is intentionally NOT required: new rows leave it empty
+    // (no purge) until an operator sets it.
     var MASTER_REQUIRED = ['sheetId', 'allowedOrigins', 'tier', 'visitorLimit',
-      'status', 'notes', 'autoSignOutHour', 'autoSignOutEnabled', 'registeredAt'];
+      'status', 'notes', 'autoSignOutHour', 'autoSignOutEnabled'];
     for (var mh = 0; mh < MASTER_REQUIRED.length; mh++) {
       if (custCols[MASTER_REQUIRED[mh]] === -1) {
         console.error('[autoRegister] Master config Customers tab missing header: ' + MASTER_REQUIRED[mh]);
@@ -397,7 +408,7 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     // Build a full-width row (length = header row length), placing each field
     // at its resolved index and leaving everything else empty. 'timezone' is
     // appended last with an empty default (same pattern as handleRegistration).
-    var headerLen = custData.length > 0 ? custData[0].length : custCols['registeredAt'] + 1;
+    var headerLen = custData.length > 0 ? custData[0].length : custCols['autoSignOutEnabled'] + 1;
     var custRow = new Array(headerLen);
     for (var ck = 0; ck < headerLen; ck++) custRow[ck] = '';
 
@@ -409,7 +420,10 @@ function _autoRegisterCustomer(sheetId, origin, endpointType) {
     custRow[custCols['notes']] = defaults.notes;
     custRow[custCols['autoSignOutHour']] = defaults.autoSignOutHour;
     custRow[custCols['autoSignOutEnabled']] = defaults.autoSignOutEnabled;
-    custRow[custCols['registeredAt']] = new Date();
+    // NOTE: the legacy registration-timestamp column is no longer written — it
+    // may still exist in the sheet (left over from pre-v1.14.0) but the code no
+    // longer reads it. retentionDays is deliberately left empty so the new
+    // customer is NOT purged until an operator explicitly sets a value.
     if (custCols['timezone'] !== -1) {
       custRow[custCols['timezone']] = defaults.timezone;
     }
@@ -866,6 +880,7 @@ function doPost(e) {
     else if (data.action === 'report') epType = 'admin';
     else if (data.mode === 'bulkSignOut') epType = 'admin';
     else if (data.mode === 'setupAutoSignOut') epType = 'admin';
+    else if (data.mode === 'retentionDryRun' || data.mode === 'runRetention') epType = 'admin';
     else if (data.mode) epType = 'admin';
 
     var validation = validateRequest(e, data.sheetId, epType);
@@ -892,6 +907,17 @@ function doPost(e) {
     if (data.mode === 'setupAutoSignOut') {
       setupAutoSignOutTrigger();
       return jsonResponse({ status: 'ok', message: "Hourly auto sign-out trigger installed (per-customer timezone/hour)." }, 200);
+    }
+
+    // Handle retention purge manual triggers (admin-gated). retentionDryRun
+    // performs the full scan + logging but skips deleteRow and setTrashed.
+    if (data.mode === 'retentionDryRun') {
+      runRetention(true);
+      return jsonResponse({ status: 'ok', message: 'Retention dry run complete — no rows deleted or photos trashed.' }, 200);
+    }
+    if (data.mode === 'runRetention') {
+      runRetention(false);
+      return jsonResponse({ status: 'ok', message: 'Retention purge complete.' }, 200);
     }
 
     // Handle ACTApi license issuance
@@ -3281,6 +3307,344 @@ function setupDailyReleaseTrigger() {
   console.log('setupDailyReleaseTrigger: Daily release trigger installed for 02:00–03:00');
 }
 
+// ──────────────────────────────────────────────
+// RETENTION PURGE (daily, time-driven at 02:05)
+// ──────────────────────────────────────────────
+
+/**
+ * Compute the retention cutoff as a local-midnight Date exactly `retentionDays`
+ * days ago. A VisitorLog row is eligible for purge when its Visitation Date is
+ * STRICTLY older than this cutoff; a row dated exactly `retentionDays` days ago
+ * is NOT purged.
+ *
+ * @param {number} retentionDays - Positive integer number of days to retain
+ * @returns {Date} Local-midnight cutoff Date (no time component)
+ */
+function computeCutoffDate_(retentionDays) {
+  var now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - retentionDays, 0, 0, 0, 0);
+}
+
+/**
+ * Strict ISO-8601 date parser for retention purging. Accepts ONLY `yyyy-MM-dd`
+ * and returns a local-midnight Date via the integer-split constructor. Never
+ * falls back to `new Date(str)` (the UTC-midnight trap) and never guesses
+ * localized formats — unparseable input returns null so the caller can skip it
+ * and log (never guess).
+ *
+ * @param {*} str - Cell value to parse (string expected)
+ * @returns {Date|null} Local-midnight Date, or null if not a valid ISO date
+ */
+function parseRetentionDate_(str) {
+  if (typeof str !== 'string') return null;
+  var s = str.trim();
+  if (!s) return null;
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  var y = parseInt(m[1], 10);
+  var mo = parseInt(m[2], 10);
+  var d = parseInt(m[3], 10);
+  if (mo < 1 || mo > 12) return null;
+  if (d < 1 || d > 31) return null;
+  var out = new Date(y, mo - 1, d, 0, 0, 0, 0);
+  if (isNaN(out.getTime())) return null;
+  return out;
+}
+
+/**
+ * Extract a Google Drive file ID from a Drive URL of the form
+ * https://drive.google.com/file/d/<FILE_ID>/view (or /open, /preview, etc.).
+ * Returns null when the input is not a string, is empty, or does not contain a
+ * recognizable 25+ character Drive file ID.
+ *
+ * @param {*} url - Cell value (string expected)
+ * @returns {string|null} Drive file ID, or null if none found
+ */
+function extractDriveFileId_(url) {
+  if (typeof url !== 'string') return null;
+  if (!url) return null;
+  var m = /\/d\/([a-zA-Z0-9_-]{25,})\//.exec(url);
+  if (!m) return null;
+  return m[1];
+}
+
+/**
+ * Log a retention purge result to the PurgeLog tab of the master config sheet.
+ * Creates the tab with headers if it does not already exist. Analogous to
+ * logDeniedRequest, but always wrapped so a PurgeLog write failure never aborts
+ * the retention run.
+ *
+ * @param {Object} entry - { sheetId, rowsPurged, photosTrashed,
+ *   rowsSkippedUnparseable, rowsSkippedEmpty, photoErrors }
+ */
+function logPurge_(entry) {
+  try {
+    var sheet = _getMasterConfigSheet();
+    if (!sheet) return;
+    var purgeSheet = sheet.getSheetByName('PurgeLog');
+    if (!purgeSheet) {
+      purgeSheet = sheet.insertSheet('PurgeLog');
+      purgeSheet.appendRow(['Timestamp', 'SheetId', 'RowsPurged', 'PhotosTrashed', 'RowsSkippedUnparseable', 'RowsSkippedEmpty', 'PhotoErrors']);
+    }
+    purgeSheet.appendRow([
+      new Date(),
+      entry.sheetId || '',
+      entry.rowsPurged || 0,
+      entry.photosTrashed || 0,
+      entry.rowsSkippedUnparseable || 0,
+      entry.rowsSkippedEmpty || 0,
+      entry.photoErrors || 0
+    ]);
+  } catch (e) {
+    console.error('Failed to log retention purge: ' + e.message);
+  }
+}
+
+/**
+ * Read the pending retention queue (sheetIds that matched the retention
+ * criterion in a prior run but were left unprocessed due to the batch cap).
+ * Returns an array (empty if none / corrupt).
+ */
+function _readPendingRetention_() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('RETENTION_PENDING');
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * Persist the pending retention queue. Empty array deletes the property so a
+ * completed batch never leaves a stale queue behind.
+ */
+function _writePendingRetention_(ids) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    if (!ids || ids.length === 0) {
+      props.deleteProperty('RETENTION_PENDING');
+    } else {
+      props.setProperty('RETENTION_PENDING', JSON.stringify(ids));
+    }
+  } catch (e) {
+    console.warn('runRetention: failed to write RETENTION_PENDING: ' + e.message);
+  }
+}
+
+/**
+ * Daily retention purge (time-driven trigger at 02:05). Deletes VisitorLog rows
+ * whose Visitation Date is strictly older than the customer's `retentionDays`,
+ * INCLUDING no-shows / pending / never-came visitors (visitation-date-only
+ * criterion, NO status filter). Photos are moved to Trash (not permanently
+ * deleted). Bounded per run: RETENTION_BATCH_CAP sheets, RETENTION_ROW_CAP rows
+ * per sheet, RETENTION_PHOTO_CAP Drive ops total — the remainder queues in
+ * Script Properties RETENTION_PENDING for the next tick.
+ *
+ * @param {boolean} [dryRun] - When true, scan + log only; skip deleteRow and
+ *   setTrashed. PurgeLog rows are prefixed with '[DRY] '.
+ */
+function runRetention(dryRun) {
+  // Self-heal: ensure triggers are installed (in case they were cleared by redeploy).
+  ensureTriggersInstalled();
+
+  // Daily run — guard against concurrent executions. Hold the lock for the
+  // entire function (same pattern as autoSignOut).
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    console.warn('runRetention: Could not acquire lock — another instance is running, skipping');
+    return;
+  }
+
+  try {
+    var RETENTION_BATCH_CAP = 10;
+    var RETENTION_ROW_CAP = 50;
+    var RETENTION_PHOTO_CAP = 150;
+
+    var masterConfig = _loadMasterConfig();
+
+    // ── Build the ordered candidate list ──
+    // Pending (left over from a prior capped run) first, then active customers
+    // with a valid retentionDays (not null, not NaN, >= 1).
+    var candidates = [];
+    var seen = {};
+
+    var pending = _readPendingRetention_();
+    for (var p = 0; p < pending.length; p++) {
+      var pid = pending[p];
+      if (!pid || seen[pid]) continue;
+      var pe = masterConfig[pid];
+      if (!pe || pe.status !== 'active' || !pe.retentionDays || isNaN(pe.retentionDays) || pe.retentionDays < 1) continue;
+      seen[pid] = true;
+      candidates.push({ sheetId: pid, retentionDays: pe.retentionDays });
+    }
+
+    for (var sid in masterConfig) {
+      var entry = masterConfig[sid];
+      if (entry.status !== 'active') continue;
+      if (!entry.retentionDays || isNaN(entry.retentionDays) || entry.retentionDays < 1) continue;
+      if (seen[sid]) continue;
+      seen[sid] = true;
+      candidates.push({ sheetId: sid, retentionDays: entry.retentionDays });
+    }
+
+    if (candidates.length === 0) {
+      console.log('runRetention: No customers with retentionDays configured');
+      return;
+    }
+
+    // ── Cap at RETENTION_BATCH_CAP; queue the remainder for the next tick ──
+    var processList = candidates.slice(0, RETENTION_BATCH_CAP);
+    var remainingIds = [];
+    for (var r = RETENTION_BATCH_CAP; r < candidates.length; r++) {
+      remainingIds.push(candidates[r].sheetId);
+    }
+    _writePendingRetention_(remainingIds);
+
+    console.log('runRetention: Processing ' + processList.length + ' customer(s), ' + remainingIds.length + ' queued for next tick');
+
+    // Run-wide totals (RETENTION_PHOTO_CAP is shared across the whole run).
+    var totalRowsPurged = 0;
+    var totalPhotosTrashed = 0;
+    var totalSkippedUnparseable = 0;
+    var totalSkippedEmpty = 0;
+    var totalPhotoErrors = 0;
+    var totalPhotoOps = 0;
+
+    for (var s = 0; s < processList.length; s++) {
+      var sheetId = processList[s].sheetId;
+      var retentionDays = processList[s].retentionDays;
+      if (!sheetId) continue;
+
+      var rowsPurged = 0;
+      var photosTrashed = 0;
+      var skippedUnparseable = 0;
+      var skippedEmpty = 0;
+      var photoErrors = 0;
+
+      try {
+        var ss = SpreadsheetApp.openById(sheetId);
+        var sheet = ss.getSheetByName('VisitorLog');
+        if (!sheet) {
+          console.log('runRetention: No VisitorLog sheet for ' + sheetId + ' — skipping');
+          continue;
+        }
+
+        var data = sheet.getDataRange().getValues();
+        var cols = resolveColumns(data, ['Visitation Date', 'ID Photo (Drive URL)', 'Selfie (Drive URL)']);
+        var visitationDateIdx = cols['Visitation Date'];
+        var idPhotoIdx = cols['ID Photo (Drive URL)'];
+        var selfieIdx = cols['Selfie (Drive URL)'];
+
+        if (visitationDateIdx === -1 || idPhotoIdx === -1 || selfieIdx === -1) {
+          console.error('runRetention: VisitorLog missing required headers for sheet ' + sheetId + ' — skipping');
+          continue;
+        }
+
+        // Local-midnight cutoff: rows strictly older than this are purged.
+        var cutoff = computeCutoffDate_(retentionDays);
+        var qualifying = []; // 0-based data-row indices, ascending
+
+        for (var i = 1; i < data.length; i++) {
+          var cell = data[i][visitationDateIdx];
+          var str = getDateString_(cell, Session.getScriptTimeZone());
+          if (str === '' || str === null) {
+            skippedEmpty++;
+            continue;
+          }
+          var d = parseRetentionDate_(str);
+          if (d === null) {
+            skippedUnparseable++;
+            continue;
+          }
+          if (d >= cutoff) continue; // not yet eligible (dated exactly retentionDays ago is retained)
+          qualifying.push(i);
+        }
+
+        if (qualifying.length === 0) {
+          // No qualifying rows — keep signal-to-noise high: NO PurgeLog row.
+          console.log('runRetention: No qualifying rows for sheet ' + sheetId);
+          continue;
+        }
+
+        // Cap rows and delete bottom-up so the 0-based snapshot indices stay
+        // valid while rows shift upward after each deleteRow.
+        qualifying = qualifying.slice(0, RETENTION_ROW_CAP);
+        qualifying.sort(function (a, b) { return b - a; });
+
+        for (var q = 0; q < qualifying.length; q++) {
+          var idx = qualifying[q];
+
+          // Trash photos first (row deletion below is independent of photo success).
+          var idFileId = extractDriveFileId_(data[idx][idPhotoIdx]);
+          var selfieFileId = extractDriveFileId_(data[idx][selfieIdx]);
+          var fileIds = [];
+          if (idFileId) fileIds.push(idFileId);
+          if (selfieFileId) fileIds.push(selfieFileId);
+
+          for (var f = 0; f < fileIds.length; f++) {
+            if (totalPhotoOps >= RETENTION_PHOTO_CAP) {
+              // Photo cap reached — skip trashing (orphaned files are the
+              // accepted tradeoff: their IDs are gone once the row is
+              // deleted, so they are NOT recoverable by a later run), but
+              // STILL delete the row.
+              break;
+            }
+            totalPhotoOps++; // count every Drive op attempt against the cap
+            try {
+              DriveApp.getFileById(fileIds[f]).setTrashed(true);
+              photosTrashed++;
+            } catch (pe) {
+              // Missing / already-trashed files raise here — not fatal; count and continue.
+              photoErrors++;
+            }
+          }
+
+          if (!dryRun) {
+            sheet.deleteRow(idx + 1); // data[0] is header, so data index i → sheet row i+1
+          }
+          rowsPurged++;
+        }
+
+        totalRowsPurged += rowsPurged;
+        totalPhotosTrashed += photosTrashed;
+        totalSkippedUnparseable += skippedUnparseable;
+        totalSkippedEmpty += skippedEmpty;
+        totalPhotoErrors += photoErrors;
+
+        logPurge_({
+          sheetId: (dryRun ? '[DRY] ' : '') + sheetId,
+          rowsPurged: rowsPurged,
+          photosTrashed: photosTrashed,
+          rowsSkippedUnparseable: skippedUnparseable,
+          rowsSkippedEmpty: skippedEmpty,
+          photoErrors: photoErrors
+        });
+
+        console.log('runRetention: sheet ' + sheetId + ' — purged ' + rowsPurged + ' row(s), trashed ' + photosTrashed + ' photo(s), skipped ' + skippedUnparseable + ' unparseable, ' + skippedEmpty + ' empty, ' + photoErrors + ' photo error(s)');
+      } catch (e) {
+        console.error('runRetention: Error for sheet ' + sheetId + ': ' + e.message);
+        // Failure row: RowsPurged=0, SheetId set, and a non-zero skip field to
+        // signal "this sheet errored out" (distinct from "nothing qualifying",
+        // which is deliberately not logged).
+        logPurge_({
+          sheetId: sheetId,
+          rowsPurged: 0,
+          photosTrashed: 0,
+          rowsSkippedUnparseable: 1,
+          rowsSkippedEmpty: 0,
+          photoErrors: 0
+        });
+      }
+    }
+
+    console.log('runRetention: Run complete — ' + totalRowsPurged + ' row(s) purged, ' + totalPhotosTrashed + ' photo(s) trashed, ' + totalSkippedUnparseable + ' unparseable, ' + totalSkippedEmpty + ' empty, ' + totalPhotoErrors + ' photo error(s) across ' + processList.length + ' sheet(s)');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /**
  * One-shot master-config schema migration (SEPARATE from MIGRATION_REGISTRY,
  * which is customer-sheet-only). Adds the 'timezone' header to the Customers
@@ -3332,41 +3696,100 @@ function _migrateMasterConfigV2() {
 }
 
 /**
- * One-shot auto-install: migrates the master config schema (timezone header),
- * then ensures the HOURLY auto sign-out trigger and daily card release trigger
- * (02:00) exist. Uses a versioned ScriptProperties flag so it automatically
+ * One-shot master-config schema migration (SEPARATE from MIGRATION_REGISTRY,
+ * which is customer-sheet-only). Adds the 'retentionDays' header to the
+ * Customers tab if missing. Guarded by the MASTER_CONFIG_SCHEMA_VERSION Script
+ * Property so it runs exactly once.
+ *
+ * Does NOT remove the legacy registration-timestamp column — its cells stay in
+ * place; the code simply stops reading it. New customer rows leave retentionDays
+ * empty (no purge) until an operator sets a value, which is the correct default.
+ *
+ * Called from ensureTriggersInstalled() on first request after deploy so the
+ * master schema migrates automatically (no manual admin step).
+ *
+ * @returns {Object} { status, migrated, schema, column?, error? }
+ */
+function _migrateMasterConfigV3() {
+  var MASTER_CONFIG_SCHEMA_VERSION = 'v3'; // v1 = 9-col schema, v2 = +timezone, v3 = +retentionDays
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('MASTER_CONFIG_SCHEMA_VERSION') === MASTER_CONFIG_SCHEMA_VERSION) {
+    return { status: 'ok', migrated: false, schema: MASTER_CONFIG_SCHEMA_VERSION };
+  }
+
+  var sheet = _getMasterConfigSheet();
+  if (!sheet) {
+    return { status: 'error', error: 'Master config sheet not accessible' };
+  }
+  var custSheet = sheet.getSheetByName('Customers');
+  if (!custSheet) {
+    return { status: 'error', error: 'Customers tab not found in master config' };
+  }
+
+  var data = custSheet.getDataRange().getValues();
+  var headers = data.length > 0 ? data[0] : [];
+
+  // Header already present? Mark schema and stop (idempotent).
+  if (resolveColumns(data, ['retentionDays'])['retentionDays'] !== -1) {
+    props.setProperty('MASTER_CONFIG_SCHEMA_VERSION', MASTER_CONFIG_SCHEMA_VERSION);
+    console.log('_migrateMasterConfigV3: retentionDays header already present');
+    return { status: 'ok', migrated: false, schema: MASTER_CONFIG_SCHEMA_VERSION };
+  }
+
+  // Append 'retentionDays' at the first free column after the last non-empty
+  // header. Existing customer rows are untouched (empty = no purge).
+  var lastCol = _lastNonEmpty_(headers);
+  var retentionCol = lastCol + 1; // 1-based
+  custSheet.getRange(1, retentionCol).setValue('retentionDays');
+  custSheet.getRange(1, retentionCol).setFontWeight('bold');
+  console.log('_migrateMasterConfigV3: appended retentionDays header at column ' + retentionCol);
+
+  props.setProperty('MASTER_CONFIG_SCHEMA_VERSION', MASTER_CONFIG_SCHEMA_VERSION);
+  _invalidateMasterConfigCache_();
+  return { status: 'ok', migrated: true, schema: MASTER_CONFIG_SCHEMA_VERSION, column: retentionCol };
+}
+
+/**
+ * One-shot auto-install: migrates the master config schema (timezone +
+ * retentionDays headers), then ensures the HOURLY auto sign-out trigger, the
+ * daily card release trigger (02:00), and the daily retention purge trigger
+ * (02:05) exist. Uses a versioned ScriptProperties flag so it automatically
  * reinstalls if the trigger schema changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
 function ensureTriggersInstalled() {
-  // Master-config schema migration (cheap no-op after the first successful run).
+  // Master-config schema migrations (cheap no-ops after the first successful run).
   _migrateMasterConfigV2();
+  _migrateMasterConfigV3();
 
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v7';
+  var SCHEMA_VERSION = 'v8';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
   var hasAutoSignOut = false;
   var hasDailyRelease = false;
+  var hasRetention = false;
   for (var ti = 0; ti < triggers.length; ti++) {
     var fn = triggers[ti].getHandlerFunction();
     if (fn === 'autoSignOut') hasAutoSignOut = true;
     if (fn === 'releaseDailyCards') hasDailyRelease = true;
+    if (fn === 'runRetention') hasRetention = true;
   }
-  // If schema matches AND both required triggers exist, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease) {
+  // If schema matches AND all three required triggers exist, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasRetention) {
     return;
   }
 
-  // Delete ALL existing autoSignOut + releaseDailyCards + syncAutoSignOutHours triggers.
-  // This also cleans up the legacy daily autoSignOut trigger and the removed
-  // syncAutoSignOutHours trigger from older deployments.
+  // Delete ALL existing autoSignOut + releaseDailyCards + runRetention +
+  // syncAutoSignOutHours triggers. This also cleans up the legacy daily
+  // autoSignOut trigger and the removed syncAutoSignOutHours trigger from
+  // older deployments.
   triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'syncAutoSignOutHours') {
+    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'runRetention' || fn === 'syncAutoSignOutHours') {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
@@ -3385,6 +3808,20 @@ function ensureTriggersInstalled() {
     .everyDays(1)
     .create();
   console.log('ensureTriggersInstalled: Installed releaseDailyCards trigger at 02:00');
+
+  // Install daily retention purge at 02:05 (5-minute window: 02:05–02:10).
+  // releaseDailyCards holds the script lock at 02:00 (up to 120s, ~until 02:02),
+  // so the 02:05 start keeps the two daily runs from contending on the lock.
+  // If `.nearMinute(5)` is rejected in this combination at runtime, fall back to
+  // `.atHour(2).everyDays(1)` (fires within the 02:00–03:00 window) — lock
+  // contention with releaseDailyCards is the expected isolation.
+  ScriptApp.newTrigger('runRetention')
+    .timeBased()
+    .atHour(2)
+    .nearMinute(5)
+    .everyDays(1)
+    .create();
+  console.log('ensureTriggersInstalled: Installed runRetention trigger at 02:05');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
