@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.15.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.15.1';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -162,12 +162,20 @@ function _loadMasterConfig() {
     }
 
     // expiryDate is OPTIONAL: blank/empty → null (no expiry for this customer).
-    // Stored as a raw string; parsed strictly at enforcement time by
-    // parseRetentionDate_ (never coerced to a Date here).
+    // Sheets auto-coerces ISO-looking cell values to Date objects — normalize
+    // BOTH shapes to a canonical 'yyyy-MM-dd' string (Date cell → format in the
+    // customer timezone; string cell → trim as-is). Parsed strictly at
+    // enforcement time by parseRetentionDate_ (never coerced to a Date here).
     var expiryDate = null;
     if (cols['expiryDate'] !== -1) {
-      var rawExpiry = String(row[cols['expiryDate']] || '').trim();
-      if (rawExpiry) expiryDate = rawExpiry;
+      var rawExpiryCell = row[cols['expiryDate']];
+      if (rawExpiryCell instanceof Date && !isNaN(rawExpiryCell.getTime())) {
+        var expiryTz = tzCell ? String(tzCell).trim() : Session.getScriptTimeZone();
+        expiryDate = Utilities.formatDate(rawExpiryCell, expiryTz, 'yyyy-MM-dd');
+      } else {
+        var rawExpiry = String(rawExpiryCell || '').trim();
+        if (rawExpiry) expiryDate = rawExpiry;
+      }
     }
 
     // expiryWarningDays is OPTIONAL: blank → default 7 (silent, the common
