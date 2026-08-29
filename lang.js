@@ -142,6 +142,11 @@
       'err-failed-update-status': 'Failed to update status. Please try again.',
       'err-failed-load-destinations': 'Failed to load destinations.',
       // --- verify.html (Guard Portal) ---
+      // Expiry banner
+      'expiry-warning-days': 'Subscription expires in {n} days — contact your administrator.',
+      'expiry-warning-today': 'Subscription expires TODAY — contact your administrator immediately.',
+      'expiry-warning-date-only': 'Subscription expiring soon — contact your administrator.',
+      'expiry-expired': 'Subscription expired — portal is running in offline mode. Contact your administrator.',
       'title-verify': 'LITEVM — Guard Portal',
       'header-title-verify': 'LITEVM — Guard Portal',
       'header-subtitle-verify': 'Verify visitor check-in',
@@ -487,6 +492,11 @@
       'err-failed-update-status': 'Gagal memperbarui status. Silakan coba lagi.',
       'err-failed-load-destinations': 'Gagal memuat tujuan.',
       // --- verify.html (Guard Portal) ---
+      // Expiry banner
+      'expiry-warning-days': 'Langganan berakhir dalam {n} hari — hubungi administrator Anda.',
+      'expiry-warning-today': 'Langganan berakhir HARI INI — segera hubungi administrator Anda.',
+      'expiry-warning-date-only': 'Langganan akan segera berakhir — hubungi administrator Anda.',
+      'expiry-expired': 'Langganan telah berakhir — portal berjalan dalam mode offline. Hubungi administrator Anda.',
       'title-verify': 'LITEVM — Portal Petugas',
       'header-title-verify': 'LITEVM — Portal Petugas',
       'header-subtitle-verify': 'Verifikasi check-in pengunjung',

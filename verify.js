@@ -36,6 +36,7 @@
         showLogin();
         return;
       }
+      showExpiryBanner();
       App.render();
       checkOnlineStatus();
       setupSearchInput();
@@ -53,11 +54,13 @@
   /** Fetch guard PIN and settings from GAS, store in memory. Returns a promise. */
   var _guardPin = '1234'; // fallback
   var _actEnabled = false; // ACTApi door access entitlement
+  var _lastConfigData = null; // cached config response for expiry banner
 
   function fetchSheetConfig() {
     return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        _lastConfigData = data;
         if (data && data.status === 'ok' && data.guardPin) {
           _guardPin = data.guardPin;
         }
@@ -68,6 +71,7 @@
       })
       .catch(function () {
         // GAS unreachable — fallback to config.js value
+        _lastConfigData = null;
         _guardPin = CONFIG.GUARD_PIN || '1234';
         _actEnabled = false;
       });
@@ -130,6 +134,7 @@
       sessionStorage.setItem('guardAuth', 'true');
       hideLogin();
       // Run the normal init now
+      showExpiryBanner();
       App.render();
       checkOnlineStatus();
       setupSearchInput();
@@ -171,6 +176,55 @@
       banner.classList.add('hidden');
     });
     updateOnline();
+  }
+
+  // ──────────────────────────────────────────────
+  // EXPIRY BANNER
+  // ──────────────────────────────────────────────
+  function showExpiryBanner() {
+    var banner = $('#expiry-banner');
+    var dismiss = $('#expiry-banner-dismiss');
+    var text = $('#expiry-banner-text');
+    if (!banner || !text || !dismiss) return;
+
+    // Dismiss button hides the banner (warning state only)
+    dismiss.addEventListener('click', function () {
+      banner.classList.add('hidden');
+    });
+
+    var data = _lastConfigData;
+    if (!data) return;
+
+    // Expired customer: config endpoint is denied by validateRequest and
+    // returns {"status":"error","error":"Customer subscription expired."}
+    var errMsg = (data.error || data.message || '').toLowerCase();
+    if (data.status === 'error' && errMsg.indexOf('expired') !== -1) {
+      banner.classList.remove('hidden', 'expiry-banner--warning');
+      banner.classList.add('expiry-banner--error');
+      text.textContent = App.t('expiry-expired');
+      return;
+    }
+
+    // Expiring subscription
+    if (data.expiryState === 'expiring') {
+      var msg;
+      var days = data.remainingDays;
+      if (days === 0) {
+        msg = App.t('expiry-warning-today');
+      } else if (typeof days === 'number' && days > 0 && days === Math.floor(days)) {
+        msg = App.t('expiry-warning-days').replace('{n}', String(days));
+      } else {
+        msg = App.t('expiry-warning-date-only');
+      }
+      banner.classList.remove('hidden', 'expiry-banner--error');
+      banner.classList.add('expiry-banner--warning');
+      text.textContent = msg;
+      return;
+    }
+
+    // No expiry condition — keep banner hidden
+    banner.classList.remove('expiry-banner--warning', 'expiry-banner--error');
+    banner.classList.add('hidden');
   }
 
   // ──────────────────────────────────────────────
