@@ -130,25 +130,25 @@ This is your **admin control panel** — one sheet that manages all customers.
 
 ### 2B. Create the Customers Tab
 
-Rename the default sheet to **`Customers`** and set up these columns in row 1:
+Rename the default sheet to **`Customers`** and set up these **header names** in row 1:
 
-| A | B | C | D | E | F | G | H | I |
-|---|---|---|---|---|---|---|---|---|
-| `sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone` |
+`sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone`
+
+> **Header-name driven:** the backend resolves columns by header NAME (`resolveColumns`), never by column address. Order is flexible — you may insert or reorder columns freely; the `timezone` header can live anywhere. Do not rename or delete headers. Adding a new header at any position is safe and requires no code change.
 
 **Column descriptions:**
 
-| Column | Header | Description |
-|--------|--------|-------------|
-| A | `sheetId` | Customer's Google Sheet ID (unique key) |
-| B | `allowedOrigins` | Comma-separated list of allowed domains (leave blank to allow all origins) |
-| C | `tier` | Plan tier: `free`, `starter`, `pro`, `admin` |
-| D | `visitorLimit` | Max visitor registrations per day: `50`, `500`, `999999` |
-| E | `status` | Account status: `active`, `pending`, `paused`, `disabled` |
-| F | `notes` | Optional memo/notes field |
-| G | `autoSignOutHour` | Hour for auto sign-out (0-23, default `21`) |
-| H | `autoSignOutEnabled` | `TRUE` or `FALSE` (default `TRUE`) |
-| I | `timezone` | IANA timezone for the customer (e.g. `Asia/Jakarta`, `Asia/Singapore`). Used to evaluate the auto sign-out hour and daily boundaries. Empty = GAS project timezone. |
+| Header | Description |
+|--------|-------------|
+| `sheetId` | Customer's Google Sheet ID (unique key) |
+| `allowedOrigins` | Comma-separated list of allowed domains (leave blank to allow all origins) |
+| `tier` | Plan tier: `free`, `starter`, `pro`, `admin` |
+| `visitorLimit` | Max visitor registrations per day: `50`, `500`, `999999` |
+| `status` | Account status: `active`, `pending`, `paused`, `disabled` |
+| `notes` | Optional memo/notes field |
+| `autoSignOutHour` | Hour for auto sign-out (0-23, default `21`) |
+| `autoSignOutEnabled` | `TRUE` or `FALSE` (default `TRUE`) |
+| `timezone` | IANA timezone for the customer (e.g. `Asia/Jakarta`, `Asia/Singapore`). Used to evaluate the auto sign-out hour and daily boundaries. Empty = GAS project timezone. |
 
 ### 2C. Add Your First Customer
 
