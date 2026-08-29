@@ -1,6 +1,6 @@
 # LITEVM — Complete Installation Guide
 
-**Version:** 1.10.0
+**Version:** 1.13.0
 
 A lightweight, mobile-first visitor pre-registration system with guard verification portal, card assignment, and auto sign-out. Built on Google Sheets, Google Apps Script, and GitHub Pages.
 
@@ -39,6 +39,25 @@ Visitor (mobile browser)
 | Photo storage | Google Drive | GAS Drive API | ✅ Per-customer folder |
 | Master config | Google Sheet | Google Drive | ❌ One admin sheet for all customers |
 
+### Deployment Flavors: Online-Only vs On-Prem
+
+LITEVM ships in two flavors. Everything below the matrix line is identical (GAS backend, Sheet DB, Drive photos, master config) — the difference is whether physical door access is in scope.
+
+| Component | Online-Only | On-Prem / Kiosk |
+|-----------|-------------|-----------------|
+| Frontend (GitHub Pages) | ✅ | ✅ (or local file copy) |
+| GAS backend + Sheet DB | ✅ | ✅ |
+| **Auto sign-out** | **GAS hourly trigger only** | GAS hourly (safety net) + `auto-signout.py` (ACT revoke) |
+| ACTApi door access | — | ✅ on customer LAN |
+| Windows companion box | — | ✅ (runs `auto-signout.py` beside ACTApi) |
+| `config.js` → `ACTApiBase` | `null` | `http://<lan-ip>:8021` |
+
+**Online-only:** no local hardware. The GAS hourly trigger (`autoSignOut()`) handles the entire sign-out — flips `Checked In → Signed Out`, records the time, releases the card back to the pool. Auto sign-out is 100% cloud-side and never depends on a LAN device.
+
+**On-prem / kiosk:** adds ACT Pro door control on the customer LAN. Door access is granted/revoked by the guard portal browser directly against ACTApi (`verify.js` → `ACTApiBase`). Because the browser is not open at the auto sign-out hour, the optional `auto-signout.py` companion (same Windows box as ACTApi) revokes door access for all checked-in visitors at the configured hour, then asks GAS to sign them out. It degrades gracefully — if ACTApi is unreachable it skips the revoke and still performs the GAS sign-out.
+
+Both flavors share the same auto sign-out engine in GAS: hourly time-driven trigger, per-customer `autoSignOutHour` evaluated **in the customer's own timezone** (`timezone` column in master config, e.g. `Asia/Jakarta`). For on-prem customers running both paths, the GAS trigger is an idempotent safety net — whichever path runs first signs the visitor out; the second finds nothing to do.
+
 ---
 
 ## Prerequisites
@@ -72,7 +91,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 1. Click **Deploy** → **New deployment**
 2. Select **Web app** as deployment type
-3. **Description**: `LITEVM v1.10.0`
+3. **Description**: `LITEVM v1.13.0`
 4. **Execute as**: `Me`
 5. **Who has access**: `Anyone`
 6. Click **Deploy**
@@ -84,7 +103,7 @@ Go to **Project Settings** → **Script Properties** and add:
 
 ```bash
 curl -sL "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?mode=health"
-# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.10.0"}
+# Expected: {"status":"ok","message":"LITEVM Web App is running","version":"1.13.0"}
 ```
 
 ### 1E. Install Auto Sign-Out Trigger (one-time)
@@ -95,7 +114,7 @@ After deployment, open the GAS editor, run this function once from the editor:
 setupAutoSignOutTrigger();
 ```
 
-This installs an hourly time-driven trigger. Each customer's Settings tab controls whether and when auto sign-out runs (default: 21:00).
+This installs an hourly time-driven trigger. Each customer's Master Config row controls whether, when, and in which timezone auto sign-out runs (default hour: 21:00). See Step 7.
 
 ---
 
@@ -115,7 +134,7 @@ Rename the default sheet to **`Customers`** and set up these columns in row 1:
 
 | A | B | C | D | E | F | G | H | I |
 |---|---|---|---|---|---|---|---|---|
-| `sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `registeredAt` |
+| `sheetId` | `allowedOrigins` | `tier` | `visitorLimit` | `status` | `notes` | `autoSignOutHour` | `autoSignOutEnabled` | `timezone` |
 
 **Column descriptions:**
 
@@ -129,15 +148,15 @@ Rename the default sheet to **`Customers`** and set up these columns in row 1:
 | F | `notes` | Optional memo/notes field |
 | G | `autoSignOutHour` | Hour for auto sign-out (0-23, default `21`) |
 | H | `autoSignOutEnabled` | `TRUE` or `FALSE` (default `TRUE`) |
-| I | `registeredAt` | Auto-filled timestamp (leave empty for manual entries) |
+| I | `timezone` | IANA timezone for the customer (e.g. `Asia/Jakarta`, `Asia/Singapore`). Used to evaluate the auto sign-out hour and daily boundaries. Empty = GAS project timezone. |
 
 ### 2C. Add Your First Customer
 
 Row 1 header + Row 2 = your customer:
 
-| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled |
-|---------|---------------|------|-------------|--------|-------|----------------|-------------------|
-| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `knyf3.github.io` | `admin` | `999999` | `active` | `Demo` | `21` | `TRUE` |
+| sheetId | allowedOrigins | tier | visitorLimit | status | notes | autoSignOutHour | autoSignOutEnabled | timezone |
+|---------|---------------|------|-------------|--------|-------|----------------|-------------------|----------|
+| `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | `demo.litevm.itt.web.id` | `pro` | `1000` | `active` | `Test sheet` | `21` | `TRUE` | `Asia/Jakarta` |
 
 ### 2D. Create the DeniedLog Tab (optional but recommended)
 
@@ -355,23 +374,28 @@ The system can automatically sign out all checked-in visitors at a configurable 
 
 ### Configuration
 
-Per customer, set in the **Settings** tab of their sheet:
+Set per customer in the **Master Config → Customers tab** — this is the trigger authority (since v1.13.0):
 
-| Setting | Value | Description |
-|---------|-------|-------------|
+| Column | Value | Description |
+|--------|-------|-------------|
+| `autoSignOutHour` | `21` | Hour to sign out (0-23), evaluated in the customer's timezone |
 | `autoSignOutEnabled` | `TRUE` | Enable auto sign-out for this customer |
-| `autoSignOutHour` | `21` | Hour to sign out (0-23) |
+| `timezone` | `Asia/Jakarta` | IANA timezone — the sign-out hour is computed in THIS zone, not the GAS project zone |
 
-Default values are created by migration (v4): enabled=TRUE, hour=21.
+The customer's own **Settings** tab mirrors these values for UI display only; the master config wins on conflict.
+
+Defaults are created by migration (v8): enabled=TRUE, hour=21, timezone = GAS project timezone.
 
 ### How It Works
 
-1. An hourly time-driven trigger runs `autoSignOut()` in the GAS
-2. It reads all active customers from Master Config
-3. For customers where `autoSignOutHour` matches the current hour:
+1. An **hourly** time-driven trigger runs `autoSignOut()` in GAS (installed once via `setupAutoSignOutTrigger()`, self-heals on deploy)
+2. It reads all active customers from Master Config **once** (5-minute cache)
+3. For each customer it computes the current hour **in that customer's timezone** and processes only those whose local hour matches `autoSignOutHour`:
    - Signs out all "Checked In" visitors
    - Records sign-out time in VisitorLog
    - Releases all assigned cards back to Available
+4. If more than 40 customers are due in a single tick, the remainder is queued and processed on the next hourly tick (guards the 6-minute GAS execution limit — safe at 100+ sheets, ~6 min/day trigger runtime)
+5. **On-prem only:** if the customer runs ACTApi door control, deploy `auto-signout.py` on the same Windows box — it revokes ACT door access for the visitors before/alongside the GAS sign-out. **Online-only customers skip this entirely** — the GAS trigger is the complete auto sign-out (see "Deployment Flavors" in the Architecture Overview).
 
 ### Manual Trigger
 
