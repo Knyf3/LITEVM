@@ -13,7 +13,7 @@ param(
     [int]$Port = 8123
 )
 
-$root = (Get-Location).Path
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://localhost:$Port/")
 $listener.Start()

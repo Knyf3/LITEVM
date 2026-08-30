@@ -28,6 +28,15 @@
   const $ = function (sel) { return document.querySelector(sel); };
   const $$ = function (sel) { return document.querySelectorAll(sel); };
 
+  // Null-safe text setter: writes textContent only when the element exists. The kiosk
+  // (verifylocal.html) and online (verify.html) pages must stay layout-compatible with
+  // showVisitor; a missing element must never abort the render (a throw here used to be
+  // caught by lookup()'s catch and mislabelled "Network error").
+  const setText = function (sel, value) {
+    const el = $(sel);
+    if (el) el.textContent = value || '—';
+  };
+
   // ──────────────────────────────────────────────
   // INIT
   // ──────────────────────────────────────────────
@@ -262,7 +271,7 @@
     state.actionInProgress = true;
     setResultState('loading');
 
-    var url = CONFIG.API_BASE + '?action=lookup&visitorNumber=' + encodeURIComponent(vn) + '&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID);
+    var url = CONFIG.API_BASE + '?action=lookup&visitorNumber=' + encodeURIComponent(vn) + '&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID) + '&_=' + Date.now();
 
     var controller = new AbortController();
     var timeoutId = setTimeout(function () {
@@ -301,6 +310,12 @@
         setResultState('notfound');
         $('#not-found-message').textContent = data.message || App.t('not-found-message');
         $('#not-found-hint').textContent = suggestFormatHint(vn);
+      } else if (data.status === 'error') {
+        // Backend error (403 auth, 500, quota). Do NOT mask it as "not found" —
+        // GAS error bodies carry `error`, not `message`. Surface it with retry.
+        setResultState('notfound');
+        $('#not-found-message').textContent = data.error || data.message || App.t('unexpected-server-response');
+        $('#not-found-hint').textContent = App.t('tap-try-again-retry');
       } else {
         setResultState('notfound');
         $('#not-found-message').textContent = data.message || App.t('not-found-message');
@@ -391,34 +406,34 @@
     }
 
     // Meta
-    $('#result-visitor-number').textContent = v.visitorNumber || '—';
-    $('#result-timestamp').textContent = v.registrationTime || '—';
+    setText('#result-visitor-number', v.visitorNumber);
+    setText('#result-timestamp', v.registrationTime);
     if (v.signInTime) {
-      $('#result-sign-in-time').textContent = v.signInTime;
-      $('#result-sign-in-time-row').classList.remove('hidden');
+      setText('#result-sign-in-time', v.signInTime);
+      const r = $('#result-sign-in-time-row'); if (r) r.classList.remove('hidden');
     } else {
-      $('#result-sign-in-time-row').classList.add('hidden');
+      const r = $('#result-sign-in-time-row'); if (r) r.classList.add('hidden');
     }
     if (v.signOutTime) {
-      $('#result-sign-out-time').textContent = v.signOutTime;
-      $('#result-sign-out-time-row').classList.remove('hidden');
+      setText('#result-sign-out-time', v.signOutTime);
+      const r = $('#result-sign-out-time-row'); if (r) r.classList.remove('hidden');
     } else {
-      $('#result-sign-out-time-row').classList.add('hidden');
+      const r = $('#result-sign-out-time-row'); if (r) r.classList.add('hidden');
     }
 
     // Identity
-    $('#result-name').textContent = v.fullName || '—';
-    $('#result-id').textContent = v.idNumber || '—';
-    $('#result-company').textContent = v.company || '—';
-    $('#result-visitation-date').textContent = v.visitationDate || '—';
-    $('#result-destination').textContent = v.destination || '—';
-    $('#result-visitor-type').textContent = v.visitorType || '—';
-    $('#result-phone').textContent = v.phone || '—';
+    setText('#result-name', v.fullName);
+    setText('#result-id', v.idNumber);
+    setText('#result-company', v.company);
+    setText('#result-visitation-date', v.visitationDate);
+    setText('#result-destination', v.destination);
+    setText('#result-visitor-type', v.visitorType);
+    setText('#result-phone', v.phone);
 
     // Card number for checked-in visitors
     var cardRow = $('#result-card-no-row');
     if (v.cardNo) {
-      $('#result-card-no').textContent = v.cardNo;
+      setText('#result-card-no', v.cardNo);
       if (cardRow) cardRow.classList.remove('hidden');
     } else {
       if (cardRow) cardRow.classList.add('hidden');
@@ -1696,6 +1711,7 @@
     t: window.App.t,
     setLang: window.App.setLang,
     render: window.App.render,
+    _lang: window.App._lang,
   };
 
   // Auto-init on DOM ready

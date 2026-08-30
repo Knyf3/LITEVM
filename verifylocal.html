@@ -142,6 +142,16 @@
             </div>
             <div class="review-divider"></div>
             <div class="review-row">
+              <span class="review-label">Destination</span>
+              <span class="review-value" id="result-destination">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
+              <span class="review-label">Visitor Type</span>
+              <span class="review-value" id="result-visitor-type">—</span>
+            </div>
+            <div class="review-divider"></div>
+            <div class="review-row">
               <span class="review-label" data-i18n="label-phone">Phone</span>
               <span class="review-value" id="result-phone">—</span>
             </div>
@@ -491,8 +501,14 @@
         })
         .then(function (cfg) {
           window.CONFIG = cfg;
-          var s1 = document.createElement('script'); s1.src = 'lang.js?v=2'; document.body.appendChild(s1);
-          var s2 = document.createElement('script'); s2.src = 'verify.js?v=9'; document.body.appendChild(s2);
+          // CRITICAL: dynamically-inserted scripts default to async=true, so verify.js could
+          // execute BEFORE lang.js defines window.App — every App.t(...) then throws
+          // ("Cannot read properties of undefined (reading 't')"), which showVisitor/render
+          // catch as a bogus "Network error". async=false forces insertion-order execution.
+          var s1 = document.createElement('script'); s1.src = 'lang.js?v=3'; s1.async = false;
+          var s2 = document.createElement('script'); s2.src = 'verify.js?v=10'; s2.async = false;
+          document.body.appendChild(s1);
+          document.body.appendChild(s2);
         })
         .catch(function (err) { fail('Failed to load settings.json: ' + err.message); });
     })();
