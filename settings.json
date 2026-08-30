@@ -9,7 +9,7 @@
   "TIMEOUT_MS": 30000,
   "GUARD_PIN": "1234",
   "ACTApiBase": "",
-  "UStarApiBase": "http://192.168.2.113:8091",
+  "UStarApiBase": "",
   "ACTExtraRights": {
     "timezone": 2,
     "validityDays": 1

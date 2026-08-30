@@ -501,6 +501,10 @@
         })
         .then(function (cfg) {
           window.CONFIG = cfg;
+          // Dynamic gateway base fallback (M8.5): when settings.json has no explicit UStarApiBase,
+          // derive it from the kiosk's own hostname (kiosk + gateway share the same box) so an IP
+          // change never breaks the gateway link. An explicit UStarApiBase in settings.json still wins.
+          if (!cfg.UStarApiBase) cfg.UStarApiBase = 'http://' + window.location.hostname + ':8091';
           // CRITICAL: dynamically-inserted scripts default to async=true, so verify.js could
           // execute BEFORE lang.js defines window.App — every App.t(...) then throws
           // ("Cannot read properties of undefined (reading 't')"), which showVisitor/render
