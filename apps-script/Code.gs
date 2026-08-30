@@ -974,6 +974,8 @@ function doPost(e) {
     else if (data.mode === 'setupAutoSignOut') epType = 'admin';
     else if (data.mode === 'retentionDryRun' || data.mode === 'runRetention') epType = 'admin';
     else if (data.mode === 'expiryDryRun' || data.mode === 'runExpiry') epType = 'admin';
+    else if (data.mode === 'signOutByCard') epType = 'admin';
+    else if (data.mode === 'assignedCards') epType = 'admin';
     else if (data.mode) epType = 'admin';
 
     var validation = validateRequest(e, data.sheetId, epType);
@@ -1032,6 +1034,16 @@ function doPost(e) {
     // Handle test-email diagnostic (admin-gated — surfaces OAuth/scope errors)
     if (data.mode === 'testEmail') {
       return handleTestEmail(data);
+    }
+
+    // Handle UStarAPI sign-out webhook (M8 §3.3)
+    if (data.mode === 'signOutByCard') {
+      return handleSignOutByCard(data);
+    }
+
+    // Handle UStarAPI assigned-cards query (M8 §4.2)
+    if (data.mode === 'assignedCards') {
+      return handleAssignedCards(data);
     }
 
     // Check if this is a status update
@@ -1962,7 +1974,7 @@ function handleStatusUpdate(data) {
 
   var cols = resolveColumns(values, [
     'Full Name', 'Destination', 'Email', 'Visitor Number', 'Status',
-    'Sign-In Time', 'Sign-Out Time'
+    'Sign-In Time', 'Sign-Out Time', 'Selfie (Drive URL)'
   ]);
 
   if (cols['Visitor Number'] === -1 || cols['Status'] === -1 ||
@@ -1977,6 +1989,7 @@ function handleStatusUpdate(data) {
   var statusIdx = cols['Status'];
   var signInIdx = cols['Sign-In Time'];
   var signOutIdx = cols['Sign-Out Time'];
+  var selfieIdx = cols['Selfie (Drive URL)'];
 
   // Use LockService for the Checked In and Signed Out paths to serialize concurrent requests
   // and prevent two guards from picking the same card or signing out the same visitor
@@ -1997,23 +2010,19 @@ function handleStatusUpdate(data) {
 
         // ── SIGNED OUT PATH ──
         if (newStatus === 'Signed Out') {
-          if (currentStatus === 'Signed Out') {
+          // Delegate to the shared sign-out write path (also used by the UStarAPI signOutByCard
+          // webhook) so the flip-status + time + release-card sequence has one source of truth.
+          // Called while the script lock is held; it re-reads the sheet for a fresh snapshot.
+          var signOutResult = _signOutVisitor_(data.sheetId, visitorNumber);
+
+          if (signOutResult.outcome === 'already_signed_out') {
             return jsonResponse({ status: 'error', message: 'Visitor already signed out.', visitorNumber: visitorNumber }, 409);
           }
-          if (currentStatus !== 'Checked In') {
+          if (signOutResult.outcome === 'not_checked_in') {
             return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
           }
-
-          // Write Sign-Out: Status + Sign-Out Time at resolved indices.
-          sheet.getRange(i + 1, statusIdx + 1).setValue('Signed Out');
-          sheet.getRange(i + 1, signOutIdx + 1).setValue(new Date());
-
-          // Release card immediately on sign-out
-          var releasedCard = false;
-          try {
-            releasedCard = releaseCardForVisitor(visitorNumber, data.sheetId);
-          } catch (cardErr) {
-            console.warn('Card release failed for ' + visitorNumber + ': ' + cardErr.message);
+          if (signOutResult.outcome === 'not_found') {
+            return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
           }
 
           var responseData = {
@@ -2021,8 +2030,8 @@ function handleStatusUpdate(data) {
             message: 'Visitor signed out',
             visitorNumber: visitorNumber,
           };
-          if (releasedCard && releasedCard !== '') {
-            responseData.cardNo = releasedCard;
+          if (signOutResult.cardNo) {
+            responseData.cardNo = signOutResult.cardNo;
           }
 
           return jsonResponse(responseData, 200);
@@ -2050,6 +2059,11 @@ function handleStatusUpdate(data) {
           var fullName = String(values[i][fullNameIdx] || '').trim();
           var destination = String(values[i][destinationIdx] || '').trim();
           var email = String(values[i][emailIdx] || '').trim();
+
+          // M8 §5: supply the selfie URL and visitor name from the sheet (backend provenance —
+          // never the frontend cache) so the provision hook can fetch them.
+          result.visitorName = fullName;
+          result.selfieUrl = String(values[i][selfieIdx] || '').trim();
 
           try {
             var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
@@ -3659,6 +3673,264 @@ function setCustomerStatus(sheetId, newStatus) {
   }
 }
 
+// ══════════════════════════════════════════════
+// USTARAPI BRIDGE (M8) — shared sign-out path + sign-out webhook + assigned-cards query
+// ══════════════════════════════════════════════
+
+/**
+ * Shared sign-out write path (M8 §3.3): flips a visitor's Status to "Signed Out", writes the
+ * Sign-Out Time, and releases their assigned card back to the pool. Single source of truth for
+ * the flip-status + time + release-card sequence, used by BOTH the guard portal
+ * (handleStatusUpdate) and the UStarAPI signOutByCard webhook. Callers must hold the script lock
+ * (LockService) before calling — the write/release is not internally serialized.
+ *
+ * @param {string} sheetId - Customer spreadsheet id
+ * @param {string} visitorNumber - Visitor number to sign out
+ * @param {Date} [signOutTime] - Sign-Out Time to record (defaults to now)
+ * @returns {object} { outcome: 'signed_out'|'already_signed_out'|'not_checked_in'|'not_found', cardNo?: string }
+ */
+function _signOutVisitor_(sheetId, visitorNumber, signOutTime) {
+  var sheet = getOrCreateSheet(sheetId);
+  var values = sheet.getDataRange().getValues();
+
+  var cols = resolveColumns(values, ['Visitor Number', 'Status', 'Sign-Out Time']);
+  if (cols['Visitor Number'] === -1 || cols['Status'] === -1 || cols['Sign-Out Time'] === -1) {
+    throw new Error('VisitorLog headers missing required columns');
+  }
+  var visitorNumberIdx = cols['Visitor Number'];
+  var statusIdx = cols['Status'];
+  var signOutIdx = cols['Sign-Out Time'];
+
+  for (var i = 1; i < values.length; i++) {
+    var vn = String(values[i][visitorNumberIdx] || '').trim();
+    if (vn !== visitorNumber.trim()) continue;
+
+    var currentStatus = String(values[i][statusIdx] || '').trim();
+    if (currentStatus === 'Signed Out') {
+      return { outcome: 'already_signed_out' };
+    }
+    if (currentStatus !== 'Checked In') {
+      return { outcome: 'not_checked_in' };
+    }
+
+    sheet.getRange(i + 1, statusIdx + 1).setValue('Signed Out');
+    sheet.getRange(i + 1, signOutIdx + 1).setValue(signOutTime || new Date());
+
+    var releasedCard = false;
+    try {
+      releasedCard = releaseCardForVisitor(visitorNumber, sheetId);
+    } catch (cardErr) {
+      console.warn('Card release failed for ' + visitorNumber + ': ' + cardErr.message);
+    }
+
+    return { outcome: 'signed_out', cardNo: (releasedCard && releasedCard !== '') ? releasedCard : null };
+  }
+
+  return { outcome: 'not_found' };
+}
+
+/**
+ * Read a single setting value (case-insensitive) from a customer Settings tab.
+ * Resolves the 2-col (Setting, Value) layout by header name. Returns the trimmed
+ * value, or '' when the key is absent.
+ */
+function _getSettingValue_(ss, key) {
+  var tab = ss.getSheetByName('Settings');
+  if (!tab) return '';
+  var data = tab.getDataRange().getValues();
+  var cols = resolveColumns(data, ['Setting', 'Value']);
+  var settingIdx = cols['Setting'];
+  var valueIdx = cols['Value'];
+  if (settingIdx === -1 || valueIdx === -1) return '';
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][settingIdx] || '').trim().toLowerCase() === String(key).toLowerCase()) {
+      return String(data[i][valueIdx] || '').trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Validate the UStar gateway secret against the customer Settings ustarSecret (M8 §2.6).
+ * Fails closed: a blank/missing configured secret never matches.
+ */
+function _checkUstarSecret_(ss, secret) {
+  var expected = _getSettingValue_(ss, 'ustarSecret');
+  if (!expected) return false;
+  return String(secret || '') === expected;
+}
+
+/**
+ * Parse an OUT-record eventTime (ms epoch) into a Date, or null when absent/invalid.
+ */
+function _parseEventTime_(eventTime) {
+  if (eventTime === undefined || eventTime === null || eventTime === '') return null;
+  var ts = parseInt(eventTime, 10);
+  if (isNaN(ts)) return null;
+  return new Date(ts);
+}
+
+/** Coerce a cardno DoorGroupID cell to a number, or null when blank/unparseable. */
+function _parseDoorGroupId_(cell) {
+  if (cell === '' || cell === undefined || cell === null) return null;
+  var n = parseInt(String(cell).trim(), 10);
+  return isNaN(n) ? null : n;
+}
+
+/** Format a timestamp cell (Date or string) as ISO-8601 for JSON output. */
+function _formatTimestamp_(cell) {
+  if (!cell) return '';
+  if (cell instanceof Date) return cell.toISOString();
+  return String(cell);
+}
+
+/**
+ * UStarAPI sign-out webhook (M8 §3.3). Validates the shared ustarSecret, finds the visitor
+ * assigned to the card, and — when the card is Assigned and the visitor Checked In — runs the
+ * SAME sign-out path as the guard portal (_signOutVisitor_, LockService-serialized). Idempotent:
+ * an unassigned card or an already Signed-Out visitor returns { status: 'noop' } with no error.
+ *
+ * @param {Object} data - { mode:'signOutByCard', sheetId, cardNo, secret, eventTime? }
+ * @returns {TextOutput} { status:'signed_out'|'noop', visitorNumber?, signedOutAt? }
+ */
+function handleSignOutByCard(data) {
+  if (!data.sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+  if (!data.cardNo) {
+    return jsonResponse({ status: 'error', error: 'Missing cardNo' }, 400);
+  }
+  if (!data.secret) {
+    return jsonResponse({ status: 'error', error: 'LITEVM_UNAUTHORIZED' }, 401);
+  }
+
+  var ss;
+  try {
+    ss = _openSheetCached(data.sheetId);
+  } catch (e) {
+    return jsonResponse({ status: 'error', error: 'Cannot open sheet: ' + e.message }, 500);
+  }
+
+  if (!_checkUstarSecret_(ss, data.secret)) {
+    return jsonResponse({ status: 'error', error: 'LITEVM_UNAUTHORIZED' }, 401);
+  }
+
+  // 1. Locate the card row and read its assignment status.
+  var cardSheet = ss.getSheetByName('cardno');
+  if (!cardSheet) {
+    return jsonResponse({ status: 'error', error: 'cardno sheet not found' }, 404);
+  }
+  var cardData = cardSheet.getDataRange().getValues();
+  var cols = resolveColumns(cardData, ['CardNo', 'Status', 'AssignedTo']);
+  var cardNoIdx = cols['CardNo'];
+  var statusIdx = cols['Status'];
+  var assignedToIdx = cols['AssignedTo'];
+  if (cardNoIdx === -1 || statusIdx === -1 || assignedToIdx === -1) {
+    return jsonResponse({ status: 'error', error: 'cardno sheet headers missing required columns' }, 500);
+  }
+
+  var visitorNumber = '';
+  var cardStatus = '';
+  for (var i = 1; i < cardData.length; i++) {
+    if (String(cardData[i][cardNoIdx] || '').trim() === String(data.cardNo).trim()) {
+      visitorNumber = String(cardData[i][assignedToIdx] || '').trim();
+      cardStatus = String(cardData[i][statusIdx] || '').trim();
+      break;
+    }
+  }
+
+  // Card Available / not found / unassigned → nothing to do (idempotent).
+  if (!visitorNumber || cardStatus !== 'Assigned') {
+    return jsonResponse({ status: 'noop', message: 'card not assigned' }, 200);
+  }
+
+  // 2. Run the shared sign-out path, serialized exactly like the guard portal.
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
+  }
+
+  try {
+    var effectiveTime = _parseEventTime_(data.eventTime) || new Date();
+    var result = _signOutVisitor_(data.sheetId, visitorNumber, effectiveTime);
+
+    if (result.outcome === 'signed_out') {
+      return jsonResponse({
+        status: 'signed_out',
+        visitorNumber: visitorNumber,
+        cardNo: result.cardNo || data.cardNo,
+        signedOutAt: effectiveTime.toISOString(),
+      }, 200);
+    }
+
+    // already_signed_out / not_checked_in / not_found → idempotent noop.
+    if (result.outcome === 'not_found') {
+      console.warn('signOutByCard: visitor ' + visitorNumber + ' not found in VisitorLog (card ' + data.cardNo + ')');
+    }
+    return jsonResponse({ status: 'noop', visitorNumber: visitorNumber }, 200);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * UStarAPI read-only query (M8 §4.2): returns every Assigned card with its door group and
+ * assignee. DoorGroupID is read directly from the cardno tab column E — no Destination join.
+ * No state change.
+ *
+ * @param {Object} data - { mode:'assignedCards', sheetId, secret }
+ * @returns {TextOutput} { status:'ok', cards:[{ cardNo, doorGroupId, visitorNumber, assignedAt }] }
+ */
+function handleAssignedCards(data) {
+  if (!data.sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+  if (!data.secret) {
+    return jsonResponse({ status: 'error', error: 'LITEVM_UNAUTHORIZED' }, 401);
+  }
+
+  var ss;
+  try {
+    ss = _openSheetCached(data.sheetId);
+  } catch (e) {
+    return jsonResponse({ status: 'error', error: 'Cannot open sheet: ' + e.message }, 500);
+  }
+
+  if (!_checkUstarSecret_(ss, data.secret)) {
+    return jsonResponse({ status: 'error', error: 'LITEVM_UNAUTHORIZED' }, 401);
+  }
+
+  var cardSheet = ss.getSheetByName('cardno');
+  if (!cardSheet) {
+    return jsonResponse({ status: 'error', error: 'cardno sheet not found' }, 404);
+  }
+
+  var cardData = cardSheet.getDataRange().getValues();
+  var cols = resolveColumns(cardData, ['CardNo', 'Status', 'AssignedTo', 'AssignedAt', 'DoorGroupID']);
+  var cardNoIdx = cols['CardNo'];
+  var statusIdx = cols['Status'];
+  var assignedToIdx = cols['AssignedTo'];
+  var assignedAtIdx = cols['AssignedAt'];
+  var doorGroupIdx = cols['DoorGroupID'];
+  if (cardNoIdx === -1 || statusIdx === -1) {
+    return jsonResponse({ status: 'error', error: 'cardno sheet headers missing required columns' }, 500);
+  }
+
+  var cards = [];
+  for (var i = 1; i < cardData.length; i++) {
+    if (String(cardData[i][statusIdx] || '').trim() !== 'Assigned') continue;
+
+    cards.push({
+      cardNo: String(cardData[i][cardNoIdx] || '').trim(),
+      doorGroupId: doorGroupIdx === -1 ? null : _parseDoorGroupId_(cardData[i][doorGroupIdx]),
+      visitorNumber: assignedToIdx === -1 ? '' : String(cardData[i][assignedToIdx] || '').trim(),
+      assignedAt: assignedAtIdx === -1 ? '' : _formatTimestamp_(cardData[i][assignedAtIdx]),
+    });
+  }
+
+  return jsonResponse({ status: 'ok', cards: cards }, 200);
+}
+
 /**
  * Read the pending retention queue (sheetIds that matched the retention
  * criterion in a prior run but were left unprocessed due to the batch cap).
@@ -4403,7 +4675,7 @@ function initialize() {
 // ──────────────────────────────────────────────
 
 var SHEET_VERSION_CELL = '_version!A1';
-var LATEST_SHEET_VERSION = 8;
+var LATEST_SHEET_VERSION = 10;
 
 var VISITORLOG_HEADERS = [
   'Timestamp',
@@ -4741,6 +5013,19 @@ var MIGRATION_REGISTRY = [
       console.log('Migration V8: Ensuring timezone row in Settings tab');
       getOrCreateSettingsTab_(ss); // ensureSettingRow_ handles idempotently
       console.log('Migration V8: Complete');
+    }
+  },
+  {
+    // Numbered 10 per M8 §5 / §2.6; v9 was never landed in this codebase (registry jumps 8 → 10).
+    version: 10,
+    name: 'Add ustarSecret row to Settings tab',
+    destructive: false,
+    description: 'Appends a blank ustarSecret row to the Settings tab (operator sets the value)',
+    fn: function(ss) {
+      console.log('Migration V10: Ensuring ustarSecret row in Settings tab');
+      var tab = getOrCreateSettingsTab_(ss);
+      ensureSettingRow_(tab, 'ustarSecret', ''); // value left blank — operator sets it
+      console.log('Migration V10: Complete');
     }
   },
 ];
