@@ -471,8 +471,30 @@
     <span id="toast-message"></span>
   </div>
 
-  <script src="config.local.js?v=1"></script>
-  <script src="lang.js?v=2"></script>
-  <script src="verify.js?v=8"></script>
+  <script>
+    // Boot loader: fetch settings.json (same-origin, served by serve_local.ps1) and only then
+    // load lang.js + verify.js. verify.js reads the global CONFIG at init; loading order matters.
+    // Failure → visible error instead of a silently broken page (old config.local.js 404'd).
+    (function () {
+      function fail(msg) {
+        var el = document.getElementById('error-message');
+        var ov = document.getElementById('error-overlay');
+        if (el) el.textContent = msg;
+        if (ov) ov.classList.remove('hidden');
+        console.error('LITEVM boot error: ' + msg);
+      }
+      fetch('settings.json', { cache: 'no-store' })
+        .then(function (r) {
+          if (!r.ok) throw new Error('settings.json HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (cfg) {
+          window.CONFIG = cfg;
+          var s1 = document.createElement('script'); s1.src = 'lang.js?v=2'; document.body.appendChild(s1);
+          var s2 = document.createElement('script'); s2.src = 'verify.js?v=9'; document.body.appendChild(s2);
+        })
+        .catch(function (err) { fail('Failed to load settings.json: ' + err.message); });
+    })();
+  </script>
 </body>
 </html>
