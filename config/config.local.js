@@ -17,6 +17,9 @@ const CONFIG = {
   // Full ACTApi base URL (no trailing slash). Example: 'http://192.168.2.194:8021'
   // ACTApi must have CorsOrigins set to allow this kiosk's origin (e.g. http://localhost:8123).
   ACTApiBase: 'http://192.168.2.194:8021',
+  // Full UStarAPI gateway base URL (no trailing slash). Example: 'http://192.168.2.211:8091'
+  // The gateway facade provisions face/QR credentials to the gate reader after check-in.
+  UStarApiBase: 'http://<lan-ip>:8091',
   // Extra Rights defaults applied when granting ACT door access
   ACTExtraRights: {
     timezone: 2,         // ACT timezone ID (2 = your preferred timezone)

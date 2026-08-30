@@ -18,6 +18,8 @@
     inlinePendingVn: null,      // visitor number for inline quick check-in
     selectedVisitors: {},       // { visitorNumber: true }
     isBulkProcessing: false,
+    provisionFailed: false,     // UStar gate-reader provisioning failed (red banner)
+    provisionPayload: null,     // last provision payload for the retry button
   };
 
   // ──────────────────────────────────────────────
@@ -649,6 +651,11 @@
             if (actApiBase !== null && actApiBase !== undefined) {
               grantActAccess(data.cardNo, data.doorGroupId, actApiBase);
             }
+          }
+
+          // Provision the gate-reader credential (face + QR) — non-blocking, after ACT access.
+          if (data.cardNo && data.doorGroupId && data.selfieUrl && data.visitorName) {
+            provisionUstar(data.cardNo, data.doorGroupId, data.selfieUrl, data.visitorName);
           }
         } else if (status === 'Signed Out') {
           showSignedOutState(state.currentVisitor);
@@ -1583,6 +1590,79 @@
   }
 
   // ──────────────────────────────────────────────
+  // USTAR GATE-READER PROVISIONING
+  // ──────────────────────────────────────────────
+  /**
+   * Provision the gate-reader credential (person + face + QR) via the UStarAPI facade.
+   * Non-blocking — failures set provisionFailed and show the persistent red banner (MED-2).
+   * Gated SOLELY by CONFIG.UStarApiBase (MED-4): UStarAPI is not an ACT entitlement, so this
+   * must NOT mirror grantActAccess's _actEnabled tier guard.
+   * @param {string} cardNo — the card number (also the device person id)
+   * @param {number} doorGroupId — the LITEVM door group
+   * @param {string} selfieUrl — the visitor selfie Drive URL
+   * @param {string} visitorName — the visitor full name
+   */
+  function provisionUstar(cardNo, doorGroupId, selfieUrl, visitorName) {
+    var base = CONFIG.UStarApiBase;
+    if (base === null || base === undefined) {
+      return; // online mode — no UStar integration
+    }
+
+    var payload = {
+      cardNo: cardNo,
+      doorGroupId: doorGroupId,
+      visitorName: visitorName,
+      selfieUrl: selfieUrl,
+    };
+
+    // Keep the last payload for the retry button, and clear any stale failure state.
+    state.provisionPayload = payload;
+    state.provisionFailed = false;
+    hideProvisionBanner();
+
+    fetch(base.replace(/\/+$/, '') + '/api/litevm/provision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    })
+    .then(function (r) { return r.json().catch(function () { return null; }); })
+    .then(function (data) {
+      var failed = !data || !Array.isArray(data.provisioned)
+        || data.provisioned.some(function (p) { return !p.success; });
+      if (failed) {
+        state.provisionFailed = true;
+        showProvisionBanner();
+        console.warn('UStar provision failed for card ' + cardNo + ': ' + JSON.stringify(data));
+        return;
+      }
+      console.log('UStar provision succeeded for card ' + cardNo);
+    })
+    .catch(function (err) {
+      state.provisionFailed = true;
+      showProvisionBanner();
+      console.warn('UStar provision could not be sent: ' + err.message);
+    });
+  }
+
+  /** Re-call provisionUstar with the last payload; the banner hides on success. */
+  function retryProvision() {
+    var payload = state.provisionPayload;
+    if (!payload) return;
+    provisionUstar(payload.cardNo, payload.doorGroupId, payload.selfieUrl, payload.visitorName);
+  }
+
+  function showProvisionBanner() {
+    var banner = $('#ustar-provision-banner');
+    if (banner) banner.classList.remove('hidden');
+  }
+
+  function hideProvisionBanner() {
+    var banner = $('#ustar-provision-banner');
+    if (banner) banner.classList.add('hidden');
+  }
+
+  // ──────────────────────────────────────────────
   // PUBLIC API
   // ──────────────────────────────────────────────
   window.App = {
@@ -1612,6 +1692,7 @@
     quickSignOut: quickSignOut,
     grantActAccess: grantActAccess,
     revokeActAccess: revokeActAccess,
+    retryProvision: retryProvision,
     t: window.App.t,
     setLang: window.App.setLang,
     render: window.App.render,

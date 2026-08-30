@@ -13,6 +13,7 @@ const CONFIG = {
   TIMEOUT_MS: 30000,
   GUARD_PIN: '1234',
   ACTApiBase: null,  // Online mode — no ACT integration
+  UStarApiBase: null,  // Online mode — no UStar integration
   // Extra Rights defaults applied when granting ACT door access
   ACTExtraRights: {
     timezone: 1,

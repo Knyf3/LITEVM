@@ -757,6 +757,38 @@ body {
   display: none;
 }
 
+/* UStar provision failure banner (red, non-dismissible while provisionFailed is true) */
+.ustar-provision-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  margin: 16px;
+  background: #DC2626;
+  color: #FFFFFF;
+  border-bottom: 2px solid #B91C1C;
+}
+
+.ustar-provision-banner button {
+  margin-left: auto;
+  background: #FFFFFF;
+  border: none;
+  color: #DC2626;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+.ustar-provision-banner.hidden {
+  display: none;
+}
+
 /* --- Review Card --- */
 .review-card {
   background: #F8FAFC;
