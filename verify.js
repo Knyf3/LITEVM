@@ -1466,7 +1466,7 @@
    */
   function driveThumbUrl(driveUrl) {
     if (!driveUrl) return '';
-    var match = driveUrl.match(/\/file\/d\/([^\/]+)/);
+    var match = driveUrl.match(/\/file\/d\/([^\/\?]+)/) || driveUrl.match(/[?&]id=([^&#]+)/);
     if (match && match[1]) {
       // Local kiosk mode: use ACTApi photo proxy to avoid referrer blocking.
       // ACTApiBase is the full ACTApi URL (kiosk is served separately by LITEVM).
