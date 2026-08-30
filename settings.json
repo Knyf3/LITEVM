@@ -8,7 +8,7 @@
   "PHOTO_JPEG_QUALITY": 0.8,
   "TIMEOUT_MS": 30000,
   "GUARD_PIN": "1234",
-  "ACTApiBase": "http://192.168.2.194:8021",
+  "ACTApiBase": "",
   "UStarApiBase": "http://192.168.2.113:8091",
   "ACTExtraRights": {
     "timezone": 2,
