@@ -1637,7 +1637,14 @@
 
     fetch(base.replace(/\/+$/, '') + '/api/litevm/provision', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // M8.8: the gateway's LitevmSecretMiddleware requires X-Litevm-Secret on /api/litevm/*
+        // whenever Litevm:Secret is configured (it is, for sign-out). The kiosk carries the
+        // shared secret in its own settings.json (LITEVM_SECRET, same trust domain as GUARD_PIN);
+        // without this header every provision 401s (verified live 2026-08-30).
+        'X-Litevm-Secret': (CONFIG && CONFIG.LITEVM_SECRET) || '',
+      },
       body: JSON.stringify(payload),
       redirect: 'follow',
     })
