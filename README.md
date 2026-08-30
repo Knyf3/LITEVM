@@ -32,6 +32,8 @@ The local verify kiosk is served by LITEVM itself — **not** by ACTApi (ACTApi 
 
 Zero dependencies — `start_kiosk.bat` → `serve_local.ps1` (PowerShell's built-in `HttpListener`), no Python/Node needed.
 
+> **Installer packaging:** this kiosk runtime is also shipped inside the UStarAPI installer (staged at `UStarAPI/Installer/kiosk/`); keep that copy in sync with this folder.
+
 > **Full installation guide:** See [`docs/INSTALL.md`](docs/INSTALL.md)
 
 ## Visitor Flow
