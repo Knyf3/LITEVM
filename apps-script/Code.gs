@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.16.1';  // Increment this to track deployed versions
+var CODE_VERSION = '1.16.2';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -2536,6 +2536,11 @@ function sendEmailThroughBridge(opts) {
 var EMAIL_QUEUE_SHEET_NAME = 'EmailQueue';
 var EMAIL_QUEUE_HEADERS = ['Timestamp', 'Type', 'To', 'Subject', 'Body', 'Status', 'Attempts', 'LastError'];
 var EMAIL_QUEUE_MAX_ATTEMPTS = 3;
+// Script-property flag: '1' when any customer has PENDING email. The sweep
+// checks this FIRST and returns immediately when clean, so idle ticks cost
+// ~0.2s instead of ~14s (openById + getDataRange per customer). Cleared by
+// the sweep before processing; set by enqueueEmail AFTER the append.
+var EMAIL_QUEUE_DIRTY_FLAG = 'EMAIL_QUEUE_DIRTY';
 
 /**
  * Get (or create) the hidden EmailQueue tab on a customer spreadsheet.
@@ -2577,6 +2582,14 @@ function enqueueEmail(sheetId, type, to, subject, htmlBody) {
     var tab = getOrCreateEmailQueue_(ss);
     if (tab) {
       tab.appendRow([new Date(), type, to, subject, htmlBody, 'PENDING', 0, '']);
+      // Dirty flag AFTER the append: a sweep that started before this append
+      // won't miss it — the flag survives to the next tick. Setting it after
+      // the append also guarantees the row exists before the flag is visible.
+      try {
+        PropertiesService.getScriptProperties().setProperty(EMAIL_QUEUE_DIRTY_FLAG, '1');
+      } catch (flagErr) {
+        console.warn('enqueueEmail: could not set dirty flag: ' + flagErr.message);
+      }
       return;
     }
   } catch (e) {
@@ -2653,11 +2666,30 @@ function _sweepEmailQueueForSheet_(sheetId) {
 }
 
 /**
- * Time-driven sweep (every 2 minutes): deliver pending queue emails across all
+ * Time-driven sweep (every 5 minutes): deliver pending queue emails across all
  * customer sheets. Fire-and-forget per row — no LockService is held so a slow
  * send never blocks the hourly autoSignOut / daily maintenance triggers.
+ *
+ * Quota guard: checks the EMAIL_QUEUE_DIRTY script property first. When no
+ * customer has enqueued mail since the last sweep, it returns immediately —
+ * an idle tick costs ~0.2s instead of openById+getDataRange for every
+ * customer (~14s). The flag is cleared BEFORE processing and re-set by
+ * enqueueEmail AFTER its append, so an enqueue during the sweep is picked up
+ * on the next tick (worst case: one interval of delay, never a lost email).
  */
 function runEmailQueueSweep() {
+  var prop = PropertiesService.getScriptProperties();
+  if (prop.getProperty(EMAIL_QUEUE_DIRTY_FLAG) !== '1') {
+    return; // idle — nothing enqueued since the last sweep
+  }
+  // Claim the work: clear the flag first. Any enqueue that lands after this
+  // point re-sets it and is handled on the next tick.
+  try {
+    prop.setProperty(EMAIL_QUEUE_DIRTY_FLAG, '0');
+  } catch (e) {
+    console.warn('runEmailQueueSweep: could not clear dirty flag: ' + e.message);
+  }
+
   var config = _loadMasterConfig();
   var sheetIds = Object.keys(config);
   var totalSent = 0;
@@ -4777,9 +4809,11 @@ function ensureTriggersInstalled() {
   _migrateMasterConfigV4();
 
   var prop = PropertiesService.getScriptProperties();
-  // Schema version — bump this if trigger type/interval changes (v10 adds the
-  // 1-minute email-queue sweep; everyMinutes(2) is NOT a valid GAS interval).
-  var SCHEMA_VERSION = 'v10';
+  // Schema version — bump this if trigger type/interval changes (v11 adds the
+  // 5-minute email-queue sweep with dirty-flag gate; everyMinutes(2) is NOT a
+  // valid GAS interval — v10 shipped everyMinutes(1) which burned ~336 min/day
+  // of consumer quota when idle, hence the v11 cadence + flag change).
+  var SCHEMA_VERSION = 'v11';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
@@ -4841,16 +4875,19 @@ function ensureTriggersInstalled() {
     .create();
   console.log('ensureTriggersInstalled: Installed runDailyMaintenance trigger at 02:05');
 
-  // Install the 1-minute email-queue sweep. GAS everyMinutes() only accepts
+  // Install the 5-minute email-queue sweep. GAS everyMinutes() only accepts
   // 1, 5, 10, 15, 30 — 2 is REJECTED at runtime (verified live 2026-08-31).
-  // Fire-and-forget per row — the sweep does NOT hold the script lock, so a slow
-  // GmailApp send can't contend with autoSignOut / releaseDailyCards /
-  // runDailyMaintenance.
+  // 5 minutes (not 1) because GAS bills ~1s overhead per trigger execution:
+  // 1-min cadence = 1,440 ticks/day ≈ 24 min/day of pure overhead even when
+  // idle. runEmailQueueSweep() gates on EMAIL_QUEUE_DIRTY, so idle ticks cost
+  // ~0.2s. Fire-and-forget per row — the sweep does NOT hold the script lock,
+  // so a slow GmailApp send can't contend with autoSignOut /
+  // releaseDailyCards / runDailyMaintenance.
   ScriptApp.newTrigger('runEmailQueueSweep')
     .timeBased()
-    .everyMinutes(1)
+    .everyMinutes(5)
     .create();
-  console.log('ensureTriggersInstalled: Installed runEmailQueueSweep trigger every 1 minute');
+  console.log('ensureTriggersInstalled: Installed runEmailQueueSweep trigger every 5 minutes');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
