@@ -23,12 +23,19 @@
  *
  */
 
-var CODE_VERSION = '1.17.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.18.0';  // Increment this to track deployed versions
 
-// EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
-// sender identity instead of MailApp. MailApp scripted sends are silently dropped at
-// Google's outbound edge for this account; GmailApp (composer infra) delivers with
-// full branding. Native account address = valid sender, no alias setup needed.
+// EMAIL BRIDGE: scripted email routes through a THREE-tier transport in
+// sendEmailThroughBridge:
+//   Tier 1 (primary)      — Gmail Advanced Service API (Gmail.Users.Messages.send),
+//                           bypasses the Apps Script 100/day recipient quota.
+//   Tier 2 (fallback)     — GmailApp.sendEmail with the send-as alias below
+//                           (current production behavior; composer infra, full
+//                           branding).
+//   Tier 3 (last resort)  — MailApp.sendEmail (Workspace default sender).
+// EMAIL_BRIDGE_FROM is the verified send-as alias on the mainan.modern@gmail.com
+// account. A misconfigured deploy (Gmail service not enabled) never breaks mail —
+// sendEmailThroughBridge feature-detects and degrades Tier 1 -> 2 -> 3 automatically.
 var EMAIL_BRIDGE_FROM = 'litevm@itt.web.id';
 
 // ──────────────────────────────────────────────
@@ -2494,28 +2501,62 @@ function handleTestEmail(data) {
 }
 
 /**
- * Send email through the configured bridge. When EMAIL_BRIDGE_FROM is set,
- * routes via GmailApp with the established sender identity (gmail.com);
- * otherwise falls back to MailApp (Workspace default sender).
+ * Builds a base64url-encoded RFC822 MIME message for Gmail API raw send.
+ */
+function buildRawEmail_(from, name, to, subject, body, htmlBody) {
+  var boundary = 'litevm_' + new Date().getTime();
+  var nameFrom = name ? (name + ' <' + from + '>') : from;
+  var safeSubject = /[^\x20-\x7E]/.test(subject) ? '=?UTF-8?B?' + Utilities.base64Encode(subject) + '?=' : subject;
+  var lines = [
+    'MIME-Version: 1.0',
+    'From: ' + nameFrom,
+    'To: ' + to,
+    'Subject: ' + safeSubject,
+    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
+    '',
+    '--' + boundary,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    Utilities.base64Encode(body || '', Utilities.Charset.UTF_8),
+    '',
+    '--' + boundary,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    Utilities.base64Encode(htmlBody || body || '', Utilities.Charset.UTF_8),
+    '',
+    '--' + boundary + '--'
+  ];
+  var raw = lines.join('\r\n');
+  return Utilities.base64EncodeWebSafe(raw);
+}
+
+/**
+ * Send email through a three-tier transport:
+ *   Tier 1 — Gmail Advanced Service API (Gmail.Users.Messages.send), which
+ *            bypasses the Apps Script 100/day recipient quota.
+ *   Tier 2 — GmailApp with the EMAIL_BRIDGE_FROM send-as alias (production).
+ *   Tier 3 — MailApp (Workspace default sender), last resort.
+ * Feature-detection keeps a misconfigured deploy (no Gmail service) from ever
+ * breaking mail — it silently degrades to GmailApp, then MailApp.
  */
 function sendEmailThroughBridge(opts) {
   var from = opts.from || EMAIL_BRIDGE_FROM;
-  if (from) {
-    // Positional overload — unambiguous, documented:
-    // GmailApp.sendEmail(recipient, subject, body, options)
-    GmailApp.sendEmail(
-      opts.to,
-      opts.subject,
-      opts.body || '',
-      {
-        htmlBody: opts.htmlBody,
-        from: from,
-        name: opts.name || 'LITEVM Visitor Management',
-      }
-    );
-  } else {
-    MailApp.sendEmail(opts);
+  var name = opts.name || 'LITEVM Visitor Management';
+  // Tier 1: Gmail Advanced Service API (bypasses Apps Script email quota)
+  if (typeof Gmail !== 'undefined' && Gmail.Users && Gmail.Users.Messages && typeof Gmail.Users.Messages.send === 'function') {
+    var raw = buildRawEmail_(from || Session.getActiveUser().getEmail(), name, opts.to, opts.subject, opts.body || '', opts.htmlBody);
+    Gmail.Users.Messages.send({ raw: raw }, 'me');
+    return;
   }
+  // Tier 2: GmailApp with send-as alias (current production behavior)
+  if (from) {
+    GmailApp.sendEmail(opts.to, opts.subject, opts.body || '', { htmlBody: opts.htmlBody, from: from, name: name });
+    return;
+  }
+  // Tier 3: MailApp last resort
+  MailApp.sendEmail(opts);
 }
 
 // ══════════════════════════════════════════════
@@ -2654,7 +2695,8 @@ function _sweepEmailQueueForSheet_(sheetId) {
       sent++;
     } catch (e) {
       attempts++;
-      var newStatus = attempts < EMAIL_QUEUE_MAX_ATTEMPTS ? 'PENDING' : 'FAILED';
+      var isPermanent = /insufficient\.scope|invalid\.credential|invalid.*from|forbidden|dailyLimitExceeded/i.test(String(e.message || ''));
+      var newStatus = isPermanent ? 'FAILED' : (attempts < EMAIL_QUEUE_MAX_ATTEMPTS ? 'PENDING' : 'FAILED');
       tab.getRange(i + 1, statusIdx + 1).setValue(newStatus);
       if (attemptsIdx !== -1) tab.getRange(i + 1, attemptsIdx + 1).setValue(attempts);
       if (lastErrorIdx !== -1) tab.getRange(i + 1, lastErrorIdx + 1).setValue(String(e.message || '').substring(0, 500));
