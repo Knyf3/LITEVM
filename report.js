@@ -53,19 +53,75 @@
     });
   }
 
+  // ──────────────────────────────────────────────
+  // LOCALSTORAGE METADATA CACHE (4h TTL)
+  // ──────────────────────────────────────────────
+  var CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+  function cacheKey(name) {
+    return 'litevm:' + CONFIG.SHEET_ID + ':' + name;
+  }
+
+  function readCacheFresh(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      if (!entry || typeof entry.fetchedAt !== 'number') return null;
+      if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null;
+      return entry.data;
+    } catch (e) { return null; }
+  }
+
+  function readCacheStale(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      return entry && entry.data !== undefined ? entry.data : null;
+    } catch (e) { return null; }
+  }
+
+  function writeCache(name, data) {
+    try {
+      localStorage.setItem(cacheKey(name), JSON.stringify({ data: data, fetchedAt: Date.now() }));
+    } catch (e) { /* storage full / privacy mode — ignore */ }
+  }
+
   /** Fetch guard PIN from GAS, store in memory. Returns a promise. */
   var _guardPinReport = CONFIG.GUARD_PIN || '1234';
 
+  function _applyConfig(data) {
+    if (data && data.status === 'ok' && data.guardPin) {
+      _guardPinReport = data.guardPin;
+    }
+  }
+
   function fetchSheetConfig() {
+    // Serve a fresh (≤4h) cached config first to skip the GAS round-trip.
+    var cached = readCacheFresh('config');
+    if (cached) {
+      _applyConfig(cached);
+      return Promise.resolve(cached);
+    }
+
     return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (data && data.status === 'ok' && data.guardPin) {
-          _guardPinReport = data.guardPin;
+        _applyConfig(data);
+        if (data && data.status === 'ok') {
+          writeCache('config', data); // cache SUCCESS only
         }
+        return data;
       })
       .catch(function () {
+        var stale = readCacheStale('config');
+        if (stale) {
+          _applyConfig(stale);
+          return stale;
+        }
         _guardPinReport = CONFIG.GUARD_PIN || '1234';
+        return null;
       });
   }
 
@@ -236,7 +292,9 @@
     showLoading();
 
     var url = CONFIG.API_BASE + '?_t=' + Date.now();
-    var body = JSON.stringify({ action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to });
+    // mode:'full' requests the complete VisitorLog so date-range filtering works
+    // across the whole history (the backend otherwise defaults to a bounded tail).
+    var body = JSON.stringify({ action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to, mode: 'full' });
 
     fetch(url, {
       method: 'POST',

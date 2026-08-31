@@ -602,12 +602,112 @@
   }
 
   // ──────────────────────────────────────────────
+  // LOCALSTORAGE METADATA CACHE (4h TTL)
+  // ──────────────────────────────────────────────
+  var CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+  function cacheKey(name) {
+    return 'litevm:' + CONFIG.SHEET_ID + ':' + name;
+  }
+
+  function readCacheFresh(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      if (!entry || typeof entry.fetchedAt !== 'number') return null;
+      if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null;
+      return entry.data;
+    } catch (e) { return null; }
+  }
+
+  function readCacheStale(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      return entry && entry.data !== undefined ? entry.data : null;
+    } catch (e) { return null; }
+  }
+
+  function writeCache(name, data) {
+    try {
+      localStorage.setItem(cacheKey(name), JSON.stringify({ data: data, fetchedAt: Date.now() }));
+    } catch (e) { /* storage full / privacy mode — ignore */ }
+  }
+
+  // ──────────────────────────────────────────────
   // DESTINATIONS FETCH
   // ──────────────────────────────────────────────
+
+  function applyDestinations(parsed) {
+    var select = document.getElementById('destination');
+    var destArray = [];
+
+    // Parse destinations from response format:
+    // { destinations: [ { Pertamina: "BRI" }, ... ] }
+    if (parsed.destinations && parsed.destinations.length > 0) {
+      for (var i = 0; i < parsed.destinations.length; i++) {
+        var item = parsed.destinations[i];
+        // Get the first value from each item object
+        for (var key in item) {
+          if (item.hasOwnProperty(key)) {
+            var val = item[key].trim();
+            if (val.length > 0) {
+              destArray.push(val);
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    state.destinations = destArray;
+    state.fetchRetries = 0;
+
+    if (destArray.length === 0) {
+      state.destinationsError = 'No destinations configured';
+      select.disabled = true;
+      select.innerHTML = '<option value="" disabled selected>' + App.t('no-destinations') + '</option>';
+      var errorEl = document.getElementById('destination-error');
+      if (errorEl) {
+        errorEl.textContent = 'No destinations configured';
+        errorEl.classList.add('visible');
+      }
+      updateContinueButton();
+      return;
+    }
+
+    // Populate select
+    select.disabled = false;
+    var html = '<option value="" disabled selected>' + App.t('placeholder-destination-select') + '</option>';
+    for (var j = 0; j < destArray.length; j++) {
+      var escaped = destArray[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      html += '<option value="' + escaped + '">' + escaped + '</option>';
+    }
+    select.innerHTML = html;
+    select.classList.remove('error');
+    select.classList.remove('valid');
+
+    var errorEl2 = document.getElementById('destination-error');
+    if (errorEl2) {
+      errorEl2.textContent = '';
+      errorEl2.classList.remove('visible');
+    }
+
+    updateContinueButton();
+  }
 
   function fetchDestinations() {
     var select = document.getElementById('destination');
     if (!select) return;
+
+    // Serve a fresh (≤4h) cached list first — skips the GAS round-trip.
+    var cached = readCacheFresh('destinations');
+    if (cached) {
+      applyDestinations(cached);
+      return;
+    }
 
     // Abort previous request if any
     if (state.destinationsAbort) {
@@ -655,60 +755,12 @@
         throw new Error(parsed.message || 'Failed to load destinations');
       }
 
-      var destArray = [];
-
-      // Parse destinations from response format:
-      // { destinations: [ { Pertamina: "BRI" }, ... ] }
+      // Cache the SUCCESS response (only when it has data).
       if (parsed.destinations && parsed.destinations.length > 0) {
-        for (var i = 0; i < parsed.destinations.length; i++) {
-          var item = parsed.destinations[i];
-          // Get the first value from each item object
-          for (var key in item) {
-            if (item.hasOwnProperty(key)) {
-              var val = item[key].trim();
-              if (val.length > 0) {
-                destArray.push(val);
-              }
-              break;
-            }
-          }
-        }
+        writeCache('destinations', parsed);
       }
 
-      state.destinations = destArray;
-      state.fetchRetries = 0;
-
-      if (destArray.length === 0) {
-        state.destinationsError = 'No destinations configured';
-        select.disabled = true;
-        select.innerHTML = '<option value="" disabled selected>' + App.t('no-destinations') + '</option>';
-        var errorEl = document.getElementById('destination-error');
-        if (errorEl) {
-          errorEl.textContent = 'No destinations configured';
-          errorEl.classList.add('visible');
-        }
-        updateContinueButton();
-        return;
-      }
-
-      // Populate select
-      select.disabled = false;
-      var html = '<option value="" disabled selected>' + App.t('placeholder-destination-select') + '</option>';
-      for (var j = 0; j < destArray.length; j++) {
-        var escaped = destArray[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        html += '<option value="' + escaped + '">' + escaped + '</option>';
-      }
-      select.innerHTML = html;
-      select.classList.remove('error');
-      select.classList.remove('valid');
-
-      var errorEl = document.getElementById('destination-error');
-      if (errorEl) {
-        errorEl.textContent = '';
-        errorEl.classList.remove('visible');
-      }
-
-      updateContinueButton();
+      applyDestinations(parsed);
     })
     .catch(function (err) {
       clearTimeout(timeoutId);
@@ -720,6 +772,13 @@
         // superseded abort (a fresh request replaced this one) stays silent.
         if (!timedOut) return;
         renderDestinationsFailed();
+        return;
+      }
+
+      // Fall back to a stale cache (any age) before erroring out.
+      var stale = readCacheStale('destinations');
+      if (stale) {
+        applyDestinations(stale);
         return;
       }
 
@@ -770,9 +829,43 @@
   // VISITOR TYPES FETCH
   // ──────────────────────────────────────────────
 
+  function applyVisitorTypes(parsed) {
+    var select = document.getElementById('visitorType');
+    var types = parsed.types || [];
+
+    state.visitorTypes = types;
+    state.visitorTypesRetries = 0;
+
+    if (types.length === 0) {
+      state.visitorTypesError = 'No visitor types configured';
+      select.disabled = true;
+      select.innerHTML = '<option value="" disabled selected>' + App.t('no-visitor-types') + '</option>';
+      return;
+    }
+
+    // Populate select — first value is default (selected)
+    select.disabled = false;
+    var html = '';
+    for (var j = 0; j < types.length; j++) {
+      var escaped = types[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      var selected = j === 0 ? ' selected' : '';
+      html += '<option value="' + escaped + '"' + selected + '>' + escaped + '</option>';
+    }
+    select.innerHTML = html;
+
+    updateContinueButton();
+  }
+
   function fetchVisitorTypes() {
     var select = document.getElementById('visitorType');
     if (!select) return;
+
+    // Serve a fresh (≤4h) cached list first — skips the GAS round-trip.
+    var cached = readCacheFresh('visitorTypes');
+    if (cached) {
+      applyVisitorTypes(cached);
+      return;
+    }
 
     // Abort previous request if any
     if (state.visitorTypesAbort) {
@@ -812,29 +905,12 @@
 
       if (parsed.status !== 'ok') throw new Error(parsed.message || 'Failed to load visitor types');
 
-      var types = parsed.types || [];
-
-      state.visitorTypes = types;
-      state.visitorTypesRetries = 0;
-
-      if (types.length === 0) {
-        state.visitorTypesError = 'No visitor types configured';
-        select.disabled = true;
-        select.innerHTML = '<option value="" disabled selected>' + App.t('no-visitor-types') + '</option>';
-        return;
+      // Cache the SUCCESS response (only when it has data).
+      if (parsed.types && parsed.types.length > 0) {
+        writeCache('visitorTypes', parsed);
       }
 
-      // Populate select — first value is default (selected)
-      select.disabled = false;
-      var html = '';
-      for (var j = 0; j < types.length; j++) {
-        var escaped = types[j].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        var selected = j === 0 ? ' selected' : '';
-        html += '<option value="' + escaped + '"' + selected + '>' + escaped + '</option>';
-      }
-      select.innerHTML = html;
-
-      updateContinueButton();
+      applyVisitorTypes(parsed);
     })
     .catch(function (err) {
       clearTimeout(timeoutId);
@@ -846,6 +922,13 @@
         // superseded abort (a fresh request replaced this one) stays silent.
         if (!timedOut) return;
         renderVisitorTypesFailed();
+        return;
+      }
+
+      // Fall back to a stale cache (any age) before erroring out.
+      var stale = readCacheStale('visitorTypes');
+      if (stale) {
+        applyVisitorTypes(stale);
         return;
       }
 

@@ -1056,27 +1056,11 @@ function doPost(e) {
       return jsonResponse({ status: 'error', error: 'Unknown mode: ' + data.mode }, 400);
     }
 
-    // ── VISITOR LIMIT CHECK (registration only) ──
-    // Use LockService to prevent race conditions (two concurrent registrations
-    // both passing the limit check before either appends a row).
-    var lock = LockService.getScriptLock();
-    if (!lock.tryLock(30000)) {
-      return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
-    }
-    try {
-      var limitCheck = checkVisitorLimit_(data.sheetId);
-      if (!limitCheck.allowed) {
-        return jsonResponse({
-          status: 'error',
-          error: 'Daily visitor limit reached. Please contact the office or try again tomorrow.',
-          code: 'DAILY_LIMIT_REACHED',
-          usage: { current: limitCheck.current, limit: limitCheck.limit, pct: limitCheck.pct },
-        }, 429);
-      }
-      return handleRegistration(data, limitCheck.limit);
-    } finally {
-      lock.releaseLock();
-    }
+    // ── REGISTRATION (no mode) ──
+    // Drive photo upload and email enqueue now happen OUTSIDE the LockService
+    // critical section (see handleRegistration); the lock wraps only the atomic
+    // visitor-limit check + VisitorLog row append.
+    return handleRegistration(data);
 
   } catch (error) {
     console.error('doPost error: ' + error.message + '\n' + error.stack);
@@ -1313,8 +1297,10 @@ function _logLicenseIssuance(machineId, jti, tier, issuedAtEpoch, expiresAtEpoch
 // HANDLER: Registration
 // ──────────────────────────────────────────────
 
-function handleRegistration(data, visitorLimit) {
-  // Validate required fields
+function handleRegistration(data) {
+  // ── Phase 1 (OUTSIDE lock): validate, sanitize, upload photos to Drive ──
+  // The slow Drive I/O (two file creates) must not hold the script lock — two
+  // concurrent registrations would otherwise serialize on it.
   var required = ['fullName', 'idNumber', 'company', 'destination', 'visitorType', 'visitationDate', 'phone', 'email', 'idPhoto', 'selfie'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) {
@@ -1339,11 +1325,83 @@ function handleRegistration(data, visitorLimit) {
   var idPhotoUrl = uploadBase64ToDrive(folder, 'id_photo.jpg', data.idPhoto);
   var selfieUrl = uploadBase64ToDrive(folder, 'selfie.jpg', data.selfie);
 
+  var fields = {
+    fullName: fullName,
+    idNumber: idNumber,
+    company: company,
+    destination: destination,
+    visitorType: visitorType,
+    visitationDate: visitationDate,
+    phone: phone,
+    email: email,
+    idPhotoUrl: idPhotoUrl,
+    selfieUrl: selfieUrl,
+  };
+
+  // ── Phase 2 (INSIDE lock): atomic visitor-limit check + row append ──
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return jsonResponse({ status: 'error', message: 'System busy. Please try again.' }, 503);
+  }
+
+  var visitorLimit = null;
+  var commitResult = null;
+  try {
+    var limitCheck = checkVisitorLimit_(data.sheetId);
+    if (!limitCheck.allowed) {
+      return jsonResponse({
+        status: 'error',
+        error: 'Daily visitor limit reached. Please contact the office or try again tomorrow.',
+        code: 'DAILY_LIMIT_REACHED',
+        usage: { current: limitCheck.current, limit: limitCheck.limit, pct: limitCheck.pct },
+      }, 429);
+    }
+    visitorLimit = limitCheck.limit;
+    commitResult = _registrationCommit(data.sheetId, fields);
+  } finally {
+    lock.releaseLock();
+  }
+
+  if (!commitResult.ok) {
+    // Header-missing (or similar) failure — no email, no row.
+    return commitResult.response;
+  }
+
+  // ── Phase 3 (OUTSIDE lock): enqueue email confirmation + build response ──
+  try {
+    sendEmailConfirmation(fields.email, commitResult.visitorNumber, fields.fullName, fields.visitorType, data.sheetId);
+  } catch (emailErr) {
+    console.warn('Email notification failed for ' + fields.email + ': ' + emailErr.message + ' | ' + emailErr.stack);
+  }
+
+  // Get updated count for response
+  var updatedCount = getDailyVisitorCount_(data.sheetId, getCustomerTimeZone_(data.sheetId));
+  var response = { visitorNumber: commitResult.visitorNumber, status: 'ok' };
+  if (visitorLimit && updatedCount !== null) {
+    response.usage = {
+      current: updatedCount,
+      limit: visitorLimit,
+      pct: Math.round((updatedCount / visitorLimit) * 100),
+    };
+  }
+  return jsonResponse(response, 200);
+}
+
+/**
+ * Atomic critical section of registration: generate the visitor number and
+ * append the full-width VisitorLog row. Called with the script lock held.
+ * Does NOT touch Drive or email (both run outside the lock).
+ *
+ * @param {string} sheetId - Customer sheet ID
+ * @param {Object} fields - Sanitized registration fields (incl. photo URLs)
+ * @returns {{ok: boolean, visitorNumber: string, response?: TextOutput}}
+ */
+function _registrationCommit(sheetId, fields) {
   // Generate visitor number (server-side, sequential per day)
   var visitorNumber = generateVisitorNumber();
 
   // Write to Google Sheet
-  var sheet = getOrCreateSheet(data.sheetId);
+  var sheet = getOrCreateSheet(sheetId);
   var sheetData = sheet.getDataRange().getValues();
   var headerLen = sheetData.length > 0 ? sheetData[0].length : VISITORLOG_HEADERS.length;
 
@@ -1358,7 +1416,11 @@ function handleRegistration(data, visitorLimit) {
   // All 15 canonical headers must be present BEFORE appending (no partial write).
   for (var h = 0; h < colNames.length; h++) {
     if (cols[colNames[h]] === -1) {
-      return jsonResponse({ status: 'error', error: 'VisitorLog header missing: ' + colNames[h] }, 500);
+      return {
+        ok: false,
+        visitorNumber: visitorNumber,
+        response: jsonResponse({ status: 'error', error: 'VisitorLog header missing: ' + colNames[h] }, 500),
+      };
     }
   }
 
@@ -1368,41 +1430,51 @@ function handleRegistration(data, visitorLimit) {
   for (var k = 0; k < headerLen; k++) rowArr[k] = '';
 
   rowArr[cols['Timestamp']] = new Date();
-  rowArr[cols['Full Name']] = fullName;
-  rowArr[cols['ID / Passport Number']] = idNumber;
-  rowArr[cols['Company Name']] = company;
-  rowArr[cols['Destination']] = destination;
-  rowArr[cols['Visitor Type']] = visitorType;
-  rowArr[cols['Visitation Date']] = visitationDate;
-  rowArr[cols['Hand Phone']] = phone;
-  rowArr[cols['Email']] = email;
-  rowArr[cols['ID Photo (Drive URL)']] = idPhotoUrl;
-  rowArr[cols['Selfie (Drive URL)']] = selfieUrl;
+  rowArr[cols['Full Name']] = fields.fullName;
+  rowArr[cols['ID / Passport Number']] = fields.idNumber;
+  rowArr[cols['Company Name']] = fields.company;
+  rowArr[cols['Destination']] = fields.destination;
+  rowArr[cols['Visitor Type']] = fields.visitorType;
+  rowArr[cols['Visitation Date']] = fields.visitationDate;
+  rowArr[cols['Hand Phone']] = fields.phone;
+  rowArr[cols['Email']] = fields.email;
+  rowArr[cols['ID Photo (Drive URL)']] = fields.idPhotoUrl;
+  rowArr[cols['Selfie (Drive URL)']] = fields.selfieUrl;
   rowArr[cols['Visitor Number']] = visitorNumber;
   rowArr[cols['Status']] = 'Pending Entry';
   rowArr[cols['Sign-In Time']] = '';
   rowArr[cols['Sign-Out Time']] = '';
 
+  _appendVisitorLogRow_(sheet, rowArr);
+
+  return { ok: true, visitorNumber: visitorNumber };
+}
+
+/**
+ * Append a full-width VisitorLog row. Prefers the Sheets Advanced Service
+ * (single append API call — faster than SpreadsheetApp.appendRow, which does a
+ * getLastRow() round-trip first). Feature-detects: if the advanced service is
+ * not enabled in the Apps Script editor (Services → Google Sheets API), it
+ * silently falls back to appendRow so the deployment keeps working.
+ *
+ * @param {Sheet} sheet - The VisitorLog sheet handle
+ * @param {Array} rowArr - Full-width row array (length = header row length)
+ */
+function _appendVisitorLogRow_(sheet, rowArr) {
+  if (typeof Sheets !== 'undefined') {
+    try {
+      Sheets.Spreadsheets.Values.append(
+        { values: [rowArr] },
+        sheet.getParent().getId(),
+        sheet.getName() + '!A1',
+        { valueInputOption: 'USER_ENTERED' }
+      );
+      return;
+    } catch (e) {
+      console.warn('_appendVisitorLogRow_: Sheets advanced append failed — falling back to appendRow: ' + e.message);
+    }
+  }
   sheet.appendRow(rowArr);
-
-  // Send email confirmation (non-blocking — catch errors)
-  try {
-    sendEmailConfirmation(email, visitorNumber, fullName, visitorType);
-  } catch (emailErr) {
-    console.warn('Email notification failed for ' + email + ': ' + emailErr.message + ' | ' + emailErr.stack);
-  }
-
-  // Get updated count for response
-  var updatedCount = getDailyVisitorCount_(data.sheetId, getCustomerTimeZone_(data.sheetId));
-  var response = { visitorNumber: visitorNumber, status: 'ok' };
-  if (visitorLimit && updatedCount !== null) {
-    response.usage = {
-      current: updatedCount,
-      limit: visitorLimit,
-      pct: Math.round((updatedCount / visitorLimit) * 100),
-    };
-  }
-  return jsonResponse(response, 200);
 }
 
 // ──────────────────────────────────────────────
@@ -1589,10 +1661,36 @@ function getDateString_(cell, tz) {
   return String(cell || '').trim();
 }
 
+/**
+ * Read a sheet's header row plus at most the last `maxDataRows` data rows, as a
+ * single 2D array suitable for resolveColumns() (row 0 = header). Bounds the
+ * read to the tail of an unbounded log so per-request reads ('today') don't pay
+ * for the entire sheet on every poll. Registrations are appended chronologically,
+ * so today's visitors always live near the tail.
+ *
+ * @param {Sheet} sheet - The sheet handle
+ * @param {number} maxDataRows - Maximum number of data rows to read (from the end)
+ * @returns {Array<Array>} Header + tail data rows
+ */
+function _readTailRows_(sheet, maxDataRows) {
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return [[]]; // truly empty sheet
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues();
+  if (lastRow <= 1) return header; // header only, no data rows
+  var startRow = Math.max(2, lastRow - maxDataRows + 1);
+  var numRows = lastRow - startRow + 1;
+  var body = sheet.getRange(startRow, 1, numRows, lastCol).getValues();
+  return header.concat(body);
+}
+
 function handleTodayVisitors(sheetId) {
   var customerTz = getCustomerTimeZone_(sheetId);
   var sheet = getOrCreateSheet(sheetId);
-  var data = sheet.getDataRange().getValues();
+  // Bounded read: today's registrations are the most recent rows, so read the
+  // header + the last N data rows instead of the whole (potentially huge) log.
+  // N=2000 is generous enough to cover pre-registrations and heavy days.
+  var data = _readTailRows_(sheet, 2000);
 
   var cols = resolveColumns(data, [
     'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
@@ -1666,12 +1764,51 @@ function handleTodayVisitors(sheetId) {
 // HANDLER: Report (date-range visitor list)
 // ──────────────────────────────────────────────
 
+/**
+ * Read the rows for the report action with bounded pagination.
+ *   - mode='full'          → the entire tab (date-range search needs full history)
+ *   - startRow (+ count)   → an explicit 1-based slice [startRow, startRow+count-1]
+ *   - otherwise (default)  → the last `count` data rows (default 500)
+ * The header row is always row 0 so resolveColumns() keeps working.
+ *
+ * @param {Sheet} sheet - The VisitorLog sheet handle
+ * @param {Object} data - The report request body ({ mode?, startRow?, count? })
+ * @returns {Array<Array>} Header + (possibly bounded) data rows
+ */
+function _readReportRows_(sheet, data) {
+  var REPORT_DEFAULT_COUNT = 500;
+
+  if (data.mode === 'full') {
+    return sheet.getDataRange().getValues();
+  }
+
+  var count = parseInt(data.count, 10);
+  var startRow = parseInt(data.startRow, 10);
+
+  if (!isNaN(startRow) && startRow >= 2) {
+    // Explicit slice anchored at startRow.
+    if (isNaN(count) || count < 1) count = REPORT_DEFAULT_COUNT;
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastCol < 1) return [[]];
+    var header = sheet.getRange(1, 1, 1, lastCol).getValues();
+    if (lastRow < 2) return header;
+    var endRow = Math.min(lastRow, startRow + count - 1);
+    var body = endRow >= startRow ? sheet.getRange(startRow, 1, endRow - startRow + 1, lastCol).getValues() : [];
+    return header.concat(body);
+  }
+
+  // Default / count-only: last N data rows.
+  if (isNaN(count) || count < 1) count = REPORT_DEFAULT_COUNT;
+  return _readTailRows_(sheet, count);
+}
+
 function handleReport(data, sheetId) {
   SpreadsheetApp.flush();
 
   var customerTz = getCustomerTimeZone_(data.sheetId || sheetId);
   var sheet = getOrCreateSheet(data.sheetId || sheetId);
-  var allData = sheet.getDataRange().getValues();
+  var allData = _readReportRows_(sheet, data);
 
   var cols = resolveColumns(allData, [
     'Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name',
@@ -2001,6 +2138,9 @@ function handleStatusUpdate(data) {
     }
   }
 
+  var response = null;
+  var pendingEmail = null; // { to, cardNo, visitorName, visitorNumber } — enqueued after the lock
+
   try {
     for (var i = 1; i < values.length; i++) {
       var vn = String(values[i][visitorNumberIdx] || '').trim();
@@ -2016,13 +2156,16 @@ function handleStatusUpdate(data) {
           var signOutResult = _signOutVisitor_(data.sheetId, visitorNumber);
 
           if (signOutResult.outcome === 'already_signed_out') {
-            return jsonResponse({ status: 'error', message: 'Visitor already signed out.', visitorNumber: visitorNumber }, 409);
+            response = jsonResponse({ status: 'error', message: 'Visitor already signed out.', visitorNumber: visitorNumber }, 409);
+            break;
           }
           if (signOutResult.outcome === 'not_checked_in') {
-            return jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
+            response = jsonResponse({ status: 'error', message: 'Visitor must be checked in before signing out.', visitorNumber: visitorNumber }, 409);
+            break;
           }
           if (signOutResult.outcome === 'not_found') {
-            return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+            response = jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+            break;
           }
 
           var responseData = {
@@ -2034,13 +2177,15 @@ function handleStatusUpdate(data) {
             responseData.cardNo = signOutResult.cardNo;
           }
 
-          return jsonResponse(responseData, 200);
+          response = jsonResponse(responseData, 200);
+          break;
         }
 
         // ── CHECK-IN / REJECT PATH ──
         // Idempotency guard — prevent re-processing
         if (currentStatus === 'Checked In' || currentStatus === 'Rejected' || currentStatus === 'Signed Out') {
-          return jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
+          response = jsonResponse({ status: 'error', message: 'Visitor already processed. Current status: ' + currentStatus }, 409);
+          break;
         }
 
         // Update Status, Sign-In Time, and clear Sign-Out Time at resolved indices.
@@ -2066,11 +2211,15 @@ function handleStatusUpdate(data) {
           result.selfieUrl = String(values[i][selfieIdx] || '').trim();
 
           try {
-            var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, email, data.sheetId);
+            var cardResult = assignCardForVisitor(visitorNumber, fullName, destination, data.sheetId);
             if (cardResult) {
               result.cardNo = cardResult.cardNo;
               result.cardQRUrl = cardResult.cardQRUrl;
               result.cardStatus = cardResult.status;
+              if (cardResult.cardNo && email) {
+                // Defer the card email to AFTER the lock (fire-and-forget queue).
+                pendingEmail = { to: email, cardNo: cardResult.cardNo, visitorName: fullName, visitorNumber: visitorNumber };
+              }
             }
           } catch (cardErr) {
             console.warn('Card assignment failed: ' + cardErr.message);
@@ -2086,16 +2235,33 @@ function handleStatusUpdate(data) {
           }
         }
 
-        return jsonResponse(result, 200);
+        response = jsonResponse(result, 200);
+        break;
       }
     }
 
-    return jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+    if (response === null) {
+      response = jsonResponse({ status: 'notfound', message: 'Visitor number not found: ' + visitorNumber }, 404);
+    }
   } finally {
     if (lock) {
       lock.releaseLock();
     }
   }
+
+  // ── Email enqueue OUTSIDE the lock ──
+  // The card-assignment email is fire-and-forget via the EmailQueue (deferred
+  // delivery). It runs after releaseLock() so queue/GmailApp I/O never extends
+  // the critical section that serializes card allocation.
+  if (pendingEmail) {
+    try {
+      sendCardAssignmentEmail(pendingEmail.to, pendingEmail.cardNo, pendingEmail.visitorName, pendingEmail.visitorNumber, data.sheetId);
+    } catch (emailErr) {
+      console.warn('Card assignment email enqueue failed for ' + pendingEmail.visitorNumber + ': ' + emailErr.message);
+    }
+  }
+
+  return response;
 }
 
 // ──────────────────────────────────────────────
@@ -2352,11 +2518,171 @@ function sendEmailThroughBridge(opts) {
   }
 }
 
+// ══════════════════════════════════════════════
+// EMAIL QUEUE (deferred delivery)
+// ══════════════════════════════════════════════
+//
+// Registration and check-in emails are no longer sent inline in the request
+// path (GmailApp costs 600ms–1.2s per send). Instead they are appended to a
+// hidden PER-CUSTOMER 'EmailQueue' tab and delivered by a 2-minute time-driven
+// sweep (runEmailQueueSweep). This returns HTTP 200 immediately and isolates
+// the consumer-account quota (100/day) from request bursts.
+//
+// The queue is per-customer (each sheet copy has its own EmailQueue tab), so
+// the header list has no sheetId column — the parent sheet identifies the
+// customer. Schema is header-name resolved like every other tab. The HTML body
+// is stored in the 'Body' column and reconstructed as `htmlBody` on send.
+
+var EMAIL_QUEUE_SHEET_NAME = 'EmailQueue';
+var EMAIL_QUEUE_HEADERS = ['Timestamp', 'Type', 'To', 'Subject', 'Body', 'Status', 'Attempts', 'LastError'];
+var EMAIL_QUEUE_MAX_ATTEMPTS = 3;
+
+/**
+ * Get (or create) the hidden EmailQueue tab on a customer spreadsheet.
+ *
+ * @param {Spreadsheet} ss - Open customer spreadsheet handle
+ * @returns {Sheet|null} The EmailQueue tab, or null if it cannot be created
+ */
+function getOrCreateEmailQueue_(ss) {
+  var tab = ss.getSheetByName(EMAIL_QUEUE_SHEET_NAME);
+  if (tab) return tab;
+  try {
+    tab = ss.insertSheet(EMAIL_QUEUE_SHEET_NAME);
+    tab.getRange(1, 1, 1, EMAIL_QUEUE_HEADERS.length).setValues([EMAIL_QUEUE_HEADERS]);
+    tab.getRange(1, 1, 1, EMAIL_QUEUE_HEADERS.length).setFontWeight('bold');
+    tab.setFrozenRows(1);
+    tab.hideSheet();
+    return tab;
+  } catch (e) {
+    console.warn('getOrCreateEmailQueue_: could not create EmailQueue tab: ' + e.message);
+    return null;
+  }
+}
+
+/**
+ * Enqueue an email for deferred delivery. Appends a PENDING row to the
+ * customer's EmailQueue tab. If the tab cannot be created (or any enqueue
+ * write fails), falls back to a synchronous send so the email is never lost.
+ *
+ * @param {string} sheetId - Customer sheet ID (identifies the EmailQueue tab)
+ * @param {string} type - 'registration' | 'card' (diagnostic only)
+ * @param {string} to - Recipient address
+ * @param {string} subject - Subject line
+ * @param {string} htmlBody - HTML body (stored in the 'Body' column)
+ */
+function enqueueEmail(sheetId, type, to, subject, htmlBody) {
+  if (!to) return; // no recipient — nothing to deliver
+  try {
+    var ss = _openSheetCached(sheetId);
+    var tab = getOrCreateEmailQueue_(ss);
+    if (tab) {
+      tab.appendRow([new Date(), type, to, subject, htmlBody, 'PENDING', 0, '']);
+      return;
+    }
+  } catch (e) {
+    console.warn('enqueueEmail: could not enqueue — falling back to synchronous send: ' + e.message);
+  }
+  // Synchronous fallback — email is never lost if the queue is unavailable.
+  try {
+    sendEmailThroughBridge({ to: to, subject: subject, htmlBody: htmlBody });
+  } catch (syncErr) {
+    console.warn('enqueueEmail: synchronous fallback send also failed: ' + syncErr.message);
+  }
+}
+
+/**
+ * Sweep one customer's EmailQueue tab: deliver every PENDING row, marking SENT
+ * on success or incrementing Attempts (→ FAILED after EMAIL_QUEUE_MAX_ATTEMPTS).
+ * Sends are fire-and-forget per row; no LockService is held here.
+ *
+ * @param {string} sheetId - Customer sheet ID
+ * @returns {{sent: number, failed: number}}
+ */
+function _sweepEmailQueueForSheet_(sheetId) {
+  var sent = 0;
+  var failed = 0;
+  var ss = SpreadsheetApp.openById(sheetId);
+  var tab = ss.getSheetByName(EMAIL_QUEUE_SHEET_NAME);
+  if (!tab) return { sent: 0, failed: 0 };
+
+  var data = tab.getDataRange().getValues();
+  var cols = resolveColumns(data, EMAIL_QUEUE_HEADERS);
+  var toIdx = cols['To'];
+  var subjectIdx = cols['Subject'];
+  var bodyIdx = cols['Body'];
+  var statusIdx = cols['Status'];
+  var attemptsIdx = cols['Attempts'];
+  var lastErrorIdx = cols['LastError'];
+  if (toIdx === -1 || statusIdx === -1) {
+    console.warn('_sweepEmailQueueForSheet_: EmailQueue missing To/Status headers for ' + sheetId + ' — skipping');
+    return { sent: 0, failed: 0 };
+  }
+
+  for (var i = 1; i < data.length; i++) {
+    var status = String(data[i][statusIdx] || '').trim().toUpperCase();
+    if (status !== 'PENDING') continue;
+
+    var to = String(data[i][toIdx] || '').trim();
+    var subject = String(subjectIdx !== -1 ? data[i][subjectIdx] : '').trim();
+    var body = bodyIdx !== -1 ? data[i][bodyIdx] : '';
+
+    if (!to) {
+      // No recipient — mark FAILED so it never loops forever.
+      tab.getRange(i + 1, statusIdx + 1).setValue('FAILED');
+      if (lastErrorIdx !== -1) tab.getRange(i + 1, lastErrorIdx + 1).setValue('Missing recipient');
+      failed++;
+      continue;
+    }
+
+    var attempts = attemptsIdx !== -1 ? (parseInt(String(data[i][attemptsIdx] || '0'), 10) || 0) : 0;
+    try {
+      sendEmailThroughBridge({ to: to, subject: subject, htmlBody: body });
+      tab.getRange(i + 1, statusIdx + 1).setValue('SENT');
+      sent++;
+    } catch (e) {
+      attempts++;
+      var newStatus = attempts < EMAIL_QUEUE_MAX_ATTEMPTS ? 'PENDING' : 'FAILED';
+      tab.getRange(i + 1, statusIdx + 1).setValue(newStatus);
+      if (attemptsIdx !== -1) tab.getRange(i + 1, attemptsIdx + 1).setValue(attempts);
+      if (lastErrorIdx !== -1) tab.getRange(i + 1, lastErrorIdx + 1).setValue(String(e.message || '').substring(0, 500));
+      failed++;
+    }
+  }
+
+  return { sent: sent, failed: failed };
+}
+
+/**
+ * Time-driven sweep (every 2 minutes): deliver pending queue emails across all
+ * customer sheets. Fire-and-forget per row — no LockService is held so a slow
+ * send never blocks the hourly autoSignOut / daily maintenance triggers.
+ */
+function runEmailQueueSweep() {
+  var config = _loadMasterConfig();
+  var sheetIds = Object.keys(config);
+  var totalSent = 0;
+  var totalFailed = 0;
+  for (var s = 0; s < sheetIds.length; s++) {
+    var sheetId = sheetIds[s];
+    if (!sheetId) continue;
+    try {
+      var res = _sweepEmailQueueForSheet_(sheetId);
+      totalSent += res.sent;
+      totalFailed += res.failed;
+    } catch (e) {
+      console.warn('runEmailQueueSweep: error for sheet ' + sheetId + ': ' + e.message);
+    }
+  }
+  if (totalSent > 0 || totalFailed > 0) {
+    console.log('runEmailQueueSweep: sent=' + totalSent + ' failed=' + totalFailed + ' across ' + sheetIds.length + ' sheet(s)');
+  }
+}
+
 /**
  * Send email confirmation via MailApp.sendEmail().
  * MailApp is a built-in Apps Script service — no setup, no tokens needed.
  */
-function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType) {
+function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType, sheetId) {
   var subject = 'LITEVM — Visitor Registration Confirmation';
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(visitorNumber);
 
@@ -2398,13 +2724,9 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  sendEmailThroughBridge({
-    to: toEmail,
-    subject: subject,
-    htmlBody: htmlBody,
-  });
+  enqueueEmail(sheetId, 'registration', toEmail, subject, htmlBody);
 
-  console.log('Email confirmation sent to ' + toEmail);
+  console.log('Email confirmation queued for ' + toEmail);
 }
 
 // ──────────────────────────────────────────────
@@ -2650,16 +2972,17 @@ function assignCard(cardNo, visitorNumber, visitorName, sheetId) {
 }
 
 /**
- * Orchestrator: ties together access level lookup → card picking → assignment → email.
- * Called from handleStatusUpdate when a visitor is checked in.
+ * Orchestrator: ties together access level lookup → card picking → assignment.
+ * Called from handleStatusUpdate when a visitor is checked in. Email dispatch
+ * is handled by the caller (outside the lock) via sendCardAssignmentEmail.
  *
  * @param {string} visitorNumber
  * @param {string} fullName
  * @param {string} destination
- * @param {string} email
+ * @param {string} sheetId
  * @returns {{ cardNo: string|null, cardQRUrl: string|null, status: string }}
  */
-function assignCardForVisitor(visitorNumber, fullName, destination, email, sheetId) {
+function assignCardForVisitor(visitorNumber, fullName, destination, sheetId) {
   // 1. Resolve access level and door group from the visitor's destination
   var accessLevel = getAccessLevelForDestination(destination, sheetId);
   var doorGroupId = getDoorGroupIdForDestination(destination, sheetId);
@@ -2681,14 +3004,6 @@ function assignCardForVisitor(visitorNumber, fullName, destination, email, sheet
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data='
             + encodeURIComponent(cardNo);
 
-  // 5. Send email as backup (non-blocking — card is already assigned)
-  try {
-    sendCardAssignmentEmail(email, cardNo, fullName, visitorNumber);
-  } catch (emailErr) {
-    console.warn('Card assignment email failed for ' + visitorNumber + ': ' + emailErr.message);
-    // Email failure does not roll back — the card is assigned and guard portal shows it
-  }
-
   return { cardNo: cardNo, cardQRUrl: qrUrl, status: 'assigned' };
 }
 
@@ -2701,7 +3016,7 @@ function assignCardForVisitor(visitorNumber, fullName, destination, email, sheet
  * @param {string} visitorName — Visitor's full name
  * @param {string} visitorNumber — Original visitor number (for subject line only)
  */
-function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
+function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber, sheetId) {
   var subject = 'Your Access Card — ' + visitorNumber;
   var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data='
             + encodeURIComponent(cardNo);
@@ -2741,13 +3056,9 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber) {
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  sendEmailThroughBridge({
-    to: toEmail,
-    subject: subject,
-    htmlBody: htmlBody,
-  });
+  enqueueEmail(sheetId, 'card', toEmail, subject, htmlBody);
 
-  console.log('Card assignment email sent to ' + toEmail + ' for card ' + cardNo);
+  console.log('Card assignment email queued for ' + toEmail + ' for card ' + cardNo);
 }
 
 // ══════════════════════════════════════════════
@@ -4452,10 +4763,11 @@ function _migrateMasterConfigV4() {
 /**
  * One-shot auto-install: migrates the master config schema (timezone +
  * retentionDays + expiryDate + expiryWarningDays headers), then ensures the
- * HOURLY auto sign-out trigger, the daily card release trigger (02:00), and
- * the daily maintenance trigger (02:05, which runs retention purge + expiry
- * pass) exist. Uses a versioned ScriptProperties flag so it automatically
- * reinstalls if the trigger schema changes.
+ * HOURLY auto sign-out trigger, the daily card release trigger (02:00), the
+ * daily maintenance trigger (02:05, which runs retention purge + expiry pass),
+ * and the 2-minute email-queue sweep trigger exist. Uses a versioned
+ * ScriptProperties flag so it automatically reinstalls if the trigger schema
+ * changes.
  * Called automatically from doGet and doPost on first request after deploy.
  */
 function ensureTriggersInstalled() {
@@ -4465,32 +4777,36 @@ function ensureTriggersInstalled() {
   _migrateMasterConfigV4();
 
   var prop = PropertiesService.getScriptProperties();
-  // Schema version — bump this if trigger type/interval changes
-  var SCHEMA_VERSION = 'v9';
+  // Schema version — bump this if trigger type/interval changes (v10 adds the
+  // 2-minute email-queue sweep).
+  var SCHEMA_VERSION = 'v10';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
   var triggers = ScriptApp.getProjectTriggers();
   var hasAutoSignOut = false;
   var hasDailyRelease = false;
   var hasDailyMaintenance = false;
+  var hasEmailSweep = false;
   for (var ti = 0; ti < triggers.length; ti++) {
     var fn = triggers[ti].getHandlerFunction();
     if (fn === 'autoSignOut') hasAutoSignOut = true;
     if (fn === 'releaseDailyCards') hasDailyRelease = true;
     if (fn === 'runDailyMaintenance') hasDailyMaintenance = true;
+    if (fn === 'runEmailQueueSweep') hasEmailSweep = true;
   }
-  // If schema matches AND all three required triggers exist, skip
-  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasDailyMaintenance) {
+  // If schema matches AND all four required triggers exist, skip
+  if (prop.getProperty('TRIGGER_SCHEMA_VERSION') === SCHEMA_VERSION && hasAutoSignOut && hasDailyRelease && hasDailyMaintenance && hasEmailSweep) {
     return;
   }
 
   // Delete ALL existing autoSignOut + releaseDailyCards + runDailyMaintenance +
-  // syncAutoSignOutHours triggers. The legacy 'runRetention' trigger is also
-  // removed here so old deployments get it replaced by runDailyMaintenance.
+  // runEmailQueueSweep + syncAutoSignOutHours triggers. The legacy 'runRetention'
+  // trigger is also removed here so old deployments get it replaced by
+  // runDailyMaintenance.
   triggers = ScriptApp.getProjectTriggers();
   for (var i = triggers.length - 1; i >= 0; i--) {
     var fn = triggers[i].getHandlerFunction();
-    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'runRetention' || fn === 'runDailyMaintenance' || fn === 'syncAutoSignOutHours') {
+    if (fn === 'autoSignOut' || fn === 'releaseDailyCards' || fn === 'runRetention' || fn === 'runDailyMaintenance' || fn === 'syncAutoSignOutHours' || fn === 'runEmailQueueSweep') {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
@@ -4524,6 +4840,15 @@ function ensureTriggersInstalled() {
     .everyDays(1)
     .create();
   console.log('ensureTriggersInstalled: Installed runDailyMaintenance trigger at 02:05');
+
+  // Install the 2-minute email-queue sweep. Fire-and-forget per row — the sweep
+  // does NOT hold the script lock, so a slow GmailApp send can't contend with
+  // autoSignOut / releaseDailyCards / runDailyMaintenance.
+  ScriptApp.newTrigger('runEmailQueueSweep')
+    .timeBased()
+    .everyMinutes(2)
+    .create();
+  console.log('ensureTriggersInstalled: Installed runEmailQueueSweep trigger every 2 minutes');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);

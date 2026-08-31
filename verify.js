@@ -62,29 +62,87 @@
     });
   }
 
+  // ──────────────────────────────────────────────
+  // LOCALSTORAGE METADATA CACHE (4h TTL)
+  // ──────────────────────────────────────────────
+  var CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+  function cacheKey(name) {
+    return 'litevm:' + CONFIG.SHEET_ID + ':' + name;
+  }
+
+  function readCacheFresh(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      if (!entry || typeof entry.fetchedAt !== 'number') return null;
+      if (Date.now() - entry.fetchedAt > CACHE_TTL_MS) return null;
+      return entry.data;
+    } catch (e) { return null; }
+  }
+
+  function readCacheStale(name) {
+    try {
+      var raw = localStorage.getItem(cacheKey(name));
+      if (!raw) return null;
+      var entry = JSON.parse(raw);
+      return entry && entry.data !== undefined ? entry.data : null;
+    } catch (e) { return null; }
+  }
+
+  function writeCache(name, data) {
+    try {
+      localStorage.setItem(cacheKey(name), JSON.stringify({ data: data, fetchedAt: Date.now() }));
+    } catch (e) { /* storage full / privacy mode — ignore */ }
+  }
+
   /** Fetch guard PIN and settings from GAS, store in memory. Returns a promise. */
   var _guardPin = '1234'; // fallback
   var _actEnabled = false; // ACTApi door access entitlement
   var _lastConfigData = null; // cached config response for expiry banner
 
+  function _applyConfig(data) {
+    _lastConfigData = data;
+    if (data && data.status === 'ok' && data.guardPin) {
+      _guardPin = data.guardPin;
+    }
+    // Store ACTApi entitlement flag from server
+    if (data && typeof data.actEnabled === 'boolean') {
+      _actEnabled = data.actEnabled;
+    }
+  }
+
   function fetchSheetConfig() {
+    // Serve a fresh (≤4h) cached config first to skip the GAS round-trip on
+    // kiosk reloads. Only SUCCESS responses are cached — an error/expired body
+    // is never written, so the expiry banner still sees the live error.
+    var cached = readCacheFresh('config');
+    if (cached) {
+      _applyConfig(cached);
+      return Promise.resolve(cached);
+    }
+
     return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        _lastConfigData = data;
-        if (data && data.status === 'ok' && data.guardPin) {
-          _guardPin = data.guardPin;
+        _applyConfig(data);
+        if (data && data.status === 'ok') {
+          writeCache('config', data); // cache SUCCESS only
         }
-        // Store ACTApi entitlement flag from server
-        if (data && typeof data.actEnabled === 'boolean') {
-          _actEnabled = data.actEnabled;
-        }
+        return data;
       })
       .catch(function () {
-        // GAS unreachable — fallback to config.js value
+        // GAS unreachable — fall back to stale cache, else config.js values.
+        var stale = readCacheStale('config');
+        if (stale) {
+          _applyConfig(stale);
+          return stale;
+        }
         _lastConfigData = null;
         _guardPin = CONFIG.GUARD_PIN || '1234';
         _actEnabled = false;
+        return null;
       });
   }
 
