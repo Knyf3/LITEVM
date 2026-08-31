@@ -4778,7 +4778,7 @@ function ensureTriggersInstalled() {
 
   var prop = PropertiesService.getScriptProperties();
   // Schema version — bump this if trigger type/interval changes (v10 adds the
-  // 2-minute email-queue sweep).
+  // 1-minute email-queue sweep; everyMinutes(2) is NOT a valid GAS interval).
   var SCHEMA_VERSION = 'v10';
 
   // Check if required triggers physically exist (handles redeploy clearing them)
@@ -4841,14 +4841,16 @@ function ensureTriggersInstalled() {
     .create();
   console.log('ensureTriggersInstalled: Installed runDailyMaintenance trigger at 02:05');
 
-  // Install the 2-minute email-queue sweep. Fire-and-forget per row — the sweep
-  // does NOT hold the script lock, so a slow GmailApp send can't contend with
-  // autoSignOut / releaseDailyCards / runDailyMaintenance.
+  // Install the 1-minute email-queue sweep. GAS everyMinutes() only accepts
+  // 1, 5, 10, 15, 30 — 2 is REJECTED at runtime (verified live 2026-08-31).
+  // Fire-and-forget per row — the sweep does NOT hold the script lock, so a slow
+  // GmailApp send can't contend with autoSignOut / releaseDailyCards /
+  // runDailyMaintenance.
   ScriptApp.newTrigger('runEmailQueueSweep')
     .timeBased()
-    .everyMinutes(2)
+    .everyMinutes(1)
     .create();
-  console.log('ensureTriggersInstalled: Installed runEmailQueueSweep trigger every 2 minutes');
+  console.log('ensureTriggersInstalled: Installed runEmailQueueSweep trigger every 1 minute');
 
   // Mark current schema version
   prop.setProperty('TRIGGER_SCHEMA_VERSION', SCHEMA_VERSION);
