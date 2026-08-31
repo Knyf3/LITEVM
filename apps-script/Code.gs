@@ -4712,8 +4712,9 @@ function sendExpiryAlertEmail(disabledLines, warningLines, dryRun) {
 
 /**
  * Daily maintenance wrapper (time-driven trigger at 02:05). Runs retention
- * purge first, then the expiry pass. Replaces the old runRetention trigger so
- * the trigger count stays at 3 (autoSignOut, releaseDailyCards, and this one).
+ * purge first, then the expiry pass. Replaces the old runRetention trigger; the
+ * trigger set is now 4 (autoSignOut hourly, releaseDailyCards 02:00, this one at
+ * 02:05, and runEmailQueueSweep every 5 min).
  */
 function runDailyMaintenance() {
   runRetention(false);
