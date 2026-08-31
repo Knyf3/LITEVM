@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.16.2';  // Increment this to track deployed versions
+var CODE_VERSION = '1.17.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: when set, scripted confirmations route through GmailApp with this
 // sender identity instead of MailApp. MailApp scripted sends are silently dropped at
@@ -4531,8 +4531,10 @@ function runRetention(dryRun) {
  * expiryDate on every request, so the status write here is only a persisted
  * fallback for downstream consumers that read status directly.
  *
- * Audit only: results go to the ExpiryLog tab. EXPIRY_ALERT_EMAIL is deferred
- * to v1.16.0 — no email is sent in this version.
+ * Audit only: results go to the ExpiryLog tab. EXPIRY_ALERT_EMAIL (Script
+ * Property) recipients receive a consolidated daily alert when customers are
+ * newly disabled or entering the warning window. Blank property = feature
+ * OFF. Email is sent OUTSIDE the lock.
  *
  * @param {boolean} [dryRun] - When true, scan + log only; skip status writes.
  */
@@ -4547,6 +4549,11 @@ function runExpiry(dryRun) {
     console.warn('runExpiry: Could not acquire lock — another instance is running, skipping');
     return;
   }
+
+  // Accumulated at function scope (NOT inside try) so the post-finally call
+  // below can read them even after a mid-loop exception.
+  var newlyDisabledLines = [];
+  var warningLines = [];
 
   try {
     var masterConfig = _loadMasterConfig();
@@ -4575,6 +4582,7 @@ function runExpiry(dryRun) {
             previousStatus: 'active'
           });
           disabledCount++;
+          newlyDisabledLines.push({ sid: sid, expiryDate: customer.expiryDate, remainingDays: expiryInfo.remainingDays });
         } else {
           // Already 'disabled'/'paused' (or operator-disabled) — NEVER touch status.
           logExpiry_({
@@ -4596,6 +4604,7 @@ function runExpiry(dryRun) {
           previousStatus: customer.status
         });
         warnedCount++;
+        warningLines.push({ sid: sid, expiryDate: customer.expiryDate, remainingDays: expiryInfo.remainingDays });
       }
       // 'active' / 'none' → no log row (signal-to-noise).
     }
@@ -4609,6 +4618,95 @@ function runExpiry(dryRun) {
     console.log('runExpiry: Run complete — ' + disabledCount + ' disabled, ' + warnedCount + ' warned, ' + alreadyCount + ' already-disabled' + (dryRun ? ' (dry run)' : ''));
   } finally {
     lock.releaseLock();
+  }
+
+  // Send the consolidated daily alert OUTSIDE the lock (GmailApp send can take
+  // ~1s; the lock is already released above so a slow send never blocks the
+  // next trigger tick).
+  sendExpiryAlertEmail(newlyDisabledLines, warningLines, dryRun);
+}
+
+/**
+ * Send the consolidated daily expiry alert to the EXPIRY_ALERT_EMAIL (Script
+ * Property) recipients — ONE email per day, sent OUTSIDE the runExpiry lock.
+ * Lists customers newly disabled (expired overnight) and those entering the
+ * warning window. Blank property = feature OFF (no email, zero cost). Silent
+ * day (nothing disabled/warned) = no email. dryRun = log what WOULD be sent,
+ * never send.
+ *
+ * @param {Array<Object>} disabledLines - { sid, expiryDate, remainingDays }
+ * @param {Array<Object>} warningLines - { sid, expiryDate, remainingDays }
+ * @param {boolean} [dryRun] - When true, log only; never send.
+ */
+function sendExpiryAlertEmail(disabledLines, warningLines, dryRun) {
+  var recipientEmail = PropertiesService.getScriptProperties().getProperty('EXPIRY_ALERT_EMAIL') || '';
+  if (!recipientEmail.trim()) return; // feature OFF — blank property, zero cost
+
+  if (disabledLines.length === 0 && warningLines.length === 0) return; // silent day
+
+  // Most urgent first (ascending remainingDays: most overdue → most negative).
+  var byRemainingAsc = function (a, b) { return a.remainingDays - b.remainingDays; };
+  disabledLines.sort(byRemainingAsc);
+  warningLines.sort(byRemainingAsc);
+
+  var dateStr = new Date().toLocaleDateString('en-GB'); // e.g. 01/09/2026
+
+  var parts = [];
+  if (disabledLines.length) parts.push(disabledLines.length + ' disabled');
+  if (warningLines.length) parts.push(warningLines.length + ' expiring');
+  var subject = '[LITEVM] Expiry Alert — ' + parts.join(', ') + ' (' + dateStr + ')';
+
+  var sep = '================================================';
+  var lines = [];
+  lines.push(sep);
+  lines.push('LITEVM Daily Expiry Report — ' + dateStr);
+  lines.push(sep);
+  lines.push('');
+
+  if (disabledLines.length) {
+    lines.push('NEWLY DISABLED (expired overnight — action may be required):');
+    lines.push('');
+    for (var i = 0; i < disabledLines.length; i++) {
+      lines.push('  sheetId: ' + disabledLines[i].sid + '   expiryDate: ' + disabledLines[i].expiryDate + '   days: ' + disabledLines[i].remainingDays);
+    }
+    lines.push('');
+  }
+
+  if (warningLines.length) {
+    lines.push('EXPIRING SOON (within warning window — renew before expiry):');
+    lines.push('');
+    for (var j = 0; j < warningLines.length; j++) {
+      lines.push('  sheetId: ' + warningLines[j].sid + '   expiryDate: ' + warningLines[j].expiryDate + '   days remaining: ' + warningLines[j].remainingDays);
+    }
+    lines.push('');
+  }
+
+  lines.push('Generated by runExpiry at 02:05. No action needed for customers already');
+  lines.push('paused or operator-disabled before this run.');
+  lines.push(sep);
+
+  var plainTextBody = lines.join('\n');
+
+  // HTML twin: same content with \n -> <br> and dynamic fields escaped. Static
+  // section text contains no & < > " so escaping whole lines is equivalent.
+  var htmlBody = lines.map(escapeHtml).join('<br>');
+
+  if (dryRun) {
+    console.log('[dryRun] sendExpiryAlertEmail: WOULD send to ' + recipientEmail + ' — subject: ' + subject);
+    return;
+  }
+
+  try {
+    sendEmailThroughBridge({
+      to: recipientEmail,
+      subject: subject,
+      body: plainTextBody,
+      htmlBody: htmlBody,
+      name: 'LITEVM Expiry Monitor'
+    });
+    console.log('sendExpiryAlertEmail: sent to ' + recipientEmail);
+  } catch (e) {
+    console.error('sendExpiryAlertEmail: send failed — ' + e.message);
   }
 }
 
