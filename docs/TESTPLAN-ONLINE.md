@@ -36,6 +36,13 @@ GAS POST returns 302 to `script.googleusercontent.com` — the follow-up MUST be
 GET (curl `-L` handles it). Never `--post302` / `-X POST` on hop 2. Content-Type
 must be `text/plain` (avoids preflight). Always print HTTP code + latency.
 
+**POST vocabulary (verified live 2026-09-06, v1.18.0):**
+- **Registration**: POST with NO `mode` (no-mode falls through to registration). Requires `fullName, idNumber, company, destination, visitorType, visitationDate, phone, email, idPhoto` (base64), `selfie` (base64). Status written = **`Pending Entry`**.
+- **Status changes**: POST `mode:"updateStatus"` + `visitorNumber` + `status` (`Checked In` / `Rejected` / `Signed Out`). Visitor fields are read from the sheet row, not the payload.
+- **Admin/ops**: `mode` values `bulkSignOut`, `runRetention`, `retentionDryRun`, `runExpiry`, `expiryDryRun`, `signOutByCard`, `assignedCards`, `testEmail`, `migrate`, `issueLicense`, `setupAutoSignOut`.
+- **Reads**: GET `action=health|config|today|destinations|visitorTypes|cardpool|lookup|lookupByCard|allowance` + `?sheetId=`. Health and config are **tenant-scoped** (no sheetId → "Customer identifier required").
+- **Visitor numbering is deployment-global**: `V-YYYYMMDD-NNN` counter lives in Script Properties, shared by ALL tenants on the deployment — tenant A and tenant B share the same daily sequence (isolation applies to rows, not numbers).
+
 ---
 
 ## 1. Suites & test cases
@@ -46,6 +53,26 @@ ID scheme: `T<suite>-<n>`. Expected values assume canonical sheet headers
 **Run order:** for a **brand-new tenant**, execute **T11 (onboarding) first** —
 it creates/commissions the tenant sheet and Pages repo — then T1–T9 against the
 fresh sheet. For an existing tenant, start at T0/T1.
+
+## Rehearsal log & corrections (live run 2026-09-06, deployed v1.18.0)
+
+Executed end-to-end by Hermes as `LITEVM@itt.web.id` (owner identity) against the
+live deployment. **Passed**: T0-1/3/4 (health/config tenant-scoped), T11-1 (fresh
+copy structure), T11-4/5 (master registration + defaults), T2-1/2 (registration
+→ `Pending Entry`, all 15 columns written correctly incl. Destination/Visitor
+Type), T3-3 (check-in assigned card **5001** from the BCA → DoorGroup 2 block),
+T4-1 (sign-out released card, **DoorGroupID col survived**), T11-10 (isolation:
+demo `today` vs QA `today` showed zero leakage).
+
+**Corrections this run fed into the plan:**
+1. Health/config are tenant-scoped (T0-1 patched).
+2. Registration status literal is **`Pending Entry`**, not Registered (T2-1 patched).
+3. POST vocabulary is `mode`-driven — registration = NO mode; status = `mode:"updateStatus"` (T3/T4 patched). Sending `action:"updateStatus"` silently falls through to registration → "Missing required field: fullName".
+4. Visitor numbering is **deployment-global** daily sequence (Script Properties), not per-tenant.
+5. Master-config cache: a newly appended tenant row was visible **immediately** (cache had expired); worst case the 5-min TTL applies — poll `config` up to ~6 min.
+6. Fresh copies of an updated template already carry `_version = SHEET_VERSION` → migrations no-op (idempotent). Migration-on-first-touch only fires for legacy sheets below current version.
+7. **Pages activation (T11-9) is a manual UI step** — the GitHub token lacks Pages write scope (403 on the Pages API). Repo scaffold + `config.js` wiring automatable; flipping on Pages stays click-through (Settings → Pages → main), matching real onboarding.
+8. **Template upgraded**: the canonical `LITEVM-TEMPLATE` (same file id `199JdWHZZ…`) was rebuilt from the working demo tenant, scrubbed — VisitorLog/EmailQueue emptied, cardno 215 × `Available` (DoorGroupID blocks kept), destinations + visitor types retained, `guardPin` reset to 1234, **`ustarSecret` blanked** (never ship a tenant secret in a template). Future onboarding copies start populated, not bare.
 
 ### T0 — Deployment sanity
 
@@ -73,7 +100,7 @@ fresh sheet. For an existing tenant, start at T0/T1.
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
-| T2-1 | Register happy path | POST `registration` with full valid payload (name, ID, company, destination from the Destination tab, visitor type, visitation date = today, phone, email) | `status:"ok"`, visitor number returned; `Status` = Registered |
+| T2-1 | Register happy path | POST **without `mode`** with full valid payload (name, ID, company, destination from the Destination tab, visitor type, visitation date = today, phone, email, `idPhoto` + `selfie` base64 — both mandatory) | `status:"ok"`, visitor number returned; `Status` = **`Pending Entry`** |
 | T2-2 | Row written correctly | Read back the sheet row (by visitor number) | All fields in the CORRECT columns (esp. Destination idx 4, Visitor Type idx 5 — the old drift bug); no empty destination/visitorType |
 | T2-3 | Duplicate-ish ID accepted/rejected per design | Register second visitor with same ID number | Matches documented behaviour (record the outcome; flag if it silently overwrites) |
 | T2-4 | Photo upload | Register with ID photo + selfie | Drive URLs stored in the correct columns; files openable |
@@ -84,9 +111,9 @@ fresh sheet. For an existing tenant, start at T0/T1.
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
-| T3-1 | Lookup by visitor number | POST/GET `lookup` for a Registered QA visitor | Row returned with correct destination/visitorType/status |
+| T3-1 | Lookup by visitor number | GET `action=lookup&visitorNumber=` for a Pending Entry QA visitor | Row returned with correct destination/visitorType/status |
 | T3-2 | Lookup by card | After assignment, GET `lookupByCard` | Matches the visitor |
-| T3-3 | Check-in happy path | POST `updateStatus` → `Checked In` for a QA visitor whose destination maps to a door group | `status:"ok"`; card assigned from the CORRECT door-group block; cardno row = `Assigned` + AssignedTo = visitor number |
+| T3-3 | Check-in happy path | POST `mode:"updateStatus"` + `status:"Checked In"` for a QA visitor whose destination maps to a door group | `status:"ok"`; card assigned from the CORRECT door-group block; cardno row = `Assigned` + AssignedTo = visitor number |
 | T3-4 | Card pool decremented | Re-run `cardpool` | Correct count; the specific card shows `Assigned` |
 | T3-5 | No cross-group steal | Check in a second visitor whose destination maps to a different door group | Card comes from that group's block, not an Assigned card from another group |
 | T3-6 | Reject path | POST `updateStatus` → `Rejected` for a fresh visitor | Status `Rejected`; no card assigned; row consistent |
@@ -96,9 +123,9 @@ fresh sheet. For an existing tenant, start at T0/T1.
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
-| T4-1 | Sign-out by visitor | POST `updateStatus` → `Signed Out` for a Checked-In QA visitor | Status flips; card returns `Available`; AssignedTo/AssignedAt cleared; **DoorGroupID column preserved** |
+| T4-1 | Sign-out by visitor | POST `mode:"updateStatus"` + `status:"Signed Out"` for a Checked-In QA visitor | Status flips; card returns `Available`; AssignedTo/AssignedAt cleared; **DoorGroupID column preserved** |
 | T4-2 | Card reusable | Check in another QA visitor right after T4-1 | The freed card (or an Available one in the group) is assignable |
-| T4-3 | Sign-out of never-checked-in | Attempt sign-out of a Registered-only visitor | Guarded error — must be Checked In first |
+| T4-3 | Sign-out of never-checked-in | Attempt sign-out of a Pending Entry-only visitor | Guarded error — must be Checked In first |
 
 ### T5 — Bulk & auto sign-out
 
