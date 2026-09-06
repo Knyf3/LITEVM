@@ -21,18 +21,19 @@ The frontend is deployed via GitHub Pages at:
 3. Set up the required script properties
 4. Deploy as Web App
 
-### Local Kiosk (Windows, LAN deployment)
-The local verify kiosk is served by LITEVM itself — **not** by ACTApi (ACTApi is API-only since 2026-08-04).
+### Local Verify Kiosk (LAN, ACT/UStar door control)
 
-1. Copy `config/config.local.js` → `config.local.js` (same folder as `verifylocal.html`) and fill in values
-2. Set `ACTApiBase` to the full ACTApi URL (e.g. `http://192.168.2.194:8021`)
-3. On the ACTApi side, set `CorsOrigins` in `Settings/Settings.json` to allow the kiosk origin (e.g. `http://localhost:8123`)
-4. Run `start_kiosk.bat` (double-click, or from cmd) — serves this folder at `http://localhost:8123/`
-5. Open `http://localhost:8123/verifylocal.html`
+The local-network verify kiosk (`verifylocal.html`, guard PIN login, ACT/UStar
+provisioning) is a **separate product repo**: [`Knyf3/verify-kiosk`](https://github.com/Knyf3/verify-kiosk)
+(private, backend-neutral). One `settings.json` points it at ACTApi
+(`ACTApiBase`), UStarAPI (`UStarApiBase`), or both. It is **not** served from
+this repo and **not** packaged in the UStarAPI/ACTApi installers.
 
-Zero dependencies — `start_kiosk.bat` → `serve_local.ps1` (PowerShell's built-in `HttpListener`), no Python/Node needed.
+Deploy: clone the repo on the Windows box → `settings.example.json` →
+`settings.json` → double-click `start_kiosk.bat` → `http://<pc>:8123`.
 
-> **Installer packaging:** this kiosk runtime is also shipped inside the UStarAPI installer (staged at `UStarAPI/Installer/kiosk/`); keep that copy in sync with this folder.
+This repo keeps only the cloud (GitHub Pages) assets — `verify.html` guard
+portal etc. Kiosk development happens in `verify-kiosk` from now on.
 
 > **Full installation guide:** See [`docs/INSTALL.md`](docs/INSTALL.md)
 

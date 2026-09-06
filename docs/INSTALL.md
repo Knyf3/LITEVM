@@ -265,9 +265,15 @@ Clone the files from an existing kiosk repo (e.g. TESTLITEVM2) and customize:
 ├── lang.js          — Language/i18n
 ├── verify.html      — Guard portal
 ├── verify.js        — Guard logic
-├── verifylocal.html — Local-network guard portal (for ACTApi integration)
 └── report.html      — Admin report page
 ```
+
+> **LAN / on-prem door control (ACT or UStar):** the local-network verify kiosk
+> (`verifylocal.html` + `serve_local.ps1`, guard PIN on the LAN) is a separate
+> backend-neutral repo — [`Knyf3/verify-kiosk`](https://github.com/Knyf3/verify-kiosk)
+> (private). It is NOT part of the GitHub Pages kiosk repo. Clone it onto the
+> Windows box, fill `settings.json` (`ACTApiBase` and/or `UStarApiBase`), and run
+> `start_kiosk.bat`.
 
 ### 4B. Configure config.js
 
