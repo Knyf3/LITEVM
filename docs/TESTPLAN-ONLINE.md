@@ -76,6 +76,16 @@ recipient-verified 2026-09-06).
 7. **Pages activation (T11-9) is a manual UI step** — the GitHub token lacks Pages write scope (403 on the Pages API). Repo scaffold + `config.js` wiring automatable; flipping on Pages stays click-through (Settings → Pages → main), matching real onboarding.
 8. **Template upgraded**: the canonical `LITEVM-TEMPLATE` (same file id `199JdWHZZ…`) was rebuilt from the working demo tenant, scrubbed — VisitorLog/EmailQueue emptied, cardno 215 × `Available` (DoorGroupID blocks kept), destinations + visitor types retained, `guardPin` reset to 1234, **`ustarSecret` blanked** (never ship a tenant secret in a template). Future onboarding copies start populated, not bare.
 
+**Second pass (same day, edge/admin suites)** — all passed:
+- **T3-5** cross-group: BCA visitor held 5001 (group 2) while a BRI visitor drew **5021 (group 3)** — no cross-group steal.
+- **T3-6** reject: status `Rejected`, no card assigned. **T3-7** double check-in → `409 Visitor already processed`.
+- **T4-2** reuse: sign-out released 5001 → the next BCA check-in **re-drew 5001**.
+- **T5-3** auto sign-out: with the QA tenant set `autoSignOutEnabled=TRUE` + `autoSignOutHour` = current WIB hour, GET `runAutoSignOut` swept QA's checked-in visitors; the demo tenant (hour 22 ≠ 19) was untouched. Sweep is hour-gated per customer in customer tz.
+- **T5-1** bulk: `mode:"bulkSignOut"` REQUIRES `visitorNumbers` array (the UI sends its selection) — it is NOT an implicit sign-out-all. With the array: both released (5001 again).
+- **T6-1** retention dry-run: old-dated seed row reported/deleted NOTHING (dry-run safe), row survived.
+- **T7** expiry: setting `expiryDate` = yesterday made BOTH `config` and registration return `Customer subscription expired.`; `expiryDryRun` on the healthy tenant ran clean. Note: an **expired tenant cannot run expiry/retention admin modes** (gated before the handler) — dry-runs must be run while the tenant is active.
+- Email delivery re-confirmed by recipient across all waves (7 registrations, 7 confirmations received).
+
 ### T0 — Deployment sanity
 
 | ID | Test | Steps | Expected |
@@ -133,7 +143,7 @@ recipient-verified 2026-09-06).
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
-| T5-1 | Bulk sign out (portal) | Check in 3 QA visitors, then Bulk Sign Out in the guard portal | All flip to `Signed Out`; all cards released to `Available` |
+| T5-1 | Bulk sign out (portal) | Check in 3 QA visitors, then Bulk Sign Out in the guard portal — API: POST `mode:"bulkSignOut"` **with `visitorNumbers` array** (it is NOT an implicit sign-out-all) | All listed flip to `Signed Out`; all cards released to `Available` |
 | T5-2 | Auto sign-out trigger exists | Apps Script Triggers page (or code) | Daily maintenance + autoSignOut trigger present, schema version matches TRIGGER_SCHEMA_VERSION |
 | T5-3 | runAutoSignOut action | GET `?action=runAutoSignOut` on a tenant whose hour matches now (or after temporarily setting autoSignOutHour = current hour) | Checked-In visitors from today sign out; idempotent second run changes nothing |
 
