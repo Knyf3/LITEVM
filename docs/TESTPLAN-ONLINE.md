@@ -43,6 +43,10 @@ must be `text/plain` (avoids preflight). Always print HTTP code + latency.
 ID scheme: `T<suite>-<n>`. Expected values assume canonical sheet headers
 (15-col VisitorLog etc.) — header-name resolution, not column letters.
 
+**Run order:** for a **brand-new tenant**, execute **T11 (onboarding) first** —
+it creates/commissions the tenant sheet and Pages repo — then T1–T9 against the
+fresh sheet. For an existing tenant, start at T0/T1.
+
 ### T0 — Deployment sanity
 
 | ID | Test | Steps | Expected |
@@ -154,10 +158,33 @@ Run after ANY `Code.gs` change (before live endpoint tests):
 
 ---
 
+### T11 — New tenant onboarding & commissioning
+
+Run FIRST for a brand-new customer. Uses a FRESH copy of the template sheet and
+a NEW Pages repo — never an existing tenant's data.
+
+| ID | Test | Steps | Expected |
+|---|---|---|---|
+| T11-1 | Template copy creates valid structure | Make a copy of the customer template sheet | All tabs present: VisitorLog, cardno, Destination, Settings, VisitorType; no missing/misordered tabs |
+| T11-2 | Migration runs on first touch | First backend request against the new sheet (e.g. `config`) | Hidden `_version!A1` = current SHEET_VERSION; no errors; master-config migration chain (V2/V3 cols) intact |
+| T11-3 | Migration idempotent | Second request immediately after T11-2 | Same success, no double-migration, no exception; headers unchanged |
+| T11-4 | Register tenant in master config | Add Customers row: `sheetId`, status `active`, timezone, tier; leave `retentionDays`/`expiryDate` blank for defaults | `config` action returns `status:"ok"` + correct timezone, `expiryState` none/absent, no retention error |
+| T11-5 | Tenant defaults sane | Read config response | Blank retention = no purge; blank expiry = never expires; expiryWarningDays default 7 |
+| T11-6 | Destinations + card pool seeded | Populate Destination tab + card pool for the tenant's door groups (per template instructions) | `destinations` action returns them; cardno 5001–5215 all `Available` |
+| T11-7 | CORS / origin allowlist | POST from the tenant's allowed origin; POST from a foreign origin | Allowed origin succeeds; foreign origin blocked/denied per policy |
+| T11-8 | Fresh-tenant registration E2E | Full registration on the new sheet (QA identity, today's date) | Success + row lands with correct columns AND tenant-local timezone date handling (cross-check T2-1/T2-2) |
+| T11-9 | Customer Pages repo | Create/clone customer kiosk repo, set `config.js` (SHEET_ID = new sheet, API_BASE, SITE_NAME, GUARD_PIN), enable Pages | URL live; index + verify load; guard PIN for THIS tenant works |
+| T11-10 | Tenant isolation | Register on tenant A; query `today`/`report` for tenant B | Tenant A's rows NEVER appear in tenant B; per-sheet scoping intact |
+| T11-11 | Onboarding smoke | Check in / sign out the T11-8 visitor from the new tenant's verify portal | Status flips, card assigned then released back to `Available`; DoorGroupID survives |
+
+---
+
 ## 2. Change → required suites (use this every time)
 
 | Change | Required |
 |---|---|
+| New tenant onboarding (commissioning) | T11 (full) → then T1–T9 Quick regression on the fresh tenant |
+| Template-sheet structure change | T11-1/2/3 + T1-1/2 header checks on a fresh copy |
 | GAS backend deploy (any Code.gs) | T10 static checks → T0 → T1 → T2 → T3 → T4 (T6/T7 if retention/expiry code touched) |
 | New/edited migration (MIGRATION_REGISTRY) | T1-6 + fresh-template-copy simulation + T1-1/T1-2 header checks |
 | Header/column refactor | T1 (full) + T2-2 + T10-4 |
