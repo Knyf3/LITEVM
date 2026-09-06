@@ -62,7 +62,9 @@ copy structure), T11-4/5 (master registration + defaults), T2-1/2 (registration
 → `Pending Entry`, all 15 columns written correctly incl. Destination/Visitor
 Type), T3-3 (check-in assigned card **5001** from the BCA → DoorGroup 2 block),
 T4-1 (sign-out released card, **DoorGroupID col survived**), T11-10 (isolation:
-demo `today` vs QA `today` showed zero leakage).
+demo `today` vs QA `today` showed zero leakage), T8-1/2 (registration email
+enqueued via EmailQueue and **confirmed delivered** to the recipient's inbox —
+recipient-verified 2026-09-06).
 
 **Corrections this run fed into the plan:**
 1. Health/config are tenant-scoped (T0-1 patched).
