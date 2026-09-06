@@ -86,6 +86,15 @@ recipient-verified 2026-09-06).
 - **T7** expiry: setting `expiryDate` = yesterday made BOTH `config` and registration return `Customer subscription expired.`; `expiryDryRun` on the healthy tenant ran clean. Note: an **expired tenant cannot run expiry/retention admin modes** (gated before the handler) — dry-runs must be run while the tenant is active.
 - Email delivery re-confirmed by recipient across all waves (7 registrations, 7 confirmations received).
 
+**Third pass (same day, deployed v1.19.0 — HYBRID email delivery verification)** — all passed:
+- **T0-1/2**: health on demo tenant → `{"status":"ok","version":"1.19.0"}` — redeploy current.
+- **T8-2 (hybrid rewrite)**: registered `V-20260906-009` with a REAL recipient (`jarvisbot528@gmail.com`) → **registration confirmation email was in the recipient's inbox within seconds of the HTTP response** — before any 5-min sweep could have fired. QA tenant `EmailQueue` tab read **0 data rows** → immediate in-request send confirmed; queue never engaged.
+- **T3-3**: check-in committed in 5.8s, assigned card **5001** (DoorGroup 2, BCA). **Card/QR email ("Your Access Card — …") in inbox ~12s after check-in** (Gmail propagation lag; again 0 EmailQueue rows — no fallback path used).
+- **T4-1**: sign-out released card 5001; DoorGroupID column survived.
+- **Regression reads**: `config` (guardPin 1234, timezone Jakarta, expiryState none), `today` (visitor listed with photo URLs), `lookup` (full record, `Signed Out`) — all OK. Demo tenant untouched, no cross-tenant leakage.
+- **Latency note**: first request after redeploy = cold-start compile (18.0s); warmed check-in 5.8s. The in-request send adds ~1s to transaction latency vs the pre-v1.19 queue-return path — accepted trade for instant QR delivery (and still far below any client timeout).
+- **Cleanup**: master `Customers` restored to original 3 rows; QA spreadsheet + visitor photo folder trashed.
+
 ### T0 — Deployment sanity
 
 | ID | Test | Steps | Expected |
