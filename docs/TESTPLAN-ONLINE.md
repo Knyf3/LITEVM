@@ -163,13 +163,20 @@ recipient-verified 2026-09-06).
 | T7-2 | Config expiryState | POST `config` on a tenant with expiryDate near/far | `expiryState` none/active/expiring/expired per remaining days |
 | T7-3 | Banner logic (frontend) | In verify portal with an expiring tenant | Amber dismissible banner; expired tenant → red non-dismissible + login blocked (detect via `error` text, NOT expiryState — config is denied when expired) |
 
-### T8 — Email / notification
+### T8 — Email / notification (HYBRID since v1.19.0: immediate send → EmailQueue retry net)
+
+> Delivery model: registration & card-assignment emails are sent **immediately in
+> the request path** (`sendEmailImmediateOrQueue_`, Tier-1 Gmail API — visitor gets
+> the access-card QR the instant check-in commits). The per-customer EmailQueue +
+> 5-min sweep is now the **fallback only**, used when the immediate send throws.
+> Tests below must still pass — they validate both the happy path (instant) and
+> the net (queue).
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
 | T8-1 | EmailQueue tab exists | Read test sheet | Hidden tab `EmailQueue` with headers `Timestamp, Type, To, Subject, Body, Status, Attempts, LastError` |
-| T8-2 | Email sent + queue drained | Register with a REAL recipient address (≤2 per run) | EmailQueue PENDING → SENT; email arrives; Attempts stays sane |
-| T8-3 | Failure path (optional) | Trigger send to an invalid address | Status PENDING→FAILED after 3 attempts with LastError, never lost |
+| T8-2 | Email delivered immediately | Register / check in with a REAL recipient address (≤2 per run) | Email arrives within seconds (request latency includes the send); NO PENDING row left behind when send succeeds |
+| T8-3 | Failure → queue fallback | Trigger a send that throws (e.g. bad `from`, temporary API error) | Immediate send fails → EmailQueue row appears PENDING → sweep retries → FAILED after 3 attempts with LastError, never lost |
 | T8-4 | Dirty-flag efficiency | Observe trigger logs briefly | Idle sweep returns fast (EMAIL_QUEUE_DIRTY not set) — no per-customer sheet open per tick |
 
 ### T9 — Hosted frontend (GitHub Pages)

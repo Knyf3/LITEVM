@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.18.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.19.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: scripted email routes through a THREE-tier transport in
 // sendEmailThroughBridge:
@@ -2256,15 +2256,17 @@ function handleStatusUpdate(data) {
     }
   }
 
-  // ── Email enqueue OUTSIDE the lock ──
-  // The card-assignment email is fire-and-forget via the EmailQueue (deferred
-  // delivery). It runs after releaseLock() so queue/GmailApp I/O never extends
-  // the critical section that serializes card allocation.
+  // ── Email delivery OUTSIDE the lock ──
+  // The card-assignment email is sent immediately after the card is committed
+  // (hybrid: instant send → EmailQueue retry net). It runs after releaseLock()
+  // so mail I/O never extends the critical section that serializes card
+  // allocation — but the visitor still gets their QR the moment check-in
+  // commits, because the request does not return until the send resolves.
   if (pendingEmail) {
     try {
       sendCardAssignmentEmail(pendingEmail.to, pendingEmail.cardNo, pendingEmail.visitorName, pendingEmail.visitorNumber, data.sheetId);
     } catch (emailErr) {
-      console.warn('Card assignment email enqueue failed for ' + pendingEmail.visitorNumber + ': ' + emailErr.message);
+      console.warn('Card assignment email delivery failed for ' + pendingEmail.visitorNumber + ': ' + emailErr.message);
     }
   }
 
@@ -2563,11 +2565,14 @@ function sendEmailThroughBridge(opts) {
 // EMAIL QUEUE (deferred delivery)
 // ══════════════════════════════════════════════
 //
-// Registration and check-in emails are no longer sent inline in the request
-// path (GmailApp costs 600ms–1.2s per send). Instead they are appended to a
-// hidden PER-CUSTOMER 'EmailQueue' tab and delivered by a 2-minute time-driven
-// sweep (runEmailQueueSweep). This returns HTTP 200 immediately and isolates
-// the consumer-account quota (100/day) from request bursts.
+// HYBRID DELIVERY (v1.19.0): transaction emails (registration confirmation,
+// card assignment) are sent IMMEDIATELY in the request path via
+// sendEmailImmediateOrQueue_ — the visitor gets their access QR the instant
+// they check in. Delivery rides sendEmailThroughBridge Tier 1 (Gmail API),
+// which bypasses the Apps Script 100/day recipient quota. Only when the
+// immediate send throws is the email appended to the hidden PER-CUSTOMER
+// 'EmailQueue' tab and delivered by the 5-minute sweep (runEmailQueueSweep)
+// — the queue is now a retry net, not the primary path.
 //
 // The queue is per-customer (each sheet copy has its own EmailQueue tab), so
 // the header list has no sheetId column — the parent sheet identifies the
@@ -2641,6 +2646,46 @@ function enqueueEmail(sheetId, type, to, subject, htmlBody) {
     sendEmailThroughBridge({ to: to, subject: subject, htmlBody: htmlBody });
   } catch (syncErr) {
     console.warn('enqueueEmail: synchronous fallback send also failed: ' + syncErr.message);
+  }
+}
+
+/**
+ * HYBRID EMAIL DELIVERY (v1.19.0): try an IMMEDIATE synchronous send first,
+ * in the request path, so the visitor's confirmation / access-card QR is out
+ * the moment the transaction commits (critical for card assignment — the code
+ * is useless if it lands minutes after check-in).
+ *
+ * The immediate send rides sendEmailThroughBridge Tier 1 (Gmail API), which
+ * bypasses the Apps Script 100/day recipient quota — the original reason
+ * delivery was deferred to the queue. On ANY immediate-send failure the email
+ * is appended to the per-customer EmailQueue (delivered by the 5-minute
+ * sweep), so the queue remains purely a retry net and email is never lost.
+ *
+ * Never throws: caller-side try/catch in the request paths stays as a final
+ * safety, but the helper already contains the queue fallback.
+ *
+ * @param {string} sheetId - Customer sheet ID
+ * @param {string} type - 'registration' | 'card'
+ * @param {string} to - Recipient address
+ * @param {string} subject - Subject line
+ * @param {string} htmlBody - HTML body
+ * @returns {string} 'sent' | 'queued' | 'failed' | 'skip'
+ */
+function sendEmailImmediateOrQueue_(sheetId, type, to, subject, htmlBody) {
+  if (!to) return 'skip'; // no recipient — nothing to deliver
+  try {
+    sendEmailThroughBridge({ to: to, subject: subject, htmlBody: htmlBody });
+    console.log('Email sent IMMEDIATELY (' + type + ') to ' + to);
+    return 'sent';
+  } catch (e) {
+    console.warn('Immediate email send failed (' + type + ' to ' + to + '): ' + e.message + ' — falling back to EmailQueue');
+    try {
+      enqueueEmail(sheetId, type, to, subject, htmlBody);
+      return 'queued';
+    } catch (qErr) {
+      console.warn('EmailQueue fallback also failed for ' + to + ': ' + qErr.message);
+      return 'failed';
+    }
   }
 }
 
@@ -2753,8 +2798,8 @@ function runEmailQueueSweep() {
 }
 
 /**
- * Send email confirmation via MailApp.sendEmail().
- * MailApp is a built-in Apps Script service — no setup, no tokens needed.
+ * Send registration confirmation email — HYBRID: immediate in-request send via
+ * sendEmailImmediateOrQueue_ (Tier-1 Gmail API), EmailQueue fallback on failure.
  */
 function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType, sheetId) {
   var subject = 'LITEVM — Visitor Registration Confirmation';
@@ -2798,9 +2843,9 @@ function sendEmailConfirmation(toEmail, visitorNumber, fullName, visitorType, sh
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  enqueueEmail(sheetId, 'registration', toEmail, subject, htmlBody);
+  sendEmailImmediateOrQueue_(sheetId, 'registration', toEmail, subject, htmlBody);
 
-  console.log('Email confirmation queued for ' + toEmail);
+  console.log('Registration email delivered for ' + toEmail);
 }
 
 // ──────────────────────────────────────────────
@@ -3130,9 +3175,9 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber, sh
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  enqueueEmail(sheetId, 'card', toEmail, subject, htmlBody);
+  sendEmailImmediateOrQueue_(sheetId, 'card', toEmail, subject, htmlBody);
 
-  console.log('Card assignment email queued for ' + toEmail + ' for card ' + cardNo);
+  console.log('Card assignment email delivered for ' + toEmail + ' for card ' + cardNo);
 }
 
 // ══════════════════════════════════════════════
