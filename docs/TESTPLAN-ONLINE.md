@@ -51,7 +51,7 @@ fresh sheet. For an existing tenant, start at T0/T1.
 
 | ID | Test | Steps | Expected |
 |---|---|---|---|
-| T0-1 | Backend reachable | GET `?action=health` | HTTP 200, `{"status":"ok",...}` with the deployed version string |
+| T0-1 | Backend reachable | GET `?action=health&sheetId=<test tenant>` (health is tenant-scoped since v1.18.0 — no sheetId → "Customer identifier required") | HTTP 200, `{"status":"ok",...}` with the deployed version string |
 | T0-2 | Deployed version matches intent | Compare health `version` with the GAS editor deployment version you intend | Match (mismatch = stale deploy) |
 | T0-3 | Master config reachable | POST `config` for the test customer | `status:"ok"` + config fields (timezone, retentionDays, expiryState etc.) |
 | T0-4 | Test tenant active | `config` response for test sheet | Not expired/disabled/paused (`ACCOUNT_DISABLED`/`expired` absent) |
