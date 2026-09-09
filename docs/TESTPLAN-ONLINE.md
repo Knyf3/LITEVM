@@ -272,8 +272,18 @@ redeploy, re-run the affected suite AND the Quick regression.
 
 ---
 
-## 4. Out of scope (future plan: on-prem)
+## 4. Out of scope (covered by the on-prem plans)
 
+The on-prem / local-kiosk world is now covered by two sibling plans:
+- **`verify-kiosk/TESTPLAN.md`** — kiosk functional suites (K0–K10): the
+  Verify Kiosk application itself (login, lookup, check-in/sign-out UI, bulk,
+  i18n, resilience) as served by the VerifyKiosk Windows service or the dev
+  server.
+- **`docs/TESTPLAN-KIOSK-E2E.md`** (this repo) — LITEVM ↔ kiosk integration
+  suites (I1–I3): end-to-end visitor lifecycle through the kiosk, ACTApi door
+  grant/revoke, UStarAPI reader provisioning.
+
+Explicitly out of scope HERE (see those plans):
 - verify-kiosk (verifylocal.html / serve_local.ps1 / settings.json / GUARD_PIN)
 - ACTApi integration (ACTApiBase, photo-proxy, extra rights)
 - UStarAPI gateway (UStarApiBase, provisionUstar, sign-out polling, X-Litevm-Secret)
