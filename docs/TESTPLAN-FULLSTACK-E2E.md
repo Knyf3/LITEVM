@@ -429,6 +429,42 @@ Money path, all 8 steps landed, 4 min 11 s end to end: register `V-20260913-009`
 
 Full evidence: `qa-out/2026-09-13/bench/BENCH-RESULT.md`.
 
+### Run 4 — 2026-09-13 20:17–20:26 — **QR credential leg — cloud PASS, door FAIL (now fixed)**
+
+Stack unchanged (LITEVM 1.20.1-candidate / kiosk 1.0.2 / UStarAPI 1.5.5.0), operator at the reader.
+Second visitor of the evening: `V-20260913-010` (same photo), checked in on card **5001** — which also
+proves **card reuse (E5)**: 5001 had been released by the face run 10 minutes earlier.
+
+**Passed.** Enrolment: device `person 2→3, face 2→3`, and the QR credential is armed —
+`person/find` (a **GET** on this firmware; a POST returns `LAN_EXP-1006`, which reads as "absent" if
+you trust it) reports `qrCode="5001"`, `qrCodePermission=2`. The scan then produced
+`POST /device/callback/identify?personId=5001&type=qrCode_0&time=1789305914616` — handler **1.4 ms**,
+HTTP 200. So **QR mode works end-to-end**, and the "does the E53 even have a QR scanner" question is
+closed. The sheet flipped to `Signed Out` (in 20:17, out 20:24) and card 5001 returned to the pool
+`Available`, unassigned.
+
+**Failed — F1b, a genuine fail-open.** The reader still held `person=3 face=3`: the credential was
+**never de-provisioned**. The log explains it: at 20:25:30 and again at 20:26:00 the gateway logged
+`GAS signOutByCard transport failure for card 5001 — watermark held` (GAS round trips exceeding the
+client's 15 s timeout), *after* GAS had already committed the sign-out. The retry therefore finds the
+card **already released**, receives `noop`, and the then-current rule — "noop ⇒ advance the watermark,
+do not touch the device" — skipped the delete. Net effect: **the sheet says Signed Out, the card is
+back in the pool, and the visitor's face and QR still open the door.**
+
+This is the exact class the whole stack exists to prevent, and it was pre-existing (not introduced by
+the F1 classification change — that change is what made it *visible*). Fixed in UStarAPI **1.5.6**:
+`noop` now de-provisions unless the reason is `stale_event`, and GAS reports a `reason`
+(`card_not_assigned`) so the gateway can tell the two apart. Three tests cover it, one of which
+**replaced an assertion that encoded the defect** ("a noop never deletes").
+
+**Also learned (instrument, not product):** `person/find` and `person/findByPage` are **GET**; my
+earlier POST-based reads returned `LAN_EXP-1006` and I briefly mis-reported an absent person. The
+device count readback (`device/information` → `personCount`/`faceCount`) is the reliable one, and
+`person/delete` on the device wants a different field shape than the gateway's
+`DELETE /api/litevm/persons/{card}?doorGroupId=<n>` — use the gateway.
+
+Orphan cleaned up by hand (device restored to baseline 2/2/3).
+
 ### Run log template (full passes)
 
 ```markdown
@@ -469,4 +505,7 @@ changes); never bundle a disruptive write into a batch.
 |---|---|---|
 | 1 | **Tenant:** stay on the demo tenant (gateway is pinned to it) or re-point the gateway to a dedicated QA tenant and align the kiosk? | ✅ **Decided — demo tenant for this pass** (kiosk, gateway and secret chain all aligned to it). Revisit before any pass that needs a dedicated QA tenant (e.g. R14/L7 isolation) |
 | 2 | **ACT leg:** revive `.217` + ACTApi, or declare out of scope? | ✅ **Decided — OUT OF SCOPE this pass** (2026-09-13). A-suite deferred, not deleted |
-| 3 | **Verification modes:** keep the gateway Face-only, or deliberately enable Qr/Card? | ✅ **Decided + live — Face=True, Qr=True, Card=False** (B4, verified again 2026-09-13 20:03). The QR **credential** is issued and permission-mapped (`qrPermission=2`); the E53's QR **scanner** has still never been exercised — unverified capability, declared not claimed. Card mode stays off (card-only credentials are not a supported visitor path) |
+| 3 | **Verification modes:** keep the gateway Face-only, or deliberately enable Qr/Card? | ✅ **Decided + live + PROVEN — Face=True, Qr=True, Card=False.** QR is now confirmed end-to-end on real hardware (2026-09-13 evening): the E53's scanner reads a QR, pushes `POST /device/callback/identify?type=qrCode_0&personId=5001` (handler 1.4 ms), and the sign-out chain follows. A revoked credential is correctly refused ("unregistered"). Card mode stays off (card-only is not a supported visitor path) |
+| 4 | **F1 — stale-record loop + wrong-visitor sign-out** | ✅ **FIXED — UStarAPI 1.5.6.** Business refusals are acked and dropped (`GasSignOutStatus.Rejected`) instead of holding the watermark forever; `SignOut:MaxRecordAgeHours` (default 24) bounds replay; GAS `_signOutVisitor_` refuses a stale event that predates the row's check-in. 430 tests |
+| 5 | **F1b — a noop left an orphaned credential on the reader** | ✅ **FOUND + FIXED — UStarAPI 1.5.6.** Found by the QR bench loop: GAS committed the sign-out, the response was lost to the client's 15 s timeout, the retry saw the card released and got `noop` — and the old rule ("noop ⇒ no device delete") left a live face **and** QR on the door while the sheet said Signed Out. A noop now de-provisions, **except** `stale_event` (where the card belongs to a current visitor and deleting would lock them out). GAS `signOutByCard` now reports a `reason` |
+| 6 | **F3 — admin authorisation** | ✅ **STAGES 1+2 SHIPPED — Code 1.21.0 / kiosk 1.0.3.** Stage 1: `register` + `admin` share one origin gate, refusals audited (explicitly *not* an auth boundary — the origin is client-asserted and GAS answers `ACAO: *`). Stage 2: `guardPin` is **no longer published**; `?action=guardLogin` validates it server-side (constant-time, 15/15min lockout, audited, fails closed) and `report`/`bulkSignOut` require it. Residual risks + deploy order: `docs/SECURITY-F3-ADMIN-AUTH.md` |
