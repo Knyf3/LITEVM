@@ -104,6 +104,37 @@ boundary, because the origin is self-declared.
   end-to-end report refusal + `DeniedLog` audit, `guardLogin` accept/reject/audit, the whole
   stage-2 matrix (no PIN / wrong PIN / right PIN / machine-caller exemption / minimal response),
   constant-time compare, and the lockout (including that lockout blocks the **correct** PIN).
-* Live controls still owed after redeploy: foreign-origin `report` → 403; portal-origin `report` with
-  PIN → 200; `report` with no PIN → `GUARD_UNAUTHORIZED`; correct PIN → 200; lockout after repeated
-  failures; and `signOutByCard` unaffected (secret only).
+
+### Live verification — Code 1.21.0 deployed 2026-09-13 20:37
+
+| Control | Result |
+|---|---|
+| `bootstrap` | `version 1.21.0`, `guardPin` **not published** ✅ |
+| `guardLogin` correct PIN | `{"status":"ok"}` ✅ |
+| `guardLogin` wrong PIN ×3 | `INVALID_PIN` ✅ |
+| `guardLogin` correct again | ok — the failure counter resets on success ✅ |
+| **`report` from `http://evil.example` + a VALID PIN** | **refused**: *"This action is not available from this location"* ✅ — the original defect |
+| `report` from the allow-listed portal origin + valid PIN | served with visitor rows ✅ |
+| `report` with **no PIN** (the old hole) | `GUARD_UNAUTHORIZED` ✅ |
+| `report` with a wrong PIN | `GUARD_UNAUTHORIZED` ✅ |
+| `signOutByCard` machine caller | fails on the **secret** (`LITEVM_UNAUTHORIZED`), never the PIN ✅ |
+| `?action=config` keys | `actEnabled, autoSignOutEnabled, autoSignOutHour, expiryDate, expiryState, remainingDays, timezone` — no `guardPin` ✅ |
+| **`DeniedLog` audit** | **5 × `GUARD_UNAUTHORIZED` + 1 × `ORIGIN_BLOCKED`** (`http://evil.example`, endpointType `admin`) appended live at 20:37–20:38 ✅ |
+
+**Kiosk 1.0.3 installed on `.238`** — `settings.json` byte-identical (`99BAA490…`, tenant + `GUARD_PIN`
+fallback intact), `/health` → `1.0.3`, packaged `verify.js` 82,499 B. Live login proof: the correct PIN
+authenticates in 9.5 s with exactly **one** `?action=guardLogin` call to the backend (so the check is
+genuinely server-side, not the local compare), and a wrong PIN is refused with the error displayed.
+
+**Portal — known-broken until `report.js` is pushed, and verified as such rather than assumed.** Loading
+`https://demo.litevm.itt.web.id/report.html` and entering the **correct** PIN yields *"Incorrect PIN"*
+with **no** `guardLogin` request: the deployed page still compares locally against a config value that
+is no longer published. This is the one step outstanding, and it is intentional ordering — the
+backend is hardened first, the client follows.
+
+### Live lockout — NOT exercised (deliberate)
+The 15-failure lockout is proven in the harness but was **not** triggered live, because it would lock
+the tenant's guard PIN for 15 minutes and the operator was still at the bench. Nothing about it is
+uncertain in code; the cost of proving it is 15 minutes of unusable admin access, so it is left as an
+opt-in test to run when nobody needs the bench.
+
