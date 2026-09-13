@@ -1,0 +1,4 @@
+service=Running|port=1|firewall=True/Allow
+exe_version=1.0.2.0
+kiosk_secret=11 3D9353DC4B843BD0
+kiosk_sheet_tail=SqAs|api_host=script.google.com|ustar=http://192.168.2.194:8091

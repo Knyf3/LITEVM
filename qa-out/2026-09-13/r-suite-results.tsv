@@ -1,0 +1,13 @@
+R1a	wrong PIN rejected (control, proves handler attached)	PASS	attached after 2 probe(s), 12s
+R1b	correct PIN unlocks report	PASS	main content visible
+R3	date defaults to today (from=to)	PASS	from=2026-09-13 to=2026-09-13
+R3b	presets present	PASS	['today', 'yesterday', '7days', 'month']
+R4	today range returns rows	PASS	3 row(s); summary='3 visitors · 1 Checked In · 0 Pending · 2 Signed Out · 13 Sep 2026 – 13 Sep 2026'
+R9	summary bar reflects the returned rows	PASS	3 visitors · 1 Checked In · 0 Pending · 2 Signed Out · 13 Sep 2026 – 13 Sep 2026 · Contractor: 1, Visitor: 2
+R13	E2E visitors visible in report	PASS	found QA visitors
+R6	free-text search filters rows	PASS	1 row(s) after search
+R7	status filter (Signed Out)	PASS	2 row(s); status options=['', 'Registered', 'Checked In', 'Signed Out']
+R8	type filter (Contractor)	PASS	1 row(s); types=['', 'Contractor', 'Visitor']
+R11	CSV export (BOM + header + rows)	FAIL	4 line(s); header='Visitor #,Full Name,ID Number,Company,Destination,Visitor Type,Visitation Date,Phone,Email'
+R12	Print enabled when rows exist	PASS	disabled=False
+R17	language toggle on report page	PASS	Visitor Reports 🔙 Guard Portal ID From: To: Today Yesterday 

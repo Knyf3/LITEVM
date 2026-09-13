@@ -1,0 +1,23 @@
+today list has 8 visitor(s); using V-20260913-001 for the lookup leg
+observing 190s for cadence ...
+
+--- google call timeline (after auth) ---
+    -7.8s req      bootstrap
+    -0.6s end      bootstrap
+    -0.6s req      hop
+    -0.2s end      hop
+    +5.1s req      lookup
+   +11.1s end      lookup
+   +11.1s req      hop
+   +11.5s end      hop
+
+=== K-LEG RESULTS (live v1.20.0 backend) ===
+bootstrap calls          : 1   <- 1 expected; the old client used config+destinations+types+today
+today calls after auth   : 0
+gaps between today calls : []  (90s cadence + call time)
+max concurrent google req: 1   (must be 1)
+today rows rendered      : 11 (badge 8)
+lookup leg               : found ( Signed Out V-20260913-001 Sun Sep 13 16)
+filter row counts        : {'pending': 2, 'checkedin': 2, 'done': 7, 'all': 11}
+VERDICT                  : PASS — bootstrap boot + no-overlap cadence
+EXIT=0

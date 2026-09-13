@@ -1,0 +1,14 @@
+L2	registration rejects missing required fields	FAIL	HTTP 200 {"status":"error","error":"Missing required field: company"}
+L2b	nonsense action rejected (control)	PASS	HTTP 404 <!DOCTYPE html><html lang="id"><head><script nonce="CU0XTZaTYwb9B5lSpI5q5w">window['ppConf
+L1	registration accepted	PASS	HTTP 200 visitorNumber=V-20260913-001
+L4	lookup returns full record (header-name resolution)	PASS	name='QA-20260913-001 E2E Visitor' dest='BCA' type='Visitor' status='Pending Entry'
+L5	visitor appears in today list	PASS	1 visitor(s) today; ours present=True
+L6	cardpool diagnostic	PASS	totalRows=216 status=ok
+L8	report gated by origin (allowlisted 200 vs foreign 403)	FAIL	allowlisted HTTP 200 rows=1 | foreign HTTP 200 {"status":"ok","visitors":[{"visitorNumber":"V-20260913-001","fullName":"QA-2026
+L2	registration rejects missing required fields	FAIL	HTTP 200 {"status":"error","error":"Missing required field: company"}
+L2b	nonsense action rejected (control)	FAIL	HTTP 200 {"status":"error","error":"Missing required field: fullName"}
+L1	registration accepted	PASS	HTTP 200 visitorNumber=V-20260913-008
+L4	lookup returns full record (header-name resolution)	PASS	name='QA-20260913-001 E2E Visitor' dest='BCA' type='Visitor' status='Pending Entry'
+L5	visitor appears in today list	PASS	8 visitor(s) today; ours present=True
+L6	cardpool diagnostic	PASS	totalRows=216 status=ok
+L8	report gated by origin (allowlisted 200 vs foreign 403)	FAIL	allowlisted HTTP 200 rows=8 | foreign HTTP 200 {"status":"ok","visitors":[{"visitorNumber":"V-20260913-001","fullName":"QA-2026

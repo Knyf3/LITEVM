@@ -1,0 +1,29 @@
+[
+  [
+    "Setting",
+    "Value"
+  ],
+  [
+    "autoSignOutEnabled",
+    "TRUE"
+  ],
+  [
+    "autoSignOutHour",
+    "22"
+  ],
+  [
+    "guardPin",
+    "2345"
+  ],
+  [
+    "Note",
+    "Auto sign-out runs at the configured hour in the customer timezone."
+  ],
+  [
+    "timezone"
+  ],
+  [
+    "ustarSecret",
+    "USTARSecret"
+  ]
+]

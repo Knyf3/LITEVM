@@ -1,0 +1,4 @@
+﻿Visitor #,Full Name,ID Number,Company,Destination,Visitor Type,Visitation Date,Phone,Email,Status,Sign-In,Sign-Out
+V-20260913-001,QA-20260913-001 E2E Visitor,QA-0913-001,QA E2E Test,BCA,Visitor,2026-09-13,812000000,jarvisbot528@gmail.com,Signed Out,16:18 13 Sep 2026,20:49 30 Aug 2026
+V-20260913-002,QA-20260913-002 E2E Visitor (BRI),QA-0913-002,QA E2E Test,BRI,Contractor,2026-09-13,812000001,jarvisbot528@gmail.com,Signed Out,16:22 13 Sep 2026,16:34 13 Sep 2026
+V-20260913-003,QA-20260913-003 Bench Visitor,QA-0913-003,QA E2E Test,PLN,Visitor,2026-09-13,812000002,jarvisbot528@gmail.com,Checked In,16:25 13 Sep 2026,

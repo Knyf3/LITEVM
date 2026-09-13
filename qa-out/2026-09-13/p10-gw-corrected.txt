@@ -1,0 +1,4 @@
+gateway_secret=11 3D9353DC4B843BD0
+gateway_sheet_tail=SqAs
+device=E03C1CB54A2F5601|alias=E53-out|role=out
+cors=http://192.168.2.238:8123,http://localhost:8123,http://127.0.0.1:8123
