@@ -68,10 +68,55 @@ scheme rules), the end-to-end report refusal, the DeniedLog audit row, and the w
 guard sequence. *Two harness FAILs were chased to `SpreadsheetApp.flush` being unstubbed —
 an instrument artefact, not a product result; the stub now exists.*
 
+## Live verification — UStarAPI 1.5.6 on the bench gateway (2026-09-13 20:33)
+
+Installed silently on `.194`; **`Settings.json` byte-identical before/after** (sha
+`F5B6F322220F7E0CACB06FA4FB632DC108ACF07CA2C9799CAD157553C833BD45`) — the CORS allowlist survived.
+`/api/health` → `version 1.5.6.0, devices 1, online 1`; device round trip `person=2 face=2 finger=3`.
+
+**F1b proved itself on live traffic inside a minute.** The QR run had left records stuck behind a GAS
+timeout; after the restart the poll reproduced the failure and then the fix:
+
+```
+[20:34:21 WRN] Sign-out batch not fully processed for device E03C1CB54A2F5601 — watermark held for retry
+[20:34:51 WRN] Sign-out batch not fully processed for device E03C1CB54A2F5601 — watermark held for retry
+[20:35:10 WRN] Sign-out poll: card 5001 answered noop (card not assigned) — ensuring no orphaned credential is left on the reader
+[20:35:14 WRN] … noop (card not assigned) — ensuring no orphaned credential is left on the reader
+[20:35:19 WRN] … noop (card not assigned) — ensuring no orphaned credential is left on the reader
+[20:35:19 INF] Sign-out poll for device E03C1CB54A2F5601: 3 candidate(s) processed (0 stale record(s) ignored)
+```
+
+* the **new log format** (`(0 stale record(s) ignored)`) proves 1.5.6 is the running binary;
+* the noop path **actively de-provisions** instead of silently advancing — the fail-open is closed;
+* the batch **completes** and the watermark advances, so the F1 retry-forever loop is gone.
+
+(The three deletes were no-ops on the device because the orphan had already been removed by hand —
+which is why the bench reads baseline `2/2/3`.)
+
+## Artifacts built
+
+| Artifact | Size | SHA256 |
+|---|---|---|
+| `UStarAPI_Setup_1.5.6.exe` | 35,471,394 B | `0FD514932A14FB23EF94895B20AFD41FBB957FAB35262F5B6DC9A6942D8EB680` |
+| `Verify Kiosk_Setup_1.0.3.exe` | 35,495,295 B | `412D59FE9060956282D6DDE38509583B3F91787E44CA7FC3D4D869D56ADAC409` |
+
+Both were verified *inside the packaged source* (not just the repo): the UStarAPI installer carries
+`GasSignOutStatus.Rejected`, the refusal classifier, `MaxRecordAgeHours`, the noop de-provision and the
+noop-reason parse; the kiosk installer's `verify.js` (82,499 B) carries `verifyGuardPinOnServer`, the
+`guardLogin` call, the deploy-order-safety branch (unknown response → `unreachable`), and **no**
+reference to a published `guardPin`.
+
 ## Still outstanding
 
-- Build/deploy **UStarAPI 1.5.6** (publish + ISCC + install on `.194`), then re-run the L/F1 watch.
-- Redeploy **Code.txt 1.20.1** (paste + new deployment version) — sha256 recorded on handover.
-- **Portal push** for `report.js` (the origin field) — the user's call: a LITEVM push is the live
-  Pages deploy.
-- **Stage 2 (F3, needs approval):** server-side guard-PIN validation for admin actions.
+- **Redeploy Code.gs 1.21.0** — paste `Code.txt` (sha256 `f144d105b05dbfc5a924f41be25a81903febd6752dcedb2ba681c0a2448b1d41`),
+  Save, Deploy → Manage deployments → Edit → New version (keep the same deployment/URL). This carries
+  the F3 stage-2 gate, the GAS stale-event guard, and the `noop` reason.
+- **Portal push** for `report.js` — until it lands, the portal's report page cannot authenticate
+  (it sends no `guardPin`). Push it immediately before or after the Code deploy; the window is short.
+- **Install kiosk 1.0.3** on `.238` — safe in either order now (unknown `guardLogin` responses fall
+  back to `settings.json`), but install it *after* the Code deploy to avoid a needless GAS round trip
+  on every guard login.
+- **Live F3 controls after redeploy:** foreign-origin `report` → 403; portal-origin `report` with a PIN
+  → 200; no PIN → `GUARD_UNAUTHORIZED`; correct PIN → 200; lockout after 15 failures;
+  `signOutByCard` unaffected (secret only).
+
