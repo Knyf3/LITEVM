@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.20.1';  // Increment this to track deployed versions
+var CODE_VERSION = '1.21.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: scripted email routes through a THREE-tier transport in
 // sendEmailThroughBridge:
@@ -899,6 +899,131 @@ function _originAllowed_(allowed, origin) {
   return false;
 }
 
+// ──────────────────────────────────────────────
+// F3 STAGE 2 — GUARD PIN, VALIDATED SERVER-SIDE
+// ──────────────────────────────────────────────
+/**
+ * Human-facing admin actions that must present the guard PIN. Deliberately a short, explicit list:
+ * machine callers (signOutByCard/assignedCards — shared secret) and the server-side retention and
+ * expiry paths must NOT require a PIN, because no human is present to supply one.
+ */
+function _requiresGuardPin_(data) {
+  if (!data) return false;
+  if (data.action === 'report') return true;
+  if (data.mode === 'bulkSignOut') return true;
+  return false;
+}
+
+/**
+ * Compare two strings without leaking their contents through timing. Length is compared first
+ * (unavoidable, and it leaks only the length), then every character with an accumulating XOR so the
+ * loop always runs to completion.
+ */
+function _constantTimeEquals_(a, b) {
+  a = String(a);
+  b = String(b);
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= (a.charCodeAt(i) ^ b.charCodeAt(i));
+  }
+  return diff === 0;
+}
+
+/** Cache key for the per-tenant failed-PIN counter. */
+function _guardAttemptKey_(sheetId) {
+  return 'litevm:v1:guardfail:' + sheetId;
+}
+
+/** 15 failures per 15 minutes, then lock out. A 4-digit PIN is brute-forceable without this. */
+var GUARD_MAX_ATTEMPTS = 15;
+var GUARD_ATTEMPT_WINDOW_SECONDS = 900;
+
+function _guardAttemptGate_(sheetId) {
+  var raw = CacheService.getScriptCache().get(_guardAttemptKey_(sheetId));
+  var n = raw ? parseInt(raw, 10) : 0;
+  if (n >= GUARD_MAX_ATTEMPTS) {
+    return { blocked: true, retryAfterSeconds: GUARD_ATTEMPT_WINDOW_SECONDS };
+  }
+  return { blocked: false };
+}
+
+function _guardAttemptRecord_(sheetId, success) {
+  var cache = CacheService.getScriptCache();
+  var key = _guardAttemptKey_(sheetId);
+  if (success) {
+    cache.remove(key);
+    return;
+  }
+  var n = (parseInt(cache.get(key) || '0', 10) || 0) + 1;
+  cache.put(key, String(n), GUARD_ATTEMPT_WINDOW_SECONDS);
+}
+
+/**
+ * Validate the caller-supplied guard PIN against the tenant's Settings <c>guardPin</c>. Reads the
+ * PIN from either <c>guardPin</c> (report/bulkSignOut) or <c>pin</c> (the login endpoint), so the
+ * two paths share ONE implementation.
+ *
+ * @returns {Object} { valid, error?, httpStatus?, retryAfterSeconds? }
+ */
+function _verifyGuardPin_(data, sheetId, origin) {
+  var ss;
+  try {
+    ss = _openSheetCached(sheetId);
+  } catch (e) {
+    return { valid: false, error: 'Cannot open sheet: ' + e.message, httpStatus: 500 };
+  }
+
+  var expected = _getSettingValue_(ss, 'guardPin');
+  if (!expected) {
+    // Fail closed: no configured PIN means no admin access, not open access.
+    return { valid: false, error: 'GUARD_PIN_NOT_CONFIGURED', httpStatus: 500 };
+  }
+
+  var gate = _guardAttemptGate_(sheetId);
+  if (gate.blocked) {
+    return { valid: false, error: 'TOO_MANY_ATTEMPTS', httpStatus: 429, retryAfterSeconds: gate.retryAfterSeconds };
+  }
+
+  var supplied = String((data && (data.guardPin || data.pin)) || '');
+  if (!_constantTimeEquals_(supplied, expected)) {
+    _guardAttemptRecord_(sheetId, false);
+    logDeniedRequest(sheetId, origin || '', 'GUARD_UNAUTHORIZED', 'admin', null);
+    return { valid: false, error: 'GUARD_UNAUTHORIZED', httpStatus: 403 };
+  }
+
+  _guardAttemptRecord_(sheetId, true);
+  return { valid: true };
+}
+
+/**
+ * ?action=guardLogin — the human's PIN entry, validated server-side (F3 stage 2). Replaces the old
+ * arrangement where the browser compared the PIN against a value fetched from ?action=config.
+ *
+ * @param {Object} data - { action:'guardLogin', sheetId, pin, origin? }
+ * @returns {TextOutput} { status:'ok' } | { status:'error', error:'INVALID_PIN'|'TOO_MANY_ATTEMPTS' }
+ */
+function handleGuardLogin(data) {
+  if (!data.sheetId) {
+    return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+  }
+  if (!data.pin) {
+    return jsonResponse({ status: 'error', error: 'INVALID_PIN' }, 403);
+  }
+
+  var check = _verifyGuardPin_(data, data.sheetId, data.origin || '');
+  if (!check.valid) {
+    return jsonResponse({
+      status: 'error',
+      // Don't echo GUARD_UNAUTHORIZED to the client — INVALID_PIN is the client-facing name.
+      error: check.error === 'GUARD_UNAUTHORIZED' ? 'INVALID_PIN' : check.error,
+      retryAfterSeconds: check.retryAfterSeconds || null,
+    }, check.httpStatus);
+  }
+
+  return jsonResponse({ status: 'ok' }, 200);
+}
+
 /**
  * Log a denied request to the DeniedLog tab of the master config sheet.
  * Creates the tab with headers if it does not already exist.
@@ -1080,6 +1205,7 @@ function doPost(e) {
     // Determine endpoint type and validate request
     var epType = 'register'; // default for registration (no mode)
     if (data.mode === 'updateStatus') epType = 'status';
+    else if (data.action === 'guardLogin') epType = 'status'; // NOT origin-gated: the kiosk browses from a LAN origin
     else if (data.mode === 'migrate') epType = 'admin';
     else if (data.action === 'report') epType = 'admin';
     else if (data.mode === 'bulkSignOut') epType = 'admin';
@@ -1093,6 +1219,30 @@ function doPost(e) {
     var validation = validateRequest(e, data.sheetId, epType);
     if (!validation.valid) {
       return jsonResponse({ status: 'error', error: validation.message || 'Request blocked.' }, 403);
+    }
+
+    // ─── F3 STAGE 2: server-side GUARD PIN for the human admin actions ───
+    // Before this, the PIN was compared in the browser against a value the server PUBLISHED via
+    // ?action=config — so "PIN-protected" meant nothing: anyone could fetch the PIN, and the report
+    // payload was readable from any origin (GAS answers Access-Control-Allow-Origin: *). The PIN is
+    // now validated HERE, on every admin call, against the tenant's Settings guardPin, and it is no
+    // longer published. Applies to the human-facing admin actions only — machine callers
+    // (signOutByCard, assignedCards, the retention/expiry triggers) authenticate with the shared
+    // secret or run server-side and are deliberately untouched.
+    if (_requiresGuardPin_(data)) {
+      var pinCheck = _verifyGuardPin_(data, data.sheetId, data.origin || '');
+      if (!pinCheck.valid) {
+        return jsonResponse({
+          status: 'error',
+          error: pinCheck.error,
+          retryAfterSeconds: pinCheck.retryAfterSeconds || null,
+        }, pinCheck.httpStatus);
+      }
+    }
+
+    // Handle guard login (the human's PIN entry, validated server-side)
+    if (data.action === 'guardLogin') {
+      return handleGuardLogin(data);
     }
 
     // Handle migration
@@ -1817,7 +1967,10 @@ function _configPayload_(sheetId) {
     expiryInfo.expiryState !== 'expired';
   return {
     status: 'ok',
-    guardPin: settings.guardPin,
+    // F3 STAGE 2 (2026-09-13): guardPin is deliberately NOT published here any more. It used to be
+    // sent to every caller so the browser could compare it locally — which made the PIN public and
+    // the admin report readable from anywhere. Clients now POST it to ?action=guardLogin, which
+    // validates it server-side. The kiosk keeps its own copy in settings.json for offline fallback.
     autoSignOutEnabled: settings.enabled,
     autoSignOutHour: settings.hour,
     timezone: settings.timezone || (customer ? customer.timezone : null) || Session.getScriptTimeZone(),
@@ -4503,8 +4656,15 @@ function handleSignOutByCard(data) {
   }
 
   // Card Available / not found / unassigned → nothing to do (idempotent).
+  //
+  // F1b (2026-09-13): the reason matters to the caller. When a sign-out COMMITS here but the response
+  // is lost (GAS latency vs the gateway's 15 s timeout is a real, observed race), the gateway's retry
+  // lands exactly here — the card has already been released — and if it treats this as a plain noop it
+  // advances past the record WITHOUT de-provisioning, leaving a live face/QR on the reader for a
+  // signed-out visitor. The gateway uses this reason to decide: unassigned ⇒ any device person under
+  // this card is an orphan and must go.
   if (!visitorNumber || cardStatus !== 'Assigned') {
-    return jsonResponse({ status: 'noop', message: 'card not assigned' }, 200);
+    return jsonResponse({ status: 'noop', message: 'card not assigned', reason: 'card_not_assigned' }, 200);
   }
 
   // 2. Run the shared sign-out path, serialized exactly like the guard portal.

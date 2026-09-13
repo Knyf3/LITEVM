@@ -197,8 +197,8 @@ console.log('\n=== T1: ?action=bootstrap assembles one round trip ===');
 READS.length = 0; for (const k of Object.keys(READS)) delete READS[k];
 const b1 = boot();
 check('status ok', b1.status === 'ok', b1.status);
-check('version is 1.20.1', b1.version === '1.20.1' && b1.version === sandbox.CODE_VERSION, b1.version);
-check('config.guardPin from Settings tab', b1.config && b1.config.guardPin === '4321', b1.config && b1.config.guardPin);
+check('version is 1.21.0', b1.version === '1.21.0' && b1.version === sandbox.CODE_VERSION, b1.version);
+check('config does NOT publish guardPin (F3 stage 2)', b1.config && b1.config.guardPin === undefined, b1.config && b1.config.guardPin);
 check('config.actEnabled true for pro+active', b1.config && b1.config.actEnabled === true, b1.config && b1.config.actEnabled);
 check('destinations returned (2)', Array.isArray(b1.destinations) && b1.destinations.length === 2, b1.destinations && b1.destinations.length);
 check('visitorTypes returned (2)', Array.isArray(b1.visitorTypes) && b1.visitorTypes.length === 2, b1.visitorTypes);
@@ -231,10 +231,15 @@ check('boot #2: VisitorLog IS re-read (today never cached)', d2('VisitorLog') >=
 check('cache put used a TTL', CACHE_OPS.some(o => o.startsWith('put:litevm:v1:settings:') && o.endsWith('@120')), CACHE_OPS.filter(o => o.startsWith('put:')));
 
 console.log('\n=== T3: a Settings write invalidates the cached read ===');
-sandbox._setSettingValue_(customerSS.getSheetByName('Settings'), 'guardPin', '9999');
+const GUARD = '9999'; // the PIN value written below; reused by T7/T9
+sandbox._setSettingValue_(customerSS.getSheetByName('Settings'), 'guardPin', GUARD);
 check('invalidation emitted a cache remove', CACHE_OPS.some(o => o === 'remove:litevm:v1:settings:' + SHEET_T1), CACHE_OPS.filter(o => o.startsWith('remove:')));
-const b3 = boot();
-check('new guard PIN visible immediately after write', b3.config.guardPin === '9999', b3.config.guardPin);
+// The probe changed with F3 stage 2: the PIN is no longer published, so cache freshness is now
+// observed through the server-side validator instead of a config field.
+const loginNew = body(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'guardLogin', sheetId: SHEET_T1, pin: GUARD }) } }));
+check('new guard PIN accepted straight after the write (cache invalidated)', loginNew.status === 'ok', loginNew);
+const loginOld = body(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'guardLogin', sheetId: SHEET_T1, pin: '4321' }) } }));
+check('old guard PIN rejected straight after the write', loginOld.status === 'error' && loginOld.error === 'INVALID_PIN', loginOld);
 
 console.log('\n=== T4: card email is QUEUED by default (Tier 2) ===');
 MAIL_CALLS.length = 0;
@@ -262,7 +267,7 @@ console.log('\n=== T6: legacy actions still work (no regression) ===');
 const t = body(sandbox.doGet({ parameter: { action: 'today', sheetId: SHEET_T1 } }));
 check('?action=today still returns visitors', t.status === 'ok' && t.visitors.length === 2, t.status);
 const c = body(sandbox.doGet({ parameter: { action: 'config', sheetId: SHEET_T1 } }));
-check('?action=config still returns guardPin', c.status === 'ok' && c.guardPin === '9999', c);
+check('?action=config no longer publishes guardPin', c.status === 'ok' && c.guardPin === undefined, c);
 const d = body(sandbox.doGet({ parameter: { action: 'destinations', sheetId: SHEET_T1 } }));
 check('?action=destinations still returns count', d.status === 'ok' && d.count === 2, d.count);
 const v = body(sandbox.doGet({ parameter: { action: 'visitorTypes', sheetId: SHEET_T1 } }));
@@ -296,13 +301,16 @@ check('_originAllowed_ scheme/slash-insensitive', sandbox._originAllowed_('https
 check('_originAllowed_ still rejects a foreign host', sandbox._originAllowed_('example.com', 'evil.example') === false);
 
 // (b) End-to-end: the ACTUAL defect was a foreign origin receiving the full report payload at 200.
-const okReport = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local' }));
-check('allow-listed origin → report served', okReport.status === 'ok', okReport.status);
-const badReport = post(Object.assign({}, reportBase, { origin: 'https://evil.example' }));
-check('foreign origin → report refused',
+// These calls now also carry the guard PIN (F3 stage 2) so that the ORIGIN gate is what is being
+// measured here; T9 measures the PIN gate on its own.
+const okReport = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local', guardPin: GUARD }));
+check('allow-listed origin + PIN → report served', okReport.status === 'ok', okReport.status);
+const badReport = post(Object.assign({}, reportBase, { origin: 'https://evil.example', guardPin: GUARD }));
+check('foreign origin → report refused (even with a valid PIN)',
   badReport.status === 'error' && /not available from this location/.test(badReport.error || ''), badReport);
-const machineReport = post(reportBase);
-check('no origin asserted → report served (machine caller)', machineReport.status === 'ok', machineReport.status);
+const machineReport = post(Object.assign({}, reportBase, { guardPin: GUARD }));
+check('no origin asserted → report served (machine caller)',
+  machineReport.status === 'ok', machineReport.status);
 
 // The register path shares _originAllowed_ now, so it must still block a foreign origin.
 const badReg = post({ sheetId: SHEET_T1, origin: 'https://evil.example', fullName: 'X' });
@@ -341,6 +349,41 @@ check('card released back to the pool',
 // (c) An already-signed-out row is idempotent, not an error.
 const again = sandbox._signOutVisitor_(SHEET_T1, 'V-20260913-002', new Date());
 check('repeat sign-out is idempotent', again.outcome === 'already_signed_out', again);
+
+console.log('\n=== T9: F3 stage 2 — admin actions carry the guard PIN, validated server-side ===');
+// (a) THE DEFECT: before stage 2 the PIN was only compared in the browser, so a report with no PIN
+// at all was served. Now it must be refused by the server.
+const noPin = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local' }));
+check('report with NO pin → refused', noPin.status === 'error' && noPin.error === 'GUARD_UNAUTHORIZED', noPin);
+// (b) A wrong PIN is refused, and it is audited.
+const badPin = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local', guardPin: '0000' }));
+check('report with a WRONG pin → refused', badPin.status === 'error' && badPin.error === 'GUARD_UNAUTHORIZED', badPin);
+check('failed PIN attempt audited in DeniedLog',
+  !!denied && denied._rows.some(r => r.indexOf('GUARD_UNAUTHORIZED') !== -1),
+  denied ? denied._rows.slice(-2) : null);
+// (c) The correct PIN is served.
+const okPin = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local', guardPin: GUARD }));
+check('report with the RIGHT pin → served', okPin.status === 'ok', okPin.status);
+// (d) The login response must not leak anything.
+check('guardLogin response is minimal (no PIN or token echoed)',
+  loginNew.status === 'ok' && loginNew.pin === undefined && loginNew.token === undefined && loginNew.guardPin === undefined, loginNew);
+// (e) Machine callers must NOT be PIN-gated: they authenticate with the shared secret, and no human
+// is present to type a PIN. (Empty fixture secret → it fails on the SECRET, which is the point.)
+const machineSignOut = post({ mode: 'signOutByCard', sheetId: SHEET_T1, cardNo: '5001' });
+check('signOutByCard fails on the SECRET, never on the PIN',
+  machineSignOut.error === 'LITEVM_UNAUTHORIZED', machineSignOut);
+// (f) Constant-time compare behaves like equality.
+check('_constantTimeEquals_ equal', sandbox._constantTimeEquals_('2345', '2345') === true);
+check('_constantTimeEquals_ unequal', sandbox._constantTimeEquals_('2345', '2346') === false);
+check('_constantTimeEquals_ length mismatch', sandbox._constantTimeEquals_('2345', '23456') === false);
+// (g) Brute-force lockout: a 4-digit PIN dies without one. Repeated failures must lock the tenant,
+// and — crucially — the lockout must apply even to the CORRECT PIN.
+for (let i = 0; i < 16; i++) post({ action: 'guardLogin', sheetId: SHEET_T1, pin: '1111' });
+const locked = post({ action: 'guardLogin', sheetId: SHEET_T1, pin: GUARD });
+check('lockout after repeated failures (even the right PIN is blocked)',
+  locked.status === 'error' && locked.error === 'TOO_MANY_ATTEMPTS', locked);
+const lockedReport = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local', guardPin: GUARD }));
+check('lockout also blocks the report path', lockedReport.error === 'TOO_MANY_ATTEMPTS', lockedReport);
 
 console.log('\n──────────────────────────────────────────────');
 console.log('Tier 1/2 GAS harness: ' + pass + ' passed, ' + fail + ' failed');

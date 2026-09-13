@@ -37,10 +37,13 @@
   // INIT
   // ──────────────────────────────────────────────
   function init() {
-    // Fetch guard PIN from GAS first
+    // Load tenant config first (no PIN in it any more — see verifyGuardPin)
     fetchSheetConfig().then(function () {
-      // Check PIN gate — use boolean flag stored on successful login
-      if (sessionStorage.getItem('guardAuth') !== 'true') {
+      // The session is authentic only if it still holds a PIN the server accepted. The old boolean
+      // flag alone is no longer sufficient: the PIN is what the admin calls present, so a session
+      // without one could not do anything anyway.
+      if (sessionStorage.getItem('guardAuth') !== 'true' || !_storedPin()) {
+        _clearPin();
         $('pin-overlay').classList.remove('hidden');
         $('pin-input').focus();
         setupPinHandler();
@@ -88,62 +91,120 @@
     } catch (e) { /* storage full / privacy mode — ignore */ }
   }
 
-  /** Fetch guard PIN from GAS, store in memory. Returns a promise. */
-  var _guardPinReport = CONFIG.GUARD_PIN || '1234';
-
-  function _applyConfig(data) {
-    if (data && data.status === 'ok' && data.guardPin) {
-      _guardPinReport = data.guardPin;
-    }
+  /**
+   * F3 STAGE 2 (2026-09-13): the guard PIN is NO LONGER fetched from the backend — it is not
+   * published any more (it used to ride along in ?action=config, so anyone could read it). The page
+   * POSTs the entered PIN to ?action=guardLogin, which validates it server-side, and holds it for
+   * the session so the admin calls can present it. sessionStorage is the right home: same origin,
+   * cleared with the tab, and strictly better than the old arrangement where the server handed the
+   * PIN to any caller who asked for it.
+   */
+  function _storedPin() {
+    try { return sessionStorage.getItem('guardPin') || null; } catch (e) { return null; }
+  }
+  function _storePin(pin) {
+    try { sessionStorage.setItem('guardPin', pin); } catch (e) { /* storage full / privacy mode */ }
+  }
+  function _clearPin() {
+    try {
+      sessionStorage.removeItem('guardPin');
+      sessionStorage.removeItem('guardAuth');
+    } catch (e) { /* ignore */ }
   }
 
+  /** Validate the PIN server-side. Resolves {ok:true} | {ok:false, error, retryAfterSeconds?}. */
+  function verifyGuardPin(pin) {
+    return fetch(CONFIG.API_BASE + '?action=guardLogin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'guardLogin', sheetId: CONFIG.SHEET_ID, pin: pin,
+        origin: window.location.origin,
+      }),
+      signal: AbortSignal.timeout(30000),
+    })
+      .then(function (r) { return r.text(); })
+      .then(function (text) {
+        var d;
+        try { d = JSON.parse(text); } catch (e) { return { ok: false, error: 'Invalid server response' }; }
+        if (d && d.status === 'ok') return { ok: true };
+        return {
+          ok: false,
+          error: d && d.error === 'TOO_MANY_ATTEMPTS'
+            ? 'Too many attempts. Try again in a few minutes.'
+            : 'Incorrect PIN. Try again.',
+          retryAfterSeconds: d && d.retryAfterSeconds,
+        };
+      })
+      .catch(function (err) {
+        return { ok: false, error: err && err.name === 'AbortError' ? 'Server timed out. Try again.' : 'Cannot reach the server.' };
+      });
+  }
+
+  /** Tenant config (no PIN in it any more). Returns a promise; callers only need completion. */
   function fetchSheetConfig() {
-    // Serve a fresh (≤4h) cached config first to skip the GAS round-trip.
     var cached = readCacheFresh('config');
-    if (cached) {
-      _applyConfig(cached);
-      return Promise.resolve(cached);
-    }
+    if (cached) return Promise.resolve(cached);
 
     return fetch(CONFIG.API_BASE + '?action=config&sheetId=' + CONFIG.SHEET_ID)
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        _applyConfig(data);
         if (data && data.status === 'ok') {
           writeCache('config', data); // cache SUCCESS only
         }
         return data;
       })
       .catch(function () {
-        var stale = readCacheStale('config');
-        if (stale) {
-          _applyConfig(stale);
-          return stale;
-        }
-        _guardPinReport = CONFIG.GUARD_PIN || '1234';
-        return null;
+        return readCacheStale('config'); // may be null — the page works without it
       });
   }
+
+  var _pinHandlerAttached = false;
 
   function setupPinHandler() {
     var input = $('pin-input');
     var error = $('pin-error');
+    if (!input || !error) return;
+
+    // Re-entrancy guard: this is also called when a session expires mid-use, and stacking a second
+    // set of listeners would fire the login twice.
+    if (_pinHandlerAttached) { input.focus(); return; }
+    _pinHandlerAttached = true;
+
+    var busy = false;
+
+    function submit() {
+      if (busy) return;
+      var pin = input.value.trim();
+      if (!pin) return;
+      busy = true;
+      error.classList.add('hidden');
+      input.disabled = true;
+      // F3 STAGE 2: the PIN is validated by the SERVER. The page no longer knows the answer, so
+      // there is nothing here to read out of the bundle or the config response.
+      verifyGuardPin(pin).then(function (res) {
+        busy = false;
+        input.disabled = false;
+        if (!res.ok) {
+          error.textContent = res.error;
+          error.classList.remove('hidden');
+          input.value = '';
+          input.focus();
+          return;
+        }
+        _storePin(pin);
+        try { sessionStorage.setItem('guardAuth', 'true'); } catch (e) { /* ignore */ }
+        $('pin-overlay').classList.add('hidden');
+        $('main-content').classList.remove('hidden');
+        App.render();
+        setupApp();
+      });
+    }
 
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
-        var pin = input.value.trim();
-        if (pin === _guardPinReport) {
-          sessionStorage.setItem('guardAuth', 'true');
-          $('pin-overlay').classList.add('hidden');
-          $('main-content').classList.remove('hidden');
-          App.render();
-          setupApp();
-        } else {
-          error.classList.remove('hidden');
-          input.value = '';
-          input.focus();
-        }
+        submit();
       }
     });
 
@@ -300,6 +361,8 @@
     var body = JSON.stringify({
       action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to, mode: 'full',
       origin: window.location.origin,
+      // F3 STAGE 2: the server validates this PIN on every admin call.
+      guardPin: _storedPin(),
     });
 
     fetch(url, {
@@ -312,7 +375,28 @@
       .then(function (text) {
         var data;
         try { data = JSON.parse(text); } catch (e) { showError('Invalid server response'); return; }
-        if (!data || data.status !== 'ok') { showError(data && data.message ? data.message : 'Request failed'); return; }
+        if (!data || data.status !== 'ok') {
+          // F3 STAGE 2: the server rejects a missing, stale, or rate-limited PIN. Drop the session
+          // and ask for it again rather than showing a bare failure.
+          if (data && (data.error === 'GUARD_UNAUTHORIZED' || data.error === 'TOO_MANY_ATTEMPTS')) {
+            _clearPin();
+            $('main-content').classList.add('hidden');
+            $('pin-overlay').classList.remove('hidden');
+            var pe = $('pin-error');
+            if (pe) {
+              pe.textContent = data.error === 'TOO_MANY_ATTEMPTS'
+                ? 'Too many attempts. Try again in a few minutes.'
+                : 'Session expired — please enter the PIN again.';
+              pe.classList.remove('hidden');
+            }
+            var pi = $('pin-input');
+            if (pi) { pi.value = ''; pi.focus(); }
+            setupPinHandler();
+            return;
+          }
+          showError(data && data.message ? data.message : 'Request failed');
+          return;
+        }
         renderReport(data);
       })
       .catch(function (err) {

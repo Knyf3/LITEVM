@@ -103,16 +103,20 @@
     } catch (e) { /* storage full / privacy mode — ignore */ }
   }
 
-  /** Fetch guard PIN and settings from GAS, store in memory. Returns a promise. */
-  var _guardPin = '1234'; // fallback
+  /**
+   * Offline fallback guard PIN. F3 STAGE 2 (2026-09-13): the backend no longer PUBLISHES the guard
+   * PIN (it used to hand it to anyone who called ?action=config), so this local settings.json copy is
+   * used only when the server cannot be reached. The authoritative check is a server-side call in
+   * attemptLogin(). Pre-loading it here also means a kiosk still running the older client keeps
+   * working after the backend is updated — the two can be deployed in either order.
+   */
+  var _guardPin = CONFIG.GUARD_PIN || '1234';
   var _actEnabled = false; // ACTApi door access entitlement
   var _lastConfigData = null; // cached config response for expiry banner
 
   function _applyConfig(data) {
     _lastConfigData = data;
-    if (data && data.status === 'ok' && data.guardPin) {
-      _guardPin = data.guardPin;
-    }
+    // guardPin is deliberately no longer read from the config payload (F3 stage 2).
     // Store ACTApi entitlement flag from server
     if (data && typeof data.actEnabled === 'boolean') {
       _actEnabled = data.actEnabled;
@@ -199,13 +203,64 @@
     });
   }
 
+  /**
+   * Server-side guard-PIN check (F3 stage 2).
+   * Resolves: 'ok' | 'invalid' | 'locked' | 'unreachable'.
+   */
+  function verifyGuardPinOnServer(pin) {
+    return fetch(CONFIG.API_BASE + '?action=guardLogin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'guardLogin', sheetId: CONFIG.SHEET_ID, pin: pin,
+        origin: window.location.origin,
+      }),
+    })
+      .then(function (r) { return r.text(); })
+      .then(function (text) {
+        var d;
+        try { d = JSON.parse(text); } catch (e) { return 'unreachable'; }
+        if (d && d.status === 'ok') return 'ok';
+        if (d && d.error === 'TOO_MANY_ATTEMPTS') return 'locked';
+        return 'invalid';
+      })
+      .catch(function () { return 'unreachable'; });
+  }
+
   function attemptLogin() {
     var input = $('#guard-pin-input');
     var error = $('#guard-login-error');
+    var btn = $('#btn-guard-login');
     if (!input || !error) return;
 
     var pin = input.value.trim();
-    if (pin === _guardPin) {
+    if (!pin) return;
+
+    // This is a network call now, and the backend's floor is ~5-8 s on a quiet day — so show a busy
+    // state instead of looking frozen.
+    var label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    error.style.display = 'none';
+
+    verifyGuardPinOnServer(pin).then(function (verdict) {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+
+      // The SERVER is the authority on the PIN. Only when it cannot be reached does the kiosk fall
+      // back to its own settings.json copy — a deliberate availability trade-off that keeps the front
+      // desk usable during a GAS or network outage. A server 'invalid'/'locked' is never overridden.
+      var accepted = verdict === 'ok'
+        || (verdict === 'unreachable' && pin === _guardPin);
+
+      if (!accepted) {
+        error.textContent = verdict === 'locked'
+          ? 'Too many attempts. Try again in a few minutes.'
+          : 'Incorrect PIN.';
+        error.style.display = 'block';
+        input.value = '';
+        input.focus();
+        return;
+      }
+
       sessionStorage.setItem('guardAuth', 'true');
       hideLogin();
       // Run the normal init now
@@ -221,11 +276,7 @@
         var inp = $('#search-input');
         if (inp) inp.focus();
       }, 300);
-    } else {
-      error.style.display = 'block';
-      input.value = '';
-      input.focus();
-    }
+    });
   }
 
   // ──────────────────────────────────────────────
