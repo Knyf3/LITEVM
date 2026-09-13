@@ -3,7 +3,7 @@
 import json, time, urllib.request, urllib.parse, urllib.error
 
 R = "http://192.168.2.211:8090"
-PASS = "admin123"
+PASS = "<DEVICE-PASS-REDACTED>"
 KIOSK = "http://192.168.2.238:8123/"
 
 

@@ -3,7 +3,7 @@
 import json, time, urllib.request, urllib.parse, urllib.error
 
 R = "http://192.168.2.211:8090"
-P = "admin123"
+P = __import__("os").environ.get("UNIUBI_PASS", "")   # never commit the device password
 KIOSK = "http://192.168.2.238:8123/"
 
 

@@ -34,7 +34,7 @@ and evidence discipline: see the `live-system-test-execution` skill (§verbs).
 | UStarAPI gateway | `http://192.168.2.194:8091` | ✅ Running **v1.5.4.0**, licensed **pro/permanent**, `/swagger` 200, Settings sha256 `80DA8521C4207D52…` | `/api/health`, `/api/license/status` |
 | Gateway config | `Litevm.Secret` = `<REDACTED-SECRET>` (= tenant ✅), SheetId = demo tenant, CardPool 5001–5215, **Verification = Face only (Qr false, Card false)** | ✅ / ⚠ see B4 | Settings.json read |
 | Device roster | 1 device — `E03C1CB54A2F5601` `.211:8090`, alias **E53-out**, Role **out**, DoorGroups `[2..7]` | ⚠ single OUT reader only — see B5 | Settings.json read |
-| E53 reader | `192.168.2.211:8090`, fw **OS-V2.2112**, pass `admin123` | ✅ reachable, live | `getDeviceKey`, `device/information` |
+| E53 reader | `192.168.2.211:8090`, fw **OS-V2.2112**, pass `<DEVICE-PASS-REDACTED>` | ✅ reachable, live | `getDeviceKey`, `device/information` |
 | Gateway→device | live poll + heartbeat | ✅ `onlineCount` **1**, `lastSeen` advancing (~60 s cadence) | `/api/devices` |
 | **Device callbacks** | **9 of 10** slots → `http://192.168.2.194:8091/...` (repointed 2026-09-13, B1) | ✅ fixed | `/api/devices/{key}/callbacks` |
 | ↳ `taskresultCallback` | still `http://192.168.2.113:8091/api/TaskResult` | ⚠ **UNFIXABLE on OS-V2.2112** — no setter exists (8 candidates probed, byte-identical to a nonsense-path control). Vendor input required; legacy task-result instrumentation stays dead | `callbacks` read-back |
