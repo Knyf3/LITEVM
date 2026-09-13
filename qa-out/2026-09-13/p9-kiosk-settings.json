@@ -9,7 +9,7 @@
   "SHEET_ID": "1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs",
   "API_BASE": "https://script.google.com/macros/s/AKfycbyQA6WibRYfpTJYA7syYaskM2n45csIs_sjzn-FfF8sNKaAFWOkIrNcRfYC-nTJc7JK/exec",
   "GUARD_PIN": "2345",
-  "LITEVM_SECRET": "USTARSecret",
+  "LITEVM_SECRET": "<REDACTED-SECRET>",
   "ACTApiBase": "",
   "UStarApiBase": "http://192.168.2.194:8091",
   "ACTExtraRights": {

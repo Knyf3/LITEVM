@@ -9,7 +9,7 @@ import json, time, urllib.request, urllib.error
 
 KIOSK = "http://192.168.2.238:8123/"
 GW = "http://192.168.2.194:8091"
-SECRET = "USTARSecret"
+SECRET = "<REDACTED-SECRET>"
 ORIGIN = "https://demo.litevm.itt.web.id"
 
 

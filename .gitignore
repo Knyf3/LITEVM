@@ -36,3 +36,9 @@ apps-script/.hermes/
 
 # Marketing video production workspace (raw assets + build scripts)
 marketing/video/
+
+# QA config dumps carry live tenant values — never commit raw
+**/kiosk_settings*.json
+**/*kiosk-settings*.json
+**/tenant-settings*.json
+**/Settings.local.json

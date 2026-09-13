@@ -30,9 +30,9 @@ and evidence discipline: see the `live-system-test-execution` skill (§verbs).
 | GAS backend | `/exec` (deployment `AKfycbyQA6W…`) | ✅ live, deployed **v1.20.0** (== repo `CODE_VERSION`) — adds `?action=bootstrap`, the read-through CacheService layer, and QUEUED card email (`CARD_EMAIL_MODE`) | `?action=health`, `?action=bootstrap` |
 | Tenant (demo) | sheet `1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs` | ✅ active: guardPin `2345`, tz `Asia/Jakarta`, autoSignOut **enabled 22:00**, `expiryState: none`, `actEnabled: true` | `?action=config` |
 | Sheets DB | VisitorLog 15 canonical headers, **19 real data rows** (18 Signed Out / 1 Rejected; nothing dated today); cardno = 215 cards **all Available** (20 per DoorGroup 2–7) | ✅ healthy baseline | GAPI read, `?action=cardpool` |
-| Tenant secret | `Settings.ustarSecret` = `USTARSecret` | ✅ present | GAPI `Settings!A1:C40` |
+| Tenant secret | `Settings.ustarSecret` = `<REDACTED-SECRET>` | ✅ present | GAPI `Settings!A1:C40` |
 | UStarAPI gateway | `http://192.168.2.194:8091` | ✅ Running **v1.5.4.0**, licensed **pro/permanent**, `/swagger` 200, Settings sha256 `80DA8521C4207D52…` | `/api/health`, `/api/license/status` |
-| Gateway config | `Litevm.Secret` = `USTARSecret` (= tenant ✅), SheetId = demo tenant, CardPool 5001–5215, **Verification = Face only (Qr false, Card false)** | ✅ / ⚠ see B4 | Settings.json read |
+| Gateway config | `Litevm.Secret` = `<REDACTED-SECRET>` (= tenant ✅), SheetId = demo tenant, CardPool 5001–5215, **Verification = Face only (Qr false, Card false)** | ✅ / ⚠ see B4 | Settings.json read |
 | Device roster | 1 device — `E03C1CB54A2F5601` `.211:8090`, alias **E53-out**, Role **out**, DoorGroups `[2..7]` | ⚠ single OUT reader only — see B5 | Settings.json read |
 | E53 reader | `192.168.2.211:8090`, fw **OS-V2.2112**, pass `admin123` | ✅ reachable, live | `getDeviceKey`, `device/information` |
 | Gateway→device | live poll + heartbeat | ✅ `onlineCount` **1**, `lastSeen` advancing (~60 s cadence) | `/api/devices` |
@@ -74,7 +74,7 @@ negatives. Verify with `nc`/`curl`/SSH instead.
 ```json
 { "SHEET_ID": "1-rHZEn2AWvezVBW3qfRLwOWE7mwHSxcV0_UJNVOSqAs",
   "API_BASE": "https://script.google.com/macros/s/AKfycbyQA6WibRYfpTJYA7syYaskM2n45csIs_sjzn-FfF8sNKaAFWOkIrNcRfYC-nTJc7JK/exec",
-  "GUARD_PIN": "2345", "LITEVM_SECRET": "USTARSecret",
+  "GUARD_PIN": "2345", "LITEVM_SECRET": "<REDACTED-SECRET>",
   "UStarApiBase": "http://192.168.2.194:8091", "ACTApiBase": "",
   "ACTExtraRights": { "timezone": 2, "validityDays": 1 }, "PORT": 8123 }
 ```
