@@ -128,13 +128,16 @@
         var d;
         try { d = JSON.parse(text); } catch (e) { return { ok: false, error: 'Invalid server response' }; }
         if (d && d.status === 'ok') return { ok: true };
-        return {
-          ok: false,
-          error: d && d.error === 'TOO_MANY_ATTEMPTS'
-            ? 'Too many attempts. Try again in a few minutes.'
-            : 'Incorrect PIN. Try again.',
-          retryAfterSeconds: d && d.retryAfterSeconds,
-        };
+        // Only an explicit rejection is reported as a wrong PIN. An unrecognised response means the
+        // backend has not been updated to Code 1.21.0 yet — say so rather than blaming the operator.
+        var err = d && d.error;
+        if (err === 'TOO_MANY_ATTEMPTS') {
+          return { ok: false, error: 'Too many attempts. Try again in a few minutes.', retryAfterSeconds: d.retryAfterSeconds };
+        }
+        if (err === 'INVALID_PIN' || err === 'GUARD_UNAUTHORIZED') {
+          return { ok: false, error: 'Incorrect PIN. Try again.' };
+        }
+        return { ok: false, error: 'Sign-in is unavailable right now (backend not updated?).' };
       })
       .catch(function (err) {
         return { ok: false, error: err && err.name === 'AbortError' ? 'Server timed out. Try again.' : 'Cannot reach the server.' };

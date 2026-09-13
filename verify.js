@@ -206,6 +206,13 @@
   /**
    * Server-side guard-PIN check (F3 stage 2).
    * Resolves: 'ok' | 'invalid' | 'locked' | 'unreachable'.
+   *
+   * DEPLOY-ORDER SAFETY (2026-09-13): only an EXPLICIT rejection counts as 'invalid'. An older
+   * backend that has no ?action=guardLogin route answers something unrecognised (a registration
+   * error, an unknown-action response), and treating that as "wrong PIN" would lock the guard out of
+   * a kiosk that has been updated before the backend. Everything unrecognised resolves to
+   * 'unreachable', which falls back to the local settings.json PIN — so the two halves can be
+   * deployed in either order, and a half-finished rollout degrades instead of breaking.
    */
   function verifyGuardPinOnServer(pin) {
     return fetch(CONFIG.API_BASE + '?action=guardLogin', {
@@ -222,7 +229,8 @@
         try { d = JSON.parse(text); } catch (e) { return 'unreachable'; }
         if (d && d.status === 'ok') return 'ok';
         if (d && d.error === 'TOO_MANY_ATTEMPTS') return 'locked';
-        return 'invalid';
+        if (d && (d.error === 'INVALID_PIN' || d.error === 'GUARD_UNAUTHORIZED')) return 'invalid';
+        return 'unreachable'; // unknown route / unexpected shape → do not punish the guard
       })
       .catch(function () { return 'unreachable'; });
   }
