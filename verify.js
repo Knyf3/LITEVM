@@ -20,6 +20,8 @@
     isBulkProcessing: false,
     provisionFailed: false,     // UStar gate-reader provisioning failed (red banner)
     provisionPayload: null,     // last provision payload for the retry button
+    todayFetchInFlight: false,  // single-flight guard for the today-list refresh
+    bootstrapDone: false,       // boot payload (config+destinations+types+today) applied
   };
 
   // ──────────────────────────────────────────────
@@ -51,9 +53,13 @@
       App.render();
       checkOnlineStatus();
       setupSearchInput();
-      loadTodayVisitors();
-      // Auto-refresh today's visitors every 30 seconds
-      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
+      // ONE round trip for the boot (config + destinations + types + today);
+      // the refresh is replanned from the end of each call, never on a timer
+      // that can outrun its own response.
+      bootstrapKiosk().then(function (booted) {
+        if (!booted) loadTodayVisitors();
+        scheduleTodayRefresh();
+      });
       // Focus search on load
       setTimeout(function () {
         var inp = $('#search-input');
@@ -207,8 +213,10 @@
       App.render();
       checkOnlineStatus();
       setupSearchInput();
-      loadTodayVisitors();
-      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
+      bootstrapKiosk().then(function (booted) {
+        if (!booted) loadTodayVisitors();
+        scheduleTodayRefresh();
+      });
       setTimeout(function () {
         var inp = $('#search-input');
         if (inp) inp.focus();
@@ -698,17 +706,20 @@
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload),
       redirect: 'follow',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     .then(function (res) { return res.text(); })
     .then(function (text) {
-      state.actionInProgress = false;
-      if (overlay) overlay.classList.add('hidden');
-
       var data;
       try { data = JSON.parse(text); } catch (e) {
-        showError(App.t('unexpected-server-response'));
+        // Ambiguous: Apps Script can return a non-JSON body under load even
+        // when the write committed. Ask the sheet what happened rather than
+        // showing an error and silently dropping provisioning (defect F2).
+        recoverAfterAmbiguousAction(visitorNumber, status);
         return;
       }
+      state.actionInProgress = false;
+      if (overlay) overlay.classList.add('hidden');
 
       if (data.status === 'ok') {
         if (status === 'Checked In') {
@@ -718,12 +729,9 @@
             cardStatus: data.cardStatus
           });
 
-          // Grant ACT door access if card and door group are available
-          if (data.cardNo && data.doorGroupId) {
-            var actApiBase = CONFIG.ACTApiBase;
-            if (actApiBase !== null && actApiBase !== undefined) {
-              grantActAccess(data.cardNo, data.doorGroupId, actApiBase);
-            }
+          // Grant ACT door access if card, door group and an ACT base are available
+          if (data.cardNo && data.doorGroupId && hasActApi()) {
+            grantActAccess(data.cardNo, data.doorGroupId, CONFIG.ACTApiBase);
           }
 
           // Provision the gate-reader credential (face + QR) — non-blocking, after ACT access.
@@ -734,11 +742,8 @@
           showSignedOutState(state.currentVisitor);
           // Revoke ACT door access if card was assigned
           var cardNo = data.cardNo || (state.currentVisitor && state.currentVisitor.cardNo);
-          if (cardNo) {
-            var actApiBase = CONFIG.ACTApiBase;
-            if (actApiBase !== null && actApiBase !== undefined) {
-              revokeActAccess(cardNo, actApiBase);
-            }
+          if (cardNo && hasActApi()) {
+            revokeActAccess(cardNo, CONFIG.ACTApiBase);
           }
         } else {
           showRejectedState(state.currentVisitor);
@@ -752,7 +757,9 @@
     .catch(function (err) {
       state.actionInProgress = false;
       if (overlay) overlay.classList.add('hidden');
-      showError(App.t('err-network'));
+      // Timeout or transport failure — the write may have committed anyway, so
+      // reconcile instead of declaring failure.
+      recoverAfterAmbiguousAction(visitorNumber, status);
     });
   }
 
@@ -875,24 +882,253 @@
   // ──────────────────────────────────────────────
   // TODAY'S VISITORS
   // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────────
+  // TODAY REFRESH SCHEDULER + BOOT
+  // ──────────────────────────────────────────────
+  // A GAS call costs ~5-8s on a quiet system and 20-120s under load. A fixed
+  // setInterval(fn, 30000) therefore fires again BEFORE the previous response
+  // lands: reads stack up, Apps Script serialises them (the script lock is held
+  // for the whole of a check-in), and the guard waits a minute or more. The
+  // refresh is now a self-scheduling setTimeout that runs only after the
+  // previous call settled, never overlaps (single-flight), and yields while an
+  // action is in progress.
+  var TODAY_REFRESH_MS = 90000;     // steady-state gap between refreshes
+  var TODAY_BUSY_RETRY_MS = 15000;  // re-check gap while an action is running
+  var FETCH_TIMEOUT_MS = 120000;    // generous: a slow answer beats a false failure
+
+  function clearTodayRefresh() {
+    if (window.todayRefreshTimeout) {
+      clearTimeout(window.todayRefreshTimeout);
+      window.todayRefreshTimeout = null;
+    }
+    // Legacy handle: an interval armed by an older build must never survive.
+    if (window.todayRefreshInterval) {
+      clearInterval(window.todayRefreshInterval);
+      window.todayRefreshInterval = null;
+    }
+  }
+
+  function scheduleTodayRefresh(delayMs) {
+    clearTodayRefresh();
+    var delay = (typeof delayMs === 'number') ? delayMs : TODAY_REFRESH_MS;
+    window.todayRefreshTimeout = setTimeout(function () {
+      window.todayRefreshTimeout = null;
+      loadTodayVisitors();
+    }, delay);
+  }
+
+  /** Stop refreshing (operation starting). */
+  function pauseTodayRefresh() { clearTodayRefresh(); }
+
+  /** Restart the refresh cycle after an operation. */
+  function resumeTodayRefresh() { scheduleTodayRefresh(TODAY_REFRESH_MS); }
+
+  /**
+   * One round trip for the whole boot: config + destinations + visitor types +
+   * today's list. Every GAS invocation carries a fixed cost before the script
+   * even starts, so collapsing 3-4 calls into one removes 2-3 of those floors
+   * from every kiosk start.
+   *
+   * Resolves true when the payload was applied; false means the caller should
+   * fall back to the legacy config + today calls (e.g. the backend has not been
+   * redeployed with ?action=bootstrap yet).
+   */
+  function bootstrapKiosk() {
+    var url = CONFIG.API_BASE + '?action=bootstrap&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID) + '&_=' + Date.now();
+    return fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain' },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    .then(function (res) { return res.text(); })
+    .then(function (text) {
+      var data;
+      try { data = JSON.parse(text); } catch (e) { return false; }
+      if (!data || data.status !== 'ok' || !data.config) return false;
+      _applyConfig(data.config);
+      writeCache('config', data.config);
+      if (Array.isArray(data.destinations)) writeCache('destinations', data.destinations);
+      if (Array.isArray(data.visitorTypes)) writeCache('visitorTypes', data.visitorTypes);
+      if (Array.isArray(data.visitors)) {
+        state.todayVisitors = data.visitors;
+        renderTodayVisitors();
+      }
+      showExpiryBanner();
+      state.bootstrapDone = true;
+      return true;
+    })
+    .catch(function () { return false; });
+  }
+
+  /**
+   * Resolve a door-group id from the cached Destination list. Only the recovery
+   * path needs this: the check-in response was lost, so the visitor record
+   * (which carries Destination) is all we have to re-derive the door group.
+   */
+  function doorGroupIdForDestination_(destination) {
+    var rows = readCacheStale('destinations');
+    if (!rows || !destination) return null;
+    var want = String(destination).trim().toLowerCase();
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {};
+      var dest = '';
+      var dg = null;
+      for (var k in row) {
+        if (!Object.prototype.hasOwnProperty.call(row, k)) continue;
+        var key = String(k).toLowerCase().replace(/[^a-z]/g, '');
+        if (key === 'destination') dest = String(row[k] || '').trim().toLowerCase();
+        else if (key === 'doorgroupid' || key === 'doorgroup') dg = row[k];
+      }
+      if (dest === want && dg !== null && String(dg).trim() !== '') {
+        return parseInt(dg, 10) || String(dg).trim();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * After an ambiguous check-in/sign-out (timeout, aborted, non-JSON body) the
+   * write may well have committed — Apps Script can lose a response under load.
+   * Re-read the visitor and settle the UI on what the SHEET says. This is the
+   * only path that can still provision a gate credential when the original
+   * response is lost (defect F2), so it is deliberately idempotent: re-running
+   * it after a completed action is harmless.
+   */
+  function recoverAfterAmbiguousAction(visitorNumber, intendedStatus) {
+    var MAX_ATTEMPTS = 3;
+    var attempt = 0;
+    var expect = intendedStatus;
+
+    function hideOverlay() {
+      state.actionInProgress = false;
+      var overlay = $('#loading-overlay');
+      if (overlay) overlay.classList.add('hidden');
+    }
+
+    // Settle on what the backend says actually happened.
+    function settle(visitor) {
+      hideOverlay();
+      if (expect === 'Checked In') {
+        showVerifiedSuccess(visitor, {
+          cardNo: visitor.cardNo || null,
+          cardStatus: visitor.cardNo ? 'assigned' : null
+        });
+        var dgId = doorGroupIdForDestination_(visitor.destination);
+        if (hasActApi() && visitor.cardNo && dgId) {
+          grantActAccess(visitor.cardNo, dgId, CONFIG.ACTApiBase);
+        }
+        // The whole point: a lost response must not cost the visitor their
+        // credential. Everything provisioning needs is re-read from the sheet.
+        if (visitor.cardNo && visitor.selfieUrl && visitor.fullName) {
+          if (dgId) {
+            provisionUstar(visitor.cardNo, dgId, visitor.selfieUrl, visitor.fullName);
+          } else {
+            // No door group known (the destinations cache is cold). Provisioning
+            // without one would create an access-less person on the reader, so
+            // fail LOUDLY instead: keep the payload and raise the banner so the
+            // guard's retry button can finish the job.
+            state.provisionPayload = {
+              cardNo: visitor.cardNo, doorGroupId: null,
+              selfieUrl: visitor.selfieUrl, visitorName: visitor.fullName
+            };
+            state.provisionFailed = true;
+            showProvisionBanner();
+            console.warn('Recovered check-in for card ' + visitor.cardNo +
+              ' but no door group is known — provisioning deferred to the retry button');
+          }
+        }
+      } else if (expect === 'Signed Out') {
+        showSignedOutState(visitor);
+        if (hasActApi() && visitor.cardNo) revokeActAccess(visitor.cardNo, CONFIG.ACTApiBase);
+      } else {
+        showRejectedState(visitor);
+      }
+      loadTodayVisitors();
+    }
+
+    // The sheet still shows the old status: the action genuinely did not land.
+    function giveUp() {
+      hideOverlay();
+      showError(App.t('err-network'));
+      resumeTodayRefresh();
+    }
+
+    function tryOnce() {
+      attempt++;
+      var url = CONFIG.API_BASE + '?action=lookup&visitorNumber=' + encodeURIComponent(visitorNumber) +
+        '&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID) + '&_=' + Date.now();
+      fetch(url, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain' },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+      .then(function (res) { return res.text(); })
+      .then(function (text) {
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { data = null; }
+        var v = data && data.visitor;
+        if (v && v.status === expect) { settle(v); return; }
+        if (attempt < MAX_ATTEMPTS) { setTimeout(tryOnce, attempt * 4000); return; }
+        giveUp();
+      })
+      .catch(function () {
+        if (attempt < MAX_ATTEMPTS) { setTimeout(tryOnce, attempt * 4000); return; }
+        giveUp();
+      });
+    }
+
+    console.warn('Ambiguous ' + intendedStatus + ' response for ' + visitorNumber +
+      ' — reconciling against the sheet instead of reporting a failure');
+    tryOnce();
+  }
+
+  /**
+   * True when an ACT integration is actually configured. The old check was
+   * `!== null && !== undefined`, which let an empty string through: every
+   * sign-out then fired GET /api/users/<card>/extra-rights at the kiosk's OWN
+   * origin, producing a 404 on every operation (defect F4).
+   */
+  function hasActApi() {
+    return typeof CONFIG.ACTApiBase === 'string' && CONFIG.ACTApiBase.trim() !== '';
+  }
+
   function loadTodayVisitors() {
+    // Single-flight: two overlapping today-reads are what turned a 6s call into
+    // a 120s one, because Apps Script serialises them.
+    if (state.todayFetchInFlight) return;
+    // Yield while the guard is mid-action — a refresh would queue behind the
+    // script lock that action holds, slowing the request the guard waits on.
+    if (state.actionInProgress || state.isBulkProcessing) {
+      scheduleTodayRefresh(TODAY_BUSY_RETRY_MS);
+      return;
+    }
+
+    state.todayFetchInFlight = true;
     var loading = $('#todays-loading');
     if (loading) loading.classList.remove('hidden');
 
     var url = CONFIG.API_BASE + '?action=today&sheetId=' + encodeURIComponent(CONFIG.SHEET_ID);
 
+    function finish() {
+      state.todayFetchInFlight = false;
+      if (loading) loading.classList.add('hidden');
+      // Always replan FROM THE END of this call, so a slow response can never
+      // leave a second request queued behind it.
+      if (!state.actionInProgress && !state.isBulkProcessing) scheduleTodayRefresh();
+    }
+
     fetch(url, {
       method: 'GET',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain' },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
     .then(function (res) { return res.text(); })
     .then(function (text) {
-      if (loading) loading.classList.add('hidden');
       var data;
-      try { data = JSON.parse(text); } catch (e) {
-        return;
-      }
+      try { data = JSON.parse(text); } catch (e) { finish(); return; }
       if (data.status === 'ok' && Array.isArray(data.visitors)) {
         state.todayVisitors = data.visitors;
         renderTodayVisitors();
@@ -907,10 +1143,9 @@
           updateBulkSignOutButton();
         }
       }
+      finish();
     })
-    .catch(function () {
-      if (loading) loading.classList.add('hidden');
-    });
+    .catch(function () { finish(); });
   }
 
   function renderTodayVisitors() {
@@ -1179,11 +1414,9 @@
     state.isBulkProcessing = true;
     var visitorNumbers = Object.keys(state.selectedVisitors);
 
-    // Disable auto-refresh during operation
-    if (window.todayRefreshInterval) {
-      clearInterval(window.todayRefreshInterval);
-      window.todayRefreshInterval = null;
-    }
+    // Pause the refresh for the duration of the operation — an overlapping
+    // today-read would queue behind this request on the GAS script lock.
+    pauseTodayRefresh();
 
     // Show progress
     showProgress(App.t('signing-out-visitors'));
@@ -1239,15 +1472,12 @@
         }
 
         // Revoke ACT door access for each signed-out visitor with a card
-        if (parsed.results && Array.isArray(parsed.results)) {
-            var actApiBase = CONFIG.ACTApiBase;
-            if (actApiBase !== null && actApiBase !== undefined) {
-                parsed.results.forEach(function(r) {
-                    if (r.cardNo) {
-                        revokeActAccess(r.cardNo, actApiBase);
-                    }
-                });
-            }
+        if (parsed.results && Array.isArray(parsed.results) && hasActApi()) {
+            parsed.results.forEach(function(r) {
+                if (r.cardNo) {
+                    revokeActAccess(r.cardNo, CONFIG.ACTApiBase);
+                }
+            });
         }
 
         // Clear selections
@@ -1270,9 +1500,7 @@
   }
 
   function restartTodayRefresh() {
-    if (!window.todayRefreshInterval) {
-      window.todayRefreshInterval = setInterval(loadTodayVisitors, 30000);
-    }
+    resumeTodayRefresh();
   }
 
   // ──────────────────────────────────────────────
@@ -1414,11 +1642,8 @@
         loadTodayVisitors();
         
         // Revoke ACT door access if card was assigned
-        if (parsed.cardNo || (state.currentVisitor && state.currentVisitor.cardNo)) {
-            var actApiBase = CONFIG.ACTApiBase;
-            if (actApiBase !== null && actApiBase !== undefined) {
-                revokeActAccess(parsed.cardNo || state.currentVisitor.cardNo, actApiBase);
-            }
+        if ((parsed.cardNo || (state.currentVisitor && state.currentVisitor.cardNo)) && hasActApi()) {
+            revokeActAccess(parsed.cardNo || state.currentVisitor.cardNo, CONFIG.ACTApiBase);
         }
       } else {
         showError(parsed.error || 'Sign out failed');
@@ -1677,7 +1902,9 @@
    */
   function provisionUstar(cardNo, doorGroupId, selfieUrl, visitorName) {
     var base = CONFIG.UStarApiBase;
-    if (base === null || base === undefined) {
+    // Non-empty is what gates provisioning (an empty string silently demoted the
+    // kiosk to online-only mode while still LOOKING configured).
+    if (base === null || base === undefined || String(base).trim() === '') {
       return; // online mode — no UStar integration
     }
 

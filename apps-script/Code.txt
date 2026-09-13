@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.19.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.20.0';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: scripted email routes through a THREE-tier transport in
 // sendEmailThroughBridge:
@@ -84,6 +84,75 @@ function _openSheetCached(sheetId) {
     _ssCache[sheetId] = SpreadsheetApp.openById(sheetId);
   }
   return _ssCache[sheetId];
+}
+
+// ──────────────────────────────────────────────
+// READ-THROUGH CACHE (CacheService, survives across requests)
+// ──────────────────────────────────────────────
+// Every /exec invocation pays a fixed cost BEFORE our code runs at all
+// (container start + the script.googleusercontent.com redirect hop), so the
+// only lever that moves the wall clock is doing LESS work per invocation.
+// Stable, sheet-derived reads (Settings, Destination, VisitorType) are
+// therefore memoized in CacheService; anything that writes those tabs
+// invalidates explicitly. The per-execution globals stay as a second layer,
+// so a cache miss is always CORRECT — merely slower.
+//
+// TTLs are deliberately different: Settings carries the guard PIN and the
+// auto-sign-out hour, so an operator editing the sheet by hand sees the change
+// within READ_CACHE_TTL_SETTINGS_SEC (2 min). Destination/VisitorType are
+// configuration that changes rarely — 5 min.
+var READ_CACHE_TTL_SEC = 300;
+var READ_CACHE_TTL_SETTINGS_SEC = 120;
+
+function _readCacheKey_(sheetId, name) {
+  return 'litevm:v1:' + name + ':' + sheetId;
+}
+
+function _cacheGetJson_(key) {
+  try {
+    var raw = CacheService.getScriptCache().get(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _cachePutJson_(key, value, ttlSec) {
+  try {
+    CacheService.getScriptCache().put(key, JSON.stringify(value), ttlSec || READ_CACHE_TTL_SEC);
+  } catch (e) {
+    // The cache is an optimisation only — never let it break a request.
+  }
+}
+
+/**
+ * Drop a cached read for one customer. Wire this into every writer of the
+ * tab the read derives from.
+ */
+function invalidateReadCache_(sheetId, name) {
+  if (!sheetId || !name) return;
+  try {
+    CacheService.getScriptCache().remove(_readCacheKey_(sheetId, name));
+  } catch (e) { /* ignore */ }
+}
+
+/**
+ * Read-through memo for a stable value derived from a customer sheet.
+ * A null/undefined producer result is NEVER cached, so a transient read
+ * failure cannot be frozen in place for the whole TTL.
+ *
+ * @param {string} sheetId - Customer sheet ID
+ * @param {string} name - Cache namespace ('settings' | 'destinations' | 'visitorTypes')
+ * @param {function():*} producer - Called on a miss; returns the value to memoize
+ * @param {number} [ttlSec] - Override TTL
+ */
+function cachedRead_(sheetId, name, producer, ttlSec) {
+  var key = _readCacheKey_(sheetId, name);
+  var hit = _cacheGetJson_(key);
+  if (hit !== null) return hit;
+  var value = producer();
+  if (value !== null && value !== undefined) _cachePutJson_(key, value, ttlSec);
+  return value;
 }
 
 /**
@@ -917,27 +986,36 @@ function doGet(e) {
         if (!sheetId) {
           return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
         }
-        var settings = getSheetSettings_(sheetId);
-        var customer = _getCustomerConfig(sheetId);
-        var entitledTiers = ['pro', 'multi-site', 'enterprise'];
-        // Derived expiry is authoritative: an expired customer gets
-        // actEnabled=false even if status is still 'active'.
-        var expiryInfo = customer ? computeExpiryState_(customer, new Date()) : { expiryState: 'none', remainingDays: null };
-        var actEnabled = customer !== null &&
-          customer.status === 'active' &&
-          entitledTiers.indexOf(customer.tier) !== -1 &&
-          expiryInfo.expiryState !== 'expired';
-        return jsonResponse({
+        return jsonResponse(_configPayload_(sheetId), 200);
+      }
+
+      // One round trip for the whole boot: config + destinations + visitor
+      // types + today's list. Each GAS invocation carries a fixed per-call
+      // cost BEFORE any of our code runs, so collapsing 3-4 calls into one
+      // removes 2-3 of those floors from every kiosk/portal start.
+      // Settings/Destination/VisitorType come from the read-through cache;
+      // today's list is always live.
+      if (action === 'bootstrap') {
+        if (!sheetId) {
+          return jsonResponse({ status: 'error', error: 'Missing sheetId' }, 400);
+        }
+        var bootDest = cachedRead_(sheetId, 'destinations', function () {
+          return _destinationsData_(sheetId);
+        });
+        var bootTypes = cachedRead_(sheetId, 'visitorTypes', function () {
+          return _visitorTypesData_(sheetId);
+        });
+        var bootToday = _todayData_(sheetId);
+        var bootPayload = {
           status: 'ok',
-          guardPin: settings.guardPin,
-          autoSignOutEnabled: settings.enabled,
-          autoSignOutHour: settings.hour,
-          timezone: settings.timezone || (customer ? customer.timezone : null) || Session.getScriptTimeZone(),
-          actEnabled: actEnabled,
-          expiryDate: customer && customer.expiryDate ? customer.expiryDate : null,
-          remainingDays: expiryInfo.remainingDays,
-          expiryState: expiryInfo.expiryState,
-        }, 200);
+          version: CODE_VERSION,
+          config: _configPayload_(sheetId),
+          destinations: bootDest.destinations || [],
+          visitorTypes: bootTypes.types || [],
+          visitors: bootToday.visitors || [],
+        };
+        if (bootToday.error) bootPayload.todayError = bootToday.error;
+        return jsonResponse(bootPayload, 200);
       }
     }
 
@@ -1691,7 +1769,45 @@ function _readTailRows_(sheet, maxDataRows) {
   return header.concat(body);
 }
 
-function handleTodayVisitors(sheetId) {
+// ──────────────────────────────────────────────
+// CONFIG PAYLOAD (shared by ?action=config and ?action=bootstrap)
+// ──────────────────────────────────────────────
+/**
+ * Build the tenant config payload (guard PIN, auto sign-out, timezone,
+ * entitlement + derived expiry). Shared so ?action=config and ?action=bootstrap
+ * can never drift apart.
+ */
+function _configPayload_(sheetId) {
+  var settings = getSheetSettings_(sheetId);
+  var customer = _getCustomerConfig(sheetId);
+  var entitledTiers = ['pro', 'multi-site', 'enterprise'];
+  // Derived expiry is authoritative: an expired customer gets
+  // actEnabled=false even if status is still 'active'.
+  var expiryInfo = customer ? computeExpiryState_(customer, new Date()) : { expiryState: 'none', remainingDays: null };
+  var actEnabled = customer !== null &&
+    customer.status === 'active' &&
+    entitledTiers.indexOf(customer.tier) !== -1 &&
+    expiryInfo.expiryState !== 'expired';
+  return {
+    status: 'ok',
+    guardPin: settings.guardPin,
+    autoSignOutEnabled: settings.enabled,
+    autoSignOutHour: settings.hour,
+    timezone: settings.timezone || (customer ? customer.timezone : null) || Session.getScriptTimeZone(),
+    actEnabled: actEnabled,
+    expiryDate: customer && customer.expiryDate ? customer.expiryDate : null,
+    remainingDays: expiryInfo.remainingDays,
+    expiryState: expiryInfo.expiryState,
+  };
+}
+
+/**
+ * Read today's visitors into a plain object (no HTTP concerns) so both
+ * ?action=today and ?action=bootstrap share one implementation.
+ * Deliberately NOT cached — this is the one read that must be live.
+ * Returns { visitors: [...] } or { error, code }.
+ */
+function _todayData_(sheetId) {
   var customerTz = getCustomerTimeZone_(sheetId);
   var sheet = getOrCreateSheet(sheetId);
   // Bounded read: today's registrations are the most recent rows, so read the
@@ -1708,8 +1824,10 @@ function handleTodayVisitors(sheetId) {
 
   if (cols['Visitation Date'] === -1 || cols['Visitor Number'] === -1 ||
       cols['Status'] === -1 || cols['Full Name'] === -1) {
-    return jsonResponse({ status: 'error', message: 'VisitorLog headers missing required columns' }, 500);
+    return { error: 'VisitorLog headers missing required columns', code: 500 };
   }
+
+  var tsIdx = cols['Timestamp'];
 
   var tsIdx = cols['Timestamp'];
   var fullNameIdx = cols['Full Name'];
@@ -1764,7 +1882,14 @@ function handleTodayVisitors(sheetId) {
     }
   }
 
-  return jsonResponse({ status: 'ok', visitors: visitors }, 200);
+  return { visitors: visitors };
+}
+
+/** ?action=today — thin wrapper over _todayData_ (shared with bootstrap). */
+function handleTodayVisitors(sheetId) {
+  var result = _todayData_(sheetId);
+  if (result.error) return jsonResponse({ status: 'error', message: result.error }, result.code || 500);
+  return jsonResponse({ status: 'ok', visitors: result.visitors }, 200);
 }
 
 // ──────────────────────────────────────────────
@@ -1921,16 +2046,36 @@ function handleDestinations(sheetId) {
     return jsonResponse({ status: 'error', message: 'SHEET_ID not configured' }, 500);
   }
 
-  var ss = SpreadsheetApp.openById(sheetId);
+  var result = cachedRead_(sheetId, 'destinations', function () {
+    return _destinationsData_(sheetId);
+  });
+  if (result.error) {
+    return jsonResponse({ status: 'error', message: result.error }, result.code || 500);
+  }
+  return jsonResponse({
+    status: 'ok',
+    headers: result.headers,
+    destinations: result.destinations,
+    count: result.count,
+  }, 200);
+}
+
+/**
+ * Read the Destination tab into a plain object (no HTTP concerns) so both
+ * ?action=destinations and ?action=bootstrap share one implementation.
+ * Returns { headers, destinations, count } or { error, code }.
+ */
+function _destinationsData_(sheetId) {
+  var ss = _openSheetCached(sheetId);
   var sheet = ss.getSheetByName('Destination');
 
   if (!sheet) {
-    return jsonResponse({ status: 'error', message: 'Destination sheet tab not found' }, 404);
+    return { error: 'Destination sheet tab not found', code: 404 };
   }
 
   var data = sheet.getDataRange().getValues();
   if (data.length < 2) {
-    return jsonResponse({ status: 'ok', destinations: [], headers: data.length > 0 ? data[0] : [] }, 200);
+    return { headers: data.length > 0 ? data[0] : [], destinations: [], count: 0 };
   }
 
   // First row is headers
@@ -1947,12 +2092,7 @@ function handleDestinations(sheetId) {
     destinations.push(obj);
   }
 
-  return jsonResponse({
-    status: 'ok',
-    headers: headers,
-    destinations: destinations,
-    count: destinations.length,
-  }, 200);
+  return { headers: headers, destinations: destinations, count: destinations.length };
 }
 
 // ──────────────────────────────────────────────
@@ -1967,16 +2107,28 @@ function handleVisitorTypes(sheetId) {
     return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
   }
 
-  var ss = SpreadsheetApp.openById(sheetId);
+  var result = cachedRead_(sheetId, 'visitorTypes', function () {
+    return _visitorTypesData_(sheetId);
+  });
+  return jsonResponse({ status: 'ok', types: result.types, count: result.count }, 200);
+}
+
+/**
+ * Read the VisitorType tab into a plain object (no HTTP concerns) so both
+ * ?action=visitorTypes and ?action=bootstrap share one implementation.
+ * Returns { types, count }.
+ */
+function _visitorTypesData_(sheetId) {
+  var ss = _openSheetCached(sheetId);
   var sheet = ss.getSheetByName('VisitorType');
 
   if (!sheet) {
-    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+    return { types: [], count: 0 };
   }
 
   var data = sheet.getDataRange().getValues();
   if (data.length < 1) {
-    return jsonResponse({ status: 'ok', types: [], count: 0 }, 200);
+    return { types: [], count: 0 };
   }
 
   // Detect if first row is a header: if A1 matches /visitor\s*type/i, skip it
@@ -1994,11 +2146,7 @@ function handleVisitorTypes(sheetId) {
     }
   }
 
-  return jsonResponse({
-    status: 'ok',
-    types: types,
-    count: types.length,
-  }, 200);
+  return { types: types, count: types.length };
 }
 
 // ──────────────────────────────────────────────
@@ -2621,6 +2769,26 @@ function getOrCreateEmailQueue_(ss) {
  * @param {string} subject - Subject line
  * @param {string} htmlBody - HTML body (stored in the 'Body' column)
  */
+// ── Tier 2 (latency): where the CARD email is sent ────────────────────────
+// A Gmail send inside the check-in request costs 3-25s while the GUARD is
+// staring at the screen. v1.19.0 made it immediate so the visitor receives
+// their QR the instant the card is assigned; the trade is now explicit and an
+// operator can flip it back WITHOUT a redeploy:
+//   CARD_EMAIL_MODE = 'queue' (default)  → appended to EmailQueue, delivered by
+//                                          the 5-minute sweep; request returns fast
+//   CARD_EMAIL_MODE = 'immediate'        → synchronous send in-request (v1.19.0)
+// Registration email is unaffected — there the VISITOR is waiting, not the guard.
+var CARD_EMAIL_MODE_PROP = 'CARD_EMAIL_MODE';
+
+function _cardEmailMode_() {
+  try {
+    var mode = PropertiesService.getScriptProperties().getProperty(CARD_EMAIL_MODE_PROP);
+    return mode === 'immediate' ? 'immediate' : 'queue';
+  } catch (e) {
+    return 'queue';
+  }
+}
+
 function enqueueEmail(sheetId, type, to, subject, htmlBody) {
   if (!to) return; // no recipient — nothing to deliver
   try {
@@ -3175,9 +3343,17 @@ function sendCardAssignmentEmail(toEmail, cardNo, visitorName, visitorNumber, sh
     + '<p style="text-align:center;font-size:11px;color:#94A3B8;margin-top:16px;">LITEVM Visitor Management System</p>'
     + '</div>';
 
-  sendEmailImmediateOrQueue_(sheetId, 'card', toEmail, subject, htmlBody);
-
-  console.log('Card assignment email delivered for ' + toEmail + ' for card ' + cardNo);
+  var cardEmailMode = _cardEmailMode_();
+  if (cardEmailMode === 'immediate') {
+    sendEmailImmediateOrQueue_(sheetId, 'card', toEmail, subject, htmlBody);
+    console.log('Card assignment email sent IMMEDIATELY to ' + toEmail + ' for card ' + cardNo);
+  } else {
+    // Queued: the guard's request does not wait on a Gmail round trip. The card
+    // number is already on the kiosk screen, so instant inbox delivery is not
+    // needed for the door to open.
+    enqueueEmail(sheetId, 'card', toEmail, subject, htmlBody);
+    console.log('Card assignment email QUEUED for ' + toEmail + ' for card ' + cardNo);
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -3410,6 +3586,7 @@ function ensureSettingRow_(tab, key, defaultValue) {
   var nextRow = data.length + 1;
   tab.getRange(nextRow, 1, 1, 2).setValues([[key, defaultValue]]);
   tab.autoResizeColumns(1, 2);
+  invalidateReadCache_(tab.getParent().getId(), 'settings');
   console.log('ensureSettingRow_: Added ' + key + ' = ' + defaultValue);
 }
 
@@ -3424,6 +3601,7 @@ function _setSettingValue_(tab, key, value) {
     if (String(data[i][0] || '').trim().toLowerCase() === key.toLowerCase()) {
       if (String(data[i][1] || '') !== value) {
         tab.getRange(i + 1, 2).setValue(value);
+        invalidateReadCache_(tab.getParent().getId(), 'settings');
       }
       return;
     }
@@ -3437,6 +3615,16 @@ function _setSettingValue_(tab, key, value) {
  * Creates the tab with defaults if missing.
  */
 function getSheetSettings_(sheetId) {
+  // Cached: this runs on nearly every request (getCustomerTimeZone_ reads it on
+  // the lookup/today/updateStatus paths), and each uncached call is a
+  // Settings-tab read on top of the per-invocation floor. Writers invalidate via
+  // ensureSettingRow_ / _setSettingValue_.
+  return cachedRead_(sheetId, 'settings', function () {
+    return _readSheetSettings_(sheetId);
+  }, READ_CACHE_TTL_SETTINGS_SEC);
+}
+
+function _readSheetSettings_(sheetId) {
   try {
     var ss = _openSheetCached(sheetId);
     var tab = getOrCreateSettingsTab_(ss);
