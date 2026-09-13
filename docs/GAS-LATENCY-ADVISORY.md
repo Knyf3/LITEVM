@@ -164,7 +164,7 @@ The harness also caught a trap worth remembering: a `Date` created outside the N
 context fails `instanceof Date` inside it, which had made fixture dates look like strings.
 Share the constructor (`sandbox.Date = Date`) or the harness silently tests the wrong branch.
 
-### NEW DEFECT F5 — credential provisioning is blocked by CORS (pre-existing, not caused by this work)
+### F5 — provisioning blocked by CORS (pre-existing) — **FIXED & VERIFIED 2026-09-13**
 
 **Symptom.** A real check-in recovers correctly, then:
 `Access to fetch at 'http://192.168.2.194:8091/api/litevm/provision' from origin
@@ -180,9 +180,48 @@ box are still cross-origin (port differs), so this bites at every site where the
 reached by IP rather than localhost. Earlier full-stack runs proved provisioning only with a
 direct server-side call, which is why this was never seen.
 
-**Options.** (a) add the kiosk's `http://<ip>:8123` to `Cors:AllowedOrigins` in the gateway's
-`Settings/Settings.json` — one line, but every deployment must be told its own origin;
-(b) better: let the **KioskServer** (same origin as the page, .NET) expose `/api/provision` and
-proxy to the gateway server-side — no CORS, no shared secret in the browser, retries belong
-server-side. (b) is the architecturally right answer; (a) is tonight's unblock.
+**Fix applied (the supported mechanism, not a workaround).** `Cors:AllowedOrigins` on the gateway
+is exactly the hook for this, so the gateway's `Settings/Settings.json` now carries:
+
+```json
+"Cors": { "AllowedOrigins": [ "http://192.168.2.238:8123", "http://localhost:8123", "http://127.0.0.1:8123" ] }
+```
+
+(backup: `Settings.json.bak-cors-20260913`; gateway service restarted). localhost/127.0.0.1 are kept
+so a co-located kiosk browsed locally still works.
+
+**Verification (with a control):**
+
+| Probe | Result |
+|---|---|
+| `OPTIONS` preflight from the kiosk origin | `Access-Control-Allow-Origin: http://192.168.2.238:8123` |
+| `OPTIONS` preflight from `http://evil.example` | **no allow header** — the list is still an allow-list, not a wildcard |
+| Real kiosk check-in, real face (public-domain portrait), no mangling | console `UStar provision succeeded for card 5002`; device `face 2 → 3` |
+| Real kiosk check-in, response destroyed after commit (recovery path) | kiosk settled `verified`; the POST reached the gateway and returned a structured result |
+
+Two device codes surfaced while proving this, both **correct refusals rather than defects**:
+`LAN_EXP-8006` = *No faces detected* (my 1×1 px test image), and `LAN_EXP-3056` = *Face has been
+registered* (the same portrait was already enrolled on the reader as person 5061). Both are worth
+knowing: a re-used selfie cannot be enrolled twice on this firmware.
+
+**Still recommended (durable fix, not yet done).** The allow-list is per-site configuration: every
+deployment must add that site's kiosk origin, and the failure mode is silent (a red banner at best).
+Two better options, in order:
+1. **KioskServer same-origin proxy** — the kiosk page POSTs to its own origin (`/api/litevm/provision`)
+   and the .NET server forwards to the gateway with the secret. No CORS, no shared secret in the
+   browser, retries server-side. Needs a kiosk build + installer.
+2. **Gateway default** — when `Cors:AllowedOrigins` is empty, default to localhost *plus the host's
+   own IPv4 addresses at port 8123*, so a co-located kiosk works out of the box. Needs a gateway build.
+
+**Sibling risk (same class, live and unverified).** `ACTApi/Program.cs` enables CORS only when its
+own `CorsOrigins` setting is non-empty, and the kiosk calls ACTApi cross-origin for
+`grantActAccess` (PUT) / `revokeActAccess` (DELETE). With `ACTApiBase` set at a real site and
+`CorsOrigins` empty, door-access grant/revoke will fail exactly the way provisioning did. It could
+not be tested on the demo kiosk (`ACTApiBase: ""`). Add the kiosk origin to ACTApi's `CorsOrigins`
+per deployment, or route ACT through the same-origin proxy.
+
+**Cleanup performed:** probe visitors signed out (cards 5001/5002 returned to the pool), test
+persons deleted from the reader via `DELETE /api/litevm/persons/{card}?doorGroupId=2` (the
+**doorGroupId parameter is required** — persons are group-scoped), recognition records verified at
+zero, device restored to its pre-test baseline `person=2 face=2 finger=3`.
 
