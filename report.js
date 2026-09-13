@@ -294,7 +294,13 @@
     var url = CONFIG.API_BASE + '?_t=' + Date.now();
     // mode:'full' requests the complete VisitorLog so date-range filtering works
     // across the whole history (the backend otherwise defaults to a bounded tail).
-    var body = JSON.stringify({ action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to, mode: 'full' });
+    // `origin` is required by the backend's admin origin gate (F3, 2026-09-13): admin actions are
+    // no longer exempt from the allow-list, and the browser's real Origin header is not visible to
+    // Apps Script — so the page has to declare where it is running from.
+    var body = JSON.stringify({
+      action: 'report', sheetId: CONFIG.SHEET_ID, fromDate: from, toDate: to, mode: 'full',
+      origin: window.location.origin,
+    });
 
     fetch(url, {
       method: 'POST',

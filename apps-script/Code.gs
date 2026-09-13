@@ -23,7 +23,7 @@
  *
  */
 
-var CODE_VERSION = '1.20.0';  // Increment this to track deployed versions
+var CODE_VERSION = '1.20.1';  // Increment this to track deployed versions
 
 // EMAIL BRIDGE: scripted email routes through a THREE-tier transport in
 // sendEmailThroughBridge:
@@ -729,9 +729,10 @@ function buildValidResult_(customer, expiryInfo) {
  *   4. If customer is expired (derived from expiryDate) → deny ACCOUNT_EXPIRED
  *      (overrides paused/disabled; pending wins above)
  *   5. If customer status is not 'active' → deny ACCOUNT_DISABLED
- *   6. If endpointType is NOT 'register' → skip origin check, allow
- *   7. If origin is reported → check against allowedOrigins whitelist
- *   8. If origin not whitelisted → deny with ORIGIN_BLOCKED
+ *   6. Origin gate (F3, 2026-09-13): enforced for 'register' AND 'admin'. 'get'/'status'/'health'
+ *      are NOT origin-gated — the kiosk is browsed from a LAN origin that is not on the allow-list.
+ *   7. If an origin is ASSERTED → it must match allowedOrigins, else deny with ORIGIN_BLOCKED
+ *   8. If NO origin is asserted (machine caller / origin-less client) → allow, but log it
  *
  * @param {Object} e - The doGet/doPost event object
  * @param {string} sheetId - Customer's Google Sheet ID
@@ -827,49 +828,75 @@ function validateRequest(e, sheetId, endpointType) {
     return { valid: false, error: 'ACCOUNT_DISABLED', message: 'This service is currently unavailable.' };
   }
 
-  // Only enforce origin checks on registration endpoint
-  if (endpointType !== 'register') {
-    return buildValidResult_(customer, expiryInfo);
-  }
-
-  // ─── REGISTRATION-SPECIFIC CHECKS ───
-  var origin = _extractOrigin_(e);
-
-  // Check origin against whitelist
-  if (origin) {
-    var allowed = customer.allowedOrigins;
-    if (allowed) {
-      var origins = allowed.split(',').map(function(d) {
-        return d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
-      });
-      var cleanOrigin = origin.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
-      var matched = false;
-      for (var i = 0; i < origins.length; i++) {
-        if (origins[i] && cleanOrigin === origins[i]) {
-          matched = true;
-          break;
+  // ─── ORIGIN GATE (register + admin) ───
+  // F3 (2026-09-13): admin actions (report, bulkSignOut, retention, expiry, assignedCards)
+  // previously SKIPPED the origin check entirely — validateRequest returned here for anything that
+  // was not 'register', so a caller from any origin received the full report payload and the plan's
+  // R15 expectation ("non-allowlisted origin → 403") had never actually held. The gate now covers
+  // both endpoint types.
+  //
+  // ⚠ BE PRECISE ABOUT WHAT THIS IS. The origin is read from a FIELD IN THE REQUEST BODY
+  // (_extractOrigin_ → body.origin), because Apps Script Web Apps do not expose HTTP request
+  // headers — so a determined caller can claim any origin, or simply omit it. This gate therefore
+  // raises the bar against the real, observed exposure (a hostile PAGE loading in a victim's
+  // browser, which must declare where it is running from) and leaves an audit line in DeniedLog. It
+  // is NOT an authentication boundary. Machine callers authenticate with the shared secret
+  // (signOutByCard / assignedCards) and carry no origin; humans authenticate with the guard PIN,
+  // which is still compared client-side and published by ?action=config. Server-side PIN validation
+  // is the change that would close this properly — tracked separately, not silently half-done here.
+  if (endpointType === 'register' || endpointType === 'admin') {
+    var origin = _extractOrigin_(e);
+    if (origin) {
+      var allowed = customer.allowedOrigins;
+      if (allowed) {
+        if (!_originAllowed_(allowed, origin)) {
+          logDeniedRequest(sheetId, origin, 'ORIGIN_BLOCKED', endpointType, null);
+          return {
+            valid: false,
+            error: 'ORIGIN_BLOCKED',
+            message: endpointType === 'admin'
+              ? 'This action is not available from this location. Please contact the administrator.'
+              : 'Registration unavailable from this location. Please contact the front desk.',
+          };
         }
-        // Also match subdomains: if allowed is "example.com", "visitor.example.com" matches
-        if (origins[i] && cleanOrigin.endsWith('.' + origins[i])) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        logDeniedRequest(sheetId, origin, 'ORIGIN_BLOCKED', endpointType, null);
-        return { valid: false, error: 'ORIGIN_BLOCKED', message: 'Registration unavailable from this location. Please contact the front desk.' };
+      } else {
+        // No origins configured — allow (legacy mode) but log warning. NOTE: for a tenant in this
+        // state the gate is decorative, which is exactly how the F3 defect stayed invisible.
+        console.warn('[validateRequest] No allowedOrigins configured for sheet ' + sheetId +
+          ' — allowing ' + endpointType + ' request from ' + origin);
       }
     } else {
-      // No origins configured — allow (legacy mode) but log warning
-      console.warn('[validateRequest] No allowedOrigins configured for sheet ' + sheetId + ' — allowing request from ' + origin);
+      // No origin asserted — a machine caller (the gateway webhook, an Apps Script trigger) or a
+      // client that simply did not send one. Allowed, but logged so the pattern is visible.
+      console.warn('[validateRequest] No origin asserted for ' + endpointType + ' on sheet ' + sheetId +
+        ' — allowing (machine caller or origin-less client)');
     }
-  } else {
-    // No origin provided — log warning but don't block (some clients don't send origin)
-    console.warn('[validateRequest] No origin provided for registration on sheet ' + sheetId + ' — allowing request');
   }
 
   // All checks passed
   return buildValidResult_(customer, expiryInfo);
+}
+
+/**
+ * True when <paramref name="origin"/> matches the comma-separated allowedOrigins list: host
+ * comparison, scheme- and trailing-slash-insensitive, with subdomain matches permitted (an entry of
+ * "example.com" matches "visitor.example.com"). Extracted from validateRequest so the register and
+ * admin paths share ONE implementation instead of drifting apart (F3, 2026-09-13).
+ *
+ * @param {string} allowed - The tenant's comma-separated allow-list
+ * @param {string} origin - The origin the caller asserted
+ * @returns {boolean}
+ */
+function _originAllowed_(allowed, origin) {
+  var origins = String(allowed).split(',').map(function(d) {
+    return d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  });
+  var cleanOrigin = String(origin).toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  for (var i = 0; i < origins.length; i++) {
+    if (origins[i] && cleanOrigin === origins[i]) return true;
+    if (origins[i] && cleanOrigin.endsWith('.' + origins[i])) return true;
+  }
+  return false;
 }
 
 /**
@@ -4311,13 +4338,14 @@ function _signOutVisitor_(sheetId, visitorNumber, signOutTime) {
   var sheet = getOrCreateSheet(sheetId);
   var values = sheet.getDataRange().getValues();
 
-  var cols = resolveColumns(values, ['Visitor Number', 'Status', 'Sign-Out Time']);
+  var cols = resolveColumns(values, ['Visitor Number', 'Status', 'Sign-Out Time', 'Sign-In Time']);
   if (cols['Visitor Number'] === -1 || cols['Status'] === -1 || cols['Sign-Out Time'] === -1) {
     throw new Error('VisitorLog headers missing required columns');
   }
   var visitorNumberIdx = cols['Visitor Number'];
   var statusIdx = cols['Status'];
   var signOutIdx = cols['Sign-Out Time'];
+  var signInIdx = cols['Sign-In Time']; // optional: the stale-event guard needs it, the write does not
 
   for (var i = 1; i < values.length; i++) {
     var vn = String(values[i][visitorNumberIdx] || '').trim();
@@ -4329,6 +4357,23 @@ function _signOutVisitor_(sheetId, visitorNumber, signOutTime) {
     }
     if (currentStatus !== 'Checked In') {
       return { outcome: 'not_checked_in' };
+    }
+
+    // STALE-EVENT GUARD (F1, 2026-09-13). The gateway drives this path from OUT-reader recognition
+    // records, and its watermark store is in-memory — so after a restart it replays device history.
+    // A replayed record can therefore arrive when the card has already been RECYCLED to a different
+    // visitor, and writing that old timestamp would sign out the wrong person (observed live
+    // 2026-08-30: a row read "signed out three weeks before signing in"). The guard is deliberately
+    // narrow: it only refuses when the caller supplied an explicit event time AND the row's Sign-In
+    // Time is a real Date AND the event strictly precedes it. Anything less certain is allowed, so
+    // an odd cell format can never block a legitimate sign-out.
+    if (signInIdx !== -1 && signOutTime) {
+      var signInRaw = values[i][signInIdx];
+      if ((signInRaw instanceof Date) && signOutTime.getTime() < signInRaw.getTime()) {
+        console.warn('_signOutVisitor_: refusing stale sign-out for ' + visitorNumber +
+          ' — event ' + signOutTime.toISOString() + ' precedes sign-in ' + signInRaw.toISOString());
+        return { outcome: 'stale_event' };
+      }
     }
 
     sheet.getRange(i + 1, statusIdx + 1).setValue('Signed Out');
@@ -4481,11 +4526,15 @@ function handleSignOutByCard(data) {
       }, 200);
     }
 
-    // already_signed_out / not_checked_in / not_found → idempotent noop.
+    // already_signed_out / not_checked_in / not_found / stale_event → idempotent noop.
     if (result.outcome === 'not_found') {
       console.warn('signOutByCard: visitor ' + visitorNumber + ' not found in VisitorLog (card ' + data.cardNo + ')');
     }
-    return jsonResponse({ status: 'noop', visitorNumber: visitorNumber }, 200);
+    if (result.outcome === 'stale_event') {
+      console.warn('signOutByCard: ignored a REPLAYED out-record for card ' + data.cardNo +
+        ' — the event predates visitor ' + visitorNumber + '\'s check-in (card recycled); no sign-out performed');
+    }
+    return jsonResponse({ status: 'noop', visitorNumber: visitorNumber, reason: result.outcome }, 200);
   } finally {
     lock.releaseLock();
   }

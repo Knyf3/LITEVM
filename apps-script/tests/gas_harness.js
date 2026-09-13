@@ -76,6 +76,8 @@ const TODAY = new Date();              // "today" per the host clock — the cod
                                        // must agree or the filter legitimately returns nothing
 const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 
+const SIGNIN_TODAY = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate(), 9, 10); // 09:10 today
+
 const VL_HEADERS = ['Timestamp', 'Full Name', 'ID / Passport Number', 'Company Name', 'Destination',
   'Visitor Type', 'Visitation Date', 'Hand Phone', 'Email', 'ID Photo (Drive URL)',
   'Selfie (Drive URL)', 'Visitor Number', 'Status', 'Sign-In Time', 'Sign-Out Time'];
@@ -84,7 +86,10 @@ const customerSS = makeSS(SHEET_T1, {
   VisitorLog: [
     VL_HEADERS,
     [TODAY, 'Ada Lovelace', 'K111', 'ACME', 'BCA', 'Visitor', TODAY, '0811', 'ada@x.com', 'https://id', 'https://selfie', 'V-20260913-001', 'Pending Entry', '', ''],
-    [TODAY, 'Grace Hopper', 'K222', 'NAVY', 'PLN', 'Contractor', TODAY, '0812', 'grace@x.com', 'https://id2', 'https://selfie2', 'V-20260913-002', 'Checked In', '09:10 13 Sep 2026', ''],
+    // Sign-In Time is a real Date — the live sheet stores a date serial in that column (verified
+    // against the demo tenant: 46278.836… per row), so the F1 stale-event guard's `instanceof Date`
+    // check behaves here exactly as it does in production. A display string would silently skip it.
+    [TODAY, 'Grace Hopper', 'K222', 'NAVY', 'PLN', 'Contractor', TODAY, '0812', 'grace@x.com', 'https://id2', 'https://selfie2', 'V-20260913-002', 'Checked In', SIGNIN_TODAY, ''],
     [new Date(2026, 7, 30), 'Old Timer', 'K333', 'OLD', 'BCA', 'Visitor', iso(new Date(2026, 7, 30)), '0813', 'old@x.com', '', '', 'V-20260830-009', 'Signed Out', '', ''],
   ],
   Destination: [['Destination', 'Access Level', 'DoorGroupID'], ['BCA', '1', '2'], ['PLN', '1', '5']],
@@ -118,7 +123,14 @@ const sandbox = {
   // Share the constructor so instanceof means what it means in Apps Script.
   Date,
   Logger: { log: () => {} },
-  SpreadsheetApp: { openById: (id) => (id === 'MASTER_CFG' ? masterSS : customerSS), getActiveSpreadsheet: () => customerSS },
+  SpreadsheetApp: {
+    openById: (id) => (id === 'MASTER_CFG' ? masterSS : customerSS),
+    getActiveSpreadsheet: () => customerSS,
+    // The report handler flushes before responding. Without this stub the report path throws a
+    // TypeError inside the harness and reads as a gate failure — an instrument artefact, not a
+    // product result. (Cost: two false FAILs while testing F3, 2026-09-13.)
+    flush: () => {},
+  },
   CacheService: {
     getScriptCache: () => ({
       get: (k) => (k in cacheStore ? cacheStore[k] : null),
@@ -185,7 +197,7 @@ console.log('\n=== T1: ?action=bootstrap assembles one round trip ===');
 READS.length = 0; for (const k of Object.keys(READS)) delete READS[k];
 const b1 = boot();
 check('status ok', b1.status === 'ok', b1.status);
-check('version is 1.20.0', b1.version === '1.20.0', b1.version);
+check('version is 1.20.1', b1.version === '1.20.1' && b1.version === sandbox.CODE_VERSION, b1.version);
 check('config.guardPin from Settings tab', b1.config && b1.config.guardPin === '4321', b1.config && b1.config.guardPin);
 check('config.actEnabled true for pro+active', b1.config && b1.config.actEnabled === true, b1.config && b1.config.actEnabled);
 check('destinations returned (2)', Array.isArray(b1.destinations) && b1.destinations.length === 2, b1.destinations && b1.destinations.length);
@@ -259,7 +271,76 @@ const lk = body(sandbox.doGet({ parameter: { action: 'lookup', sheetId: SHEET_T1
 check('?action=lookup still returns visitor + cardNo', lk.status === 'ok' && lk.visitor.cardNo === '5001', lk.status);
 check('?action=lookup carries selfieUrl for provisioning', lk.visitor.selfieUrl === 'https://selfie2', lk.visitor.selfieUrl);
 const h = body(sandbox.doGet({ parameter: {} }));
-check('health check still reports the new version', h.status === 'ok' && h.version === '1.20.0', h);
+check('health check still reports the new version', h.status === 'ok' && h.version === sandbox.CODE_VERSION, h);
+
+console.log('\n=== T7: F3 — admin actions are origin-gated too (they used to be exempt) ===');
+const post = (payload) => body(sandbox.doPost({ postData: { contents: JSON.stringify(payload) } }));
+const mkEvent = (payload) => ({ postData: { contents: JSON.stringify(payload) } });
+const reportBase = { action: 'report', sheetId: SHEET_T1, fromDate: iso(TODAY), toDate: iso(TODAY) };
+
+// (a) The gate itself, at unit level — so the assertions do not depend on the report handler.
+const vAllowed = sandbox.validateRequest(mkEvent({ sheetId: SHEET_T1, origin: 'https://kiosk.local' }), SHEET_T1, 'admin');
+check('admin + allow-listed origin → valid', vAllowed.valid === true, vAllowed);
+const vForeign = sandbox.validateRequest(mkEvent({ sheetId: SHEET_T1, origin: 'https://evil.example' }), SHEET_T1, 'admin');
+check('admin + foreign origin → ORIGIN_BLOCKED', vForeign.valid === false && vForeign.error === 'ORIGIN_BLOCKED', vForeign);
+const vNone = sandbox.validateRequest(mkEvent({ sheetId: SHEET_T1 }), SHEET_T1, 'admin');
+check('admin + no origin → valid (machine caller: gateway webhook, triggers)', vNone.valid === true, vNone);
+// The 'get' path must stay OPEN: the kiosk is browsed from a LAN origin that is not allow-listed.
+const vGet = sandbox.validateRequest(mkEvent({ sheetId: SHEET_T1, origin: 'http://192.168.2.238:8123' }), SHEET_T1, 'get');
+check('get + unlisted LAN origin → still valid (kiosk must keep working)', vGet.valid === true, vGet);
+const vStatus = sandbox.validateRequest(mkEvent({ sheetId: SHEET_T1, origin: 'http://192.168.2.238:8123' }), SHEET_T1, 'status');
+check('status + unlisted origin → still valid (check-in path)', vStatus.valid === true, vStatus);
+// Subdomain matching survives the refactor into _originAllowed_.
+check('_originAllowed_ subdomain rule intact', sandbox._originAllowed_('example.com', 'https://visitor.example.com') === true);
+check('_originAllowed_ scheme/slash-insensitive', sandbox._originAllowed_('https://kiosk.local/', 'kiosk.local') === true);
+check('_originAllowed_ still rejects a foreign host', sandbox._originAllowed_('example.com', 'evil.example') === false);
+
+// (b) End-to-end: the ACTUAL defect was a foreign origin receiving the full report payload at 200.
+const okReport = post(Object.assign({}, reportBase, { origin: 'https://kiosk.local' }));
+check('allow-listed origin → report served', okReport.status === 'ok', okReport.status);
+const badReport = post(Object.assign({}, reportBase, { origin: 'https://evil.example' }));
+check('foreign origin → report refused',
+  badReport.status === 'error' && /not available from this location/.test(badReport.error || ''), badReport);
+const machineReport = post(reportBase);
+check('no origin asserted → report served (machine caller)', machineReport.status === 'ok', machineReport.status);
+
+// The register path shares _originAllowed_ now, so it must still block a foreign origin.
+const badReg = post({ sheetId: SHEET_T1, origin: 'https://evil.example', fullName: 'X' });
+check('register path still blocked from a foreign origin',
+  badReg.status === 'error' && /unavailable from this location/.test(badReg.error || ''), badReg);
+
+// Refusals must be auditable, or the gate is invisible in operations.
+const denied = masterSS.getSheetByName('DeniedLog');
+check('denial written to DeniedLog',
+  !!denied && denied._rows.some(r => r.indexOf('ORIGIN_BLOCKED') !== -1),
+  denied ? denied._rows : 'no DeniedLog tab');
+check('admin refusal logged with endpointType admin',
+  !!denied && denied._rows.some(r => r.indexOf('ORIGIN_BLOCKED') !== -1 && r.indexOf('admin') !== -1),
+  denied ? denied._rows.slice(-3) : null);
+
+console.log('\n=== T8: F1 — a replayed OUT record cannot sign out a recycled card ===');
+// (a) A stale event — earlier than the row's own check-in — must be refused, leaving the row alone.
+const staleWhen = new Date(SIGNIN_TODAY.getTime() - 3 * 24 * 3600 * 1000);
+const stale = sandbox._signOutVisitor_(SHEET_T1, 'V-20260913-002', staleWhen);
+check('replayed stale event refused', stale.outcome === 'stale_event', stale);
+const vl = customerSS.getSheetByName('VisitorLog');
+const row002 = vl._rows.find(r => r[11] === 'V-20260913-002');
+check('row still Checked In after a stale event', !!row002 && row002[12] === 'Checked In', row002 && row002[12]);
+check('Sign-Out Time still empty after a stale event', !!row002 && row002[14] === '', row002 && row002[14]);
+check('card 5001 still Assigned after a stale event',
+  customerSS.getSheetByName('cardno')._rows[1][1] === 'Assigned', customerSS.getSheetByName('cardno')._rows[1]);
+
+// (b) The guard must be NARROW: a current event still signs out normally.
+const fresh = sandbox._signOutVisitor_(SHEET_T1, 'V-20260913-002', new Date());
+check('current event still signs out (guard is not a blanket block)', fresh.outcome === 'signed_out', fresh);
+const rowAfter = vl._rows.find(r => r[11] === 'V-20260913-002');
+check('status flipped to Signed Out', !!rowAfter && rowAfter[12] === 'Signed Out', rowAfter && rowAfter[12]);
+check('card released back to the pool',
+  customerSS.getSheetByName('cardno')._rows[1][1] === 'Available', customerSS.getSheetByName('cardno')._rows[1]);
+
+// (c) An already-signed-out row is idempotent, not an error.
+const again = sandbox._signOutVisitor_(SHEET_T1, 'V-20260913-002', new Date());
+check('repeat sign-out is idempotent', again.outcome === 'already_signed_out', again);
 
 console.log('\n──────────────────────────────────────────────');
 console.log('Tier 1/2 GAS harness: ' + pass + ' passed, ' + fail + ' failed');

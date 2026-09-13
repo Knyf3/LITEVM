@@ -109,6 +109,10 @@ Outcome: ⚠ <N> failed / ✅ <N> passed
 ---
 
 ## 4. Related
+- **Full-stack umbrella (P/L/G/H/E/R/N/S/C suites):** `TESTPLAN-FULLSTACK-E2E.md` —
+  covers all four legs (LITEVM cloud, kiosk, UStarAPI gateway, E53 hardware) plus the
+  report page, preflight blockers, and the money-path loop. Prefer the umbrella plan
+  for cross-system runs; this file's I-suites remain the LITEVM-side subset.
 - Kiosk functional suites (K0–K10): `verify-kiosk/TESTPLAN.md`
 - Online-only LITEVM regression (T0–T11): `TESTPLAN-ONLINE.md`
 - Deployment flavors: `deployment-flavors-online-onprem-2026-08.md`
