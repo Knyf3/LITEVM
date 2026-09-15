@@ -44,6 +44,19 @@
   // ──────────────────────────────────────────────
   function init() {
     // Fetch config first (guard PIN from GAS), then proceed
+    // Runtime id assertions (non-fatal — logs loudly but never aborts the session)
+    (function checkRequiredIds() {
+      var required = [
+        'ustar-provision-banner', 'expiry-banner', 'expiry-banner-text',
+        'expiry-banner-dismiss'
+      ];
+      required.forEach(function (id) {
+        if (!document.getElementById(id)) {
+          console.error('LITEVM: #' + id + ' is missing from the host page — ' +
+            'dependent functionality will be silently suppressed');
+        }
+      });
+    })();
     fetchSheetConfig().then(function () {
       if (!sessionStorage.getItem('guardAuth')) {
         showLogin();
@@ -1998,7 +2011,9 @@
         || data.provisioned.some(function (p) { return !p.success; });
       if (failed) {
         state.provisionFailed = true;
-        showProvisionBanner();
+        if (!CONFIG._UStarApiBaseDerived) {
+          showProvisionBanner();
+        }
         console.warn('UStar provision failed for card ' + cardNo + ': ' + JSON.stringify(data));
         return;
       }
@@ -2006,7 +2021,9 @@
     })
     .catch(function (err) {
       state.provisionFailed = true;
-      showProvisionBanner();
+      if (!CONFIG._UStarApiBaseDerived) {
+        showProvisionBanner();
+      }
       console.warn('UStar provision could not be sent: ' + err.message);
     });
   }

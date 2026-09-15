@@ -76,7 +76,7 @@ kiosk never guesses them from cached state (data-provenance rule).
 | I3-3 | Gateway down | Dead UStarApiBase | Provision fails gracefully; red banner + retry; no impact on check-in |
 | I3-4 | Retry succeeds | Fix target → click retry | Provision succeeds; banner clears |
 | I3-5 | Reader effect (optional) | E53 bench reachable | Person on device with face + QR credential (faceCount 0→1) |
-| I3-6 | Online-mode skip | UStarApiBase empty | NO provision call (network panel) — gateway optional |
+| I3-6 | ACT-only / no-UStar silent path | ACT-only site: UStarApiBase empty in settings.json | Boot loader derives UStar URL; POST fires to derived host; NO banner on failure (derived-provenance); check-in succeeds; console.warn only. Verify: network POST visible, zero DOM banner, guard flow uninterrupted |
 
 ---
 
