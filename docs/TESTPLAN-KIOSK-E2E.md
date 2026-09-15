@@ -35,7 +35,13 @@ URLs, ACT/UStar config, provisioning logic, or the tenant's card/door plan.
 universal; `auto-signout.py` is the optional ACT-revoke companion).
 
 **Kiosk config contract:** all in ONE `wwwroot/settings.json` on the kiosk
-box. `ACTApiBase`/`UStarApiBase` empty = online mode (no gateway calls).
+box. The two bases are **asymmetric**: `ACTApiBase` empty **disables** ACT (no
+derivation — ACT is reached at a stable, explicit host). `UStarApiBase` empty does
+**NOT** disable UStar — the boot loader derives `http://<kiosk-hostname>:8091`
+(M8.5 fallback), so a provision POST still fires. A **derived** base suppresses the
+failure banner (failures reach the console only); an **explicit** base keeps the red
+banner + Retry. Provisioning suites: `verify-kiosk/TESTPLAN.md` K8-5 (explicit →
+loud) and K8-7 (derived → silent).
 Check-in POST returns `cardNo`/`doorGroupId` from the BACKEND response — the
 kiosk never guesses them from cached state (data-provenance rule).
 
